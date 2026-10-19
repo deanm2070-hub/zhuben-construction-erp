@@ -200,8 +200,44 @@ const isOpenLayer = (l: string) => /OPEN|DOOR|WIN|門|窗/i.test(l) && !/編號|
 interface PlanGeo { segs: DxfSeg[]; ox: number; oy: number; gx: number[]; gy: number[] }
 
 /** Plan geometry and the origin used to stack floors: the first numbered grid line and grid line A when the plan has grid bubbles. */
+/**
+ * A sheet region often holds more than the building: site items such as drains, lamp posts and neighbouring details.
+ * Wall lines are grouped by closeness; the building is the biggest group plus any group of comparable size or touching it.
+ * Everything outside that area (with a 2 m margin for balconies and canopies) is left out.
+ */
+export function buildingArea(segs: DxfSeg[], gap: number): { x0: number; y0: number; x1: number; y1: number; dropped: number } | null {
+  const ws = segs.filter(s => isWallLayer(s.layer));
+  if (ws.length < 20) return null;
+  const cell = (v: number) => Math.floor(v / gap), key = (i: number, j: number) => `${i},${j}`;
+  const parent = ws.map((_, i) => i), find = (i: number): number => parent[i] === i ? i : (parent[i] = find(parent[i]));
+  const at = new Map<string, number>();
+  ws.forEach((s, i) => {
+    for (const q of [s.a, s.b, [(s.a[0] + s.b[0]) / 2, (s.a[1] + s.b[1]) / 2]]) {
+      const ci = cell(q[0]), cj = cell(q[1]);
+      for (let di = -1; di <= 1; di++) for (let dj = -1; dj <= 1; dj++) {
+        const o = at.get(key(ci + di, cj + dj));
+        if (o !== undefined) parent[find(i)] = find(o);
+      }
+      at.set(key(ci, cj), i);
+    }
+  });
+  const groups = new Map<number, { n: number; x0: number; y0: number; x1: number; y1: number }>();
+  ws.forEach((s, i) => {
+    const r = find(i), g = groups.get(r) || { n: 0, x0: Infinity, y0: Infinity, x1: -Infinity, y1: -Infinity };
+    g.n++; g.x0 = Math.min(g.x0, s.a[0], s.b[0]); g.x1 = Math.max(g.x1, s.a[0], s.b[0]); g.y0 = Math.min(g.y0, s.a[1], s.b[1]); g.y1 = Math.max(g.y1, s.a[1], s.b[1]);
+    groups.set(r, g);
+  });
+  const all = [...groups.values()].sort((p, q) => q.n - p.n), main = all[0];
+  const keep = all.filter(g => g === main || g.n >= main.n * 0.2
+    || (g.x0 <= main.x1 + gap && g.x1 >= main.x0 - gap && g.y0 <= main.y1 + gap && g.y1 >= main.y0 - gap));
+  const area = { x0: Math.min(...keep.map(g => g.x0)), y0: Math.min(...keep.map(g => g.y0)), x1: Math.max(...keep.map(g => g.x1)), y1: Math.max(...keep.map(g => g.y1)), dropped: ws.length - keep.reduce((n, g) => n + g.n, 0) };
+  return area.dropped ? area : null;
+}
+
 function planGeo(d: DxfDrawing, v: SheetView): PlanGeo {
-  const segs = d.segs.filter(s => inBox(v.box, s.a[0], s.a[1]) && inBox(v.box, s.b[0], s.b[1]));
+  let segs = d.segs.filter(s => inBox(v.box, s.a[0], s.a[1]) && inBox(v.box, s.b[0], s.b[1]));
+  const k = UNIT_SCALE[guessUnits(d)] || 1, area = buildingArea(segs, 400 / k), m = 200 / k;
+  if (area) segs = segs.filter(s => [s.a, s.b].every(q => q[0] >= area.x0 - m && q[0] <= area.x1 + m && q[1] >= area.y0 - m && q[1] <= area.y1 + m));
   const grid = d.texts.filter(t => /GTAG|GRID|AXIS|軸/i.test(t.layer) && inBox(v.box, t.x, t.y));
   const nums = grid.filter(t => /^\d{1,2}$/.test(t.s)).sort((a, b) => +a.s - +b.s);
   const lets = grid.filter(t => /^[A-Z]$/.test(t.s)).sort((a, b) => a.s.localeCompare(b.s));

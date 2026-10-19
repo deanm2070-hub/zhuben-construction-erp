@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { computeRebar, floorRange, ldhOf, lstOf, readRebarSpec, rebarSummary, REBAR_STD, type BoxObject, type CadData, type DxfDrawing } from '../src';
+import { buildingArea, computeRebar, floorRange, ldhOf, lstOf, readRebarSpec, rebarSummary, REBAR_STD, type BoxObject, type CadData, type DxfDrawing } from '../src';
 
 const KEYS = ['1F', '2F', '3F', '4F', '5F', 'R1F', 'RF'];
 function sheet(texts: [string, number, number, number?][]): DxfDrawing {
@@ -74,5 +74,16 @@ describe('reinforcement sheets', () => {
     expect(main.len).toBe(Math.round(320 + 137 / 2 + 60 - 8 + 36));
     const sum = rebarSummary(rows);
     expect(sum.byFloor.get('2F')!.合計).toBeCloseTo(rows.reduce((a, r) => a + r.kg, 0), 5);
+  });
+});
+
+describe('building area', () => {
+  it('leaves out small wall-layer items far from the building', () => {
+    const seg = (x0: number, y0: number, x1: number, y1: number) => ({ layer: 'WALL', a: [x0, y0] as [number, number], b: [x1, y1] as [number, number] });
+    const bld = Array.from({ length: 40 }, (_, i) => seg(i * 50, 0, i * 50 + 50, 0));
+    const drain = [seg(5000, 3000, 5100, 3000), seg(5100, 3000, 5200, 3000)];
+    const a = buildingArea([...bld, ...drain], 400)!;
+    expect(a.dropped).toBe(2);
+    expect(a.x1).toBe(2000);
   });
 });
