@@ -152,8 +152,9 @@ select,input[type=number],input[type=text],input[type=email],input[type=password
 }
 .drop .how { display: block; margin-top: 8px; color: #b45309; font-size: 14px; line-height: 1.5; }
 /* The file input itself covers the whole tap area (a label over a hidden input can miss taps on phones). */
-.drop, .tap { position: relative; touch-action: manipulation; -webkit-tap-highlight-color: transparent; }
-.tap-input { position: absolute; inset: 0; width: 100%; height: 100%; opacity: 0; cursor: pointer; font-size: 100px; }
+.drop, .tap { position: relative; overflow: hidden; touch-action: manipulation; -webkit-tap-highlight-color: transparent; }
+.tap-input { position: absolute; inset: 0; width: 100%; height: 100%; opacity: 0; cursor: pointer; font-size: 16px; }
+.tap-input::file-selector-button { cursor: pointer; }
 .drop:active { border-color: var(--accent); background: var(--chip); }
 .release { margin-top: 8px; font-size: 13px; color: var(--muted); }
 .release summary { cursor: pointer; text-align: center; }

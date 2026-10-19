@@ -757,7 +757,7 @@ export function buildBuilding(d: DxfDrawing, a: BuildingAnalysis, name: string, 
         const arch = objects.find(o => isBox(o) && o.floor === key && o.layer === 'wall' && !o.rc && !o.rot && o.h >= 200 && Math.min(o.w, o.d) >= 25
           && Math.abs(o.x - c.x) <= o.w / 2 + 5 && Math.abs(o.z - c.z) <= o.d / 2 + 5 && Math.max(o.w, o.d) <= Math.min(o.w, o.d) * 3) as BoxObject | undefined;
         const tag = { kind: 'column' as const, mark: c.mark, fl: key, b: Math.min(c.w, c.d), h: Math.max(c.w, c.d) };
-        if (arch) arch.rc = tag;
+        if (arch) { arch.rc = tag; arch.x = c.x; arch.z = c.z; arch.w = c.w; arch.d = c.d; }
         else objects.push({ id: id++, layer: 'wall', name: `柱 ${c.mark}（結構圖）`, floor: key, x: c.x, z: c.z, w: c.w, d: c.d, h: st.h, y: st.base, color: 0xeeebe5, rc: tag });
       }
       for (const p of panels) rcPanels.push({ ...p, fl: key });
