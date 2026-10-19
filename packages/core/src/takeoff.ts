@@ -1,6 +1,6 @@
-import { computeRooms, type RoomLabel, type RoomStat } from './rooms';
+import { roomMap, type RoomLabel, type RoomStat } from './rooms';
 import { WALL_H } from './sample';
-import { isBox, isDoor, type BoxObject, type Bounds, type CadData, type CadDoor, type FinishChoice, type ModelObject, type RoomRect, type TakeoffSettings } from './types';
+import { isBox, isDoor, type BoxObject, type Bounds, type CadData, type CadDoor, type DoorObject, type FinishChoice, type ModelObject, type RoomRect, type TakeoffSettings } from './types';
 
 export const PING = 3.3058;
 export const FINISHES = {
@@ -15,8 +15,9 @@ export const DEFAULT_SETTINGS: TakeoffSettings = { ext: 0, floor: '1F', slab: 15
 /** Finish codes picked from the room name. */
 export function defaultFinish(name: string): FinishChoice {
   if (/廁|浴|洗手|衛|茶水|廚|Kitchen/i.test(name)) return { f: 'F5', c: 'C2', w: 'W2' };
-  if (/陽台|露台/.test(name)) return { f: 'F4', c: '-', w: '-' };
-  if (/樓梯/.test(name)) return { f: 'F2B', c: '-', w: 'W1B' };
+  if (/天井|雨遮|遮陽|頂蓋|水塔|透空|管道|挑空|梯井|未標示/.test(name)) return { f: '-', c: '-', w: '-' };
+  if (/陽台|露台|平台|外廊|騎樓/.test(name)) return { f: 'F4', c: '-', w: '-' };
+  if (/樓梯|安全梯|梯間/.test(name)) return { f: 'F2B', c: '-', w: 'W1B' };
   if (/廠房|作業|倉|儲|機房|車庫|收納/.test(name)) return { f: 'F1', c: '-', w: 'W1A' };
   return { f: 'F2A', c: 'C1', w: 'W1A' };
 }
@@ -33,8 +34,10 @@ export function facadeOf(o: BoxObject, cx: number, cz: number): Facade {
 export interface FinishRow { fl: string; name: string; q: number }
 export interface FinishGroup { title: string; unit: 'M2' | 'M'; rows: FinishRow[]; total: number }
 export interface BudgetLine { sec?: string; i?: number; name?: string; unit?: string; q?: number | string; note?: string }
+/** One line of the quantity calculation sheet: which item, where, and how it was worked out. */
+export interface CalcRow { sec: string; item: string; unit: string; fl: string; where: string; expr: string; q: number }
 export interface RoomWithFinish extends RoomStat { fl: string; fin: FinishChoice }
-export interface Takeoff { budget: BudgetLine[]; groups: FinishGroup[]; rooms: RoomWithFinish[]; floorArea: number; wallH: number }
+export interface Takeoff { budget: BudgetLine[]; groups: FinishGroup[]; rooms: RoomWithFinish[]; calc: CalcRow[]; floorArea: number; wallH: number }
 
 export interface TakeoffInput {
   objects: ModelObject[];
@@ -48,13 +51,26 @@ export interface TakeoffInput {
 }
 
 const r2 = (v: number) => Math.round(v * 100) / 100;
+/** a length in cm written in metres for a formula, e.g. 0.2 or 4.2 */
+const m = (cm: number) => String(r2(cm / 100));
 /** names given to openings matched to a door / window schedule, e.g. "D1 木門 90×210" */
 const SCHED = /^([A-Z]{1,3}\d{0,3}[A-Z]?) (\S+) ([\d.]+)×([\d.]+)$/;
 const schedKey = (name: string) => { const m = SCHED.exec(name); return m ? `${m[1]} ${m[2]} ${m[3]}*${m[4]}` : null; };
 const FACADES: Facade[] = ['北向', '東向', '南向', '西向'];
 
+export const SEC = {
+  temp: '一、假設工程', site: '二、放樣.土方及搭架工程', rc: '三、結構體工程', finish: '四、泥作.裝修工程', water: '五、防水工程',
+  open: '六、門窗工程', misc: '七、雜項工程', bath: '九、衛浴設備', mep: '十一、水電.弱電.消防工程（依樓地板面積估算）', other: '其他（模型未含，請依圖說另計）',
+};
+const SEC_ORDER = Object.values(SEC);
+export const CONCRETE = '4000PSI 預拌混凝土', FORMWORK = '一般模板組立及損耗';
+
+/** Plan pieces of a model: columns are short thick boxes, RC walls are 18 cm or thicker. */
+const isColumn = (o: BoxObject) => !o.rot && Math.min(o.w, o.d) >= 30 && Math.max(o.w, o.d) <= Math.min(o.w, o.d) * 2.5 && o.y === 0 && o.h >= 200;
+
 export function computeTakeoff(inp: TakeoffInput): Takeoff {
   const { objects, bounds, settings: S } = inp;
+  const fl = S.floor;
   const cx = bounds.W / 2, cz = bounds.D / 2;
   const boxes = objects.filter(isBox);
   const walls = boxes.filter(o => o.layer === 'wall' && o.h > 0);
@@ -63,94 +79,207 @@ export function computeTakeoff(inp: TakeoffInput): Takeoff {
   const sum = <T>(a: T[], f: (o: T) => number) => a.reduce((s, o) => s + f(o), 0);
   const full = walls.filter(o => o.y === 0 && o.h >= 200);
   const H = full.length ? Math.max(...full.map(o => o.h)) : WALL_H;
-  const ext = walls.filter(isExt), int = full.filter(o => !isExt(o));
-  const rooms: RoomWithFinish[] = computeRooms(objects, bounds, inp.labels, inp.rects)
-    .map(r => ({ ...r, fl: S.floor, fin: { ...defaultFinish(r.name), ...(inp.finishes[r.name] || {}) } }));
-  const floorArea = sum(rooms, r => r.area);
+  const cols = walls.filter(isColumn);
+  const ext = walls.filter(o => isExt(o) && !isColumn(o)), int = full.filter(o => !isExt(o));
+  const slabs = boxes.filter(o => o.layer === 'slab' && !/梁/.test(o.name));
+  const railings = boxes.filter(o => /欄杆/.test(o.name) && (o.layer === 'glass' || o.layer === 'rail'));
+  const map = roomMap(objects, bounds, inp.labels, inp.rects);
+  const rooms: RoomWithFinish[] = map.rooms.map(r => ({ ...r, fl, fin: { ...defaultFinish(r.name), ...(inp.finishes[r.name] || {}) } }));
+  const floorArea = sum(rooms.filter(r => r.fin.f !== '-'), r => r.area);
 
-  const doors = objects.filter(isDoor).map(o => ({ w: o.b - o.a, h: o.h || 210, ext: /大門/.test(o.name), name: o.name }))
-    .concat((inp.cadDoors || []).map(d => ({ w: d.w, h: 210, name: '', ext: d.x < 30 || d.z < 30 || d.x > bounds.W - 30 || d.z > bounds.D - 30 })));
-  const wins = boxes.filter(o => o.layer === 'glass' && (o.y > 0 || SCHED.test(o.name))).map(o => ({ w: Math.max(o.w, o.d), h: o.h, o }));
+  const doors = objects.filter(isDoor).map(o => ({ w: o.b - o.a, h: o.h || 210, ext: /大門|捲門/.test(o.name), name: o.name, o }))
+    .concat((inp.cadDoors || []).map(d => ({ w: d.w, h: 210, name: '', ext: d.x < 30 || d.z < 30 || d.x > bounds.W - 30 || d.z > bounds.D - 30, o: null as unknown as DoorObject })));
+  const wins = boxes.filter(o => o.layer === 'glass' && !/欄杆/.test(o.name) && (o.y > 0 || SCHED.test(o.name))).map(o => ({ w: Math.max(o.w, o.d), h: o.h, o }));
   const winArea = sum(wins, w => w.w * w.h / 1e4);
 
+  const calc: CalcRow[] = [];
+  const row = (sec: string, item: string, unit: string, where: string, expr: string, q: number) => { if (q > 0) calc.push({ sec, item, unit, fl, where, expr, q: r2(q) }); };
+
+  // windows belong to the rooms on either side of them
+  const winsOf = new Map<string, { a: number; n: number }>();
+  for (const w of wins) {
+    const along = w.o.w >= w.o.d, off = Math.min(w.o.w, w.o.d) / 2 + 20;
+    for (const s of [-1, 1]) {
+      const name = map.at(w.o.x + (along ? 0 : s * off), w.o.z + (along ? s * off : 0));
+      if (!name) continue;
+      const cur = winsOf.get(name) || { a: 0, n: 0 };
+      cur.a += w.w * w.h / 1e4; cur.n++;
+      winsOf.set(name, cur);
+    }
+  }
+
   const groups = new Map<string, FinishGroup>();
-  const add = (title: string, unit: 'M2' | 'M', fl: string, name: string, q: number) => {
+  const strip = (t: string) => t.replace(/^\([^)]*\)/, '');
+  const add = (title: string, unit: 'M2' | 'M', name: string, q: number, expr: string, sec: string = /防水處理/.test(title) ? SEC.water : SEC.finish) => {
     if (q <= 0) return;
     if (!groups.has(title)) groups.set(title, { title, unit, rows: [], total: 0 });
     groups.get(title)!.rows.push({ fl, name, q: r2(q) });
+    row(sec, strip(title), unit === 'M2' ? '㎡' : 'M', name, expr, q);
   };
+  const clear = Math.max(100, H - S.slab);
   for (const r of rooms) {
-    const { f, c, w } = r.fin, wallA = r.perim * H / 100;
+    const { f, c, w } = r.fin;
+    const win = winsOf.get(r.name), wa = win?.a || 0;
+    const wallA = Math.max(0, r.perim * clear / 100 - wa);
+    const wallExpr = `周長 ${r2(r.perim)} m × 淨高 ${m(clear)} m${wa ? ` − 窗 ${win!.n} 樘 ${r2(wa)} ㎡` : ''}`;
+    const area = `面積 ${r2(r.area)} ㎡`;
     const F = FINISHES.f as Record<string, string>, Cc = FINISHES.c as Record<string, string>, Wd = FINISHES.w as Record<string, string>;
-    if (f !== '-' && F[f]) add(`(地坪)${f}-${F[f]}`, 'M2', r.fl, r.name, r.area);
-    if (c !== '-' && Cc[c]) add(`(平頂)${c}-${Cc[c]}`, 'M2', r.fl, r.name, r.area);
+    if (f !== '-' && F[f]) add(`(地坪)${f}-${F[f]}`, 'M2', r.name, r.area, area);
+    if (c !== '-' && Cc[c]) add(`(平頂)${c}-${Cc[c]}`, 'M2', r.name, r.area, area);
     if (w === 'W1A' || w === 'W1B') {
-      add(`(牆面)${w}-${Wd[w]}`, 'M2', r.fl, r.name, wallA);
-      add('(踢腳)綠建材水泥漆踢腳 H=15cm', 'M', r.fl, r.name, r.perim);
+      add(`(牆面)${w}-${Wd[w]}`, 'M2', r.name, wallA, wallExpr);
+      add('(踢腳)綠建材水泥漆踢腳 H=15cm', 'M', r.name, r.perim, `周長 ${r2(r.perim)} m（門洞已扣）`);
     }
     if (w === 'W2') {
-      add('(牆面)W2A-內牆1:2防水水泥砂漿打底', 'M2', r.fl, r.name, wallA);
-      add('(牆面)W2C-內牆貼30*60cm磁磚', 'M2', r.fl, r.name, wallA);
+      add('(牆面)W2A-內牆1:2防水水泥砂漿打底', 'M2', r.name, wallA, wallExpr);
+      add('(牆面)W2C-內牆貼30*60cm磁磚', 'M2', r.name, wallA, wallExpr);
     }
-    if (f === 'F5') add('(牆面)廁所.茶水間地坪.牆面防水處理(H=1.2M)', 'M2', r.fl, r.name, r.area + r.perim * 1.2);
-    if (f === 'F4') add('(地坪)陽台地坪防水處理', 'M2', r.fl, r.name, r.area);
+    if (f === 'F5') add('(牆面)廁所.茶水間地坪.牆面防水處理(H=1.2M)', 'M2', r.name, r.area + r.perim * 1.2, `面積 ${r2(r.area)} ㎡ + 周長 ${r2(r.perim)} m × 1.2 m`);
+    if (f === 'F4' && !/露台|平台|屋頂/.test(r.name)) add('(地坪)陽台地坪防水處理', 'M2', r.name, r.area, area);
+    if (/露台|平台|屋頂/.test(r.name)) add('(屋頂)屋頂.露台防水處理（含保護層）', 'M2', r.name, r.area, area);
   }
-  const facade: Partial<Record<Facade, number>> = {};
-  for (const o of ext) { const k = facadeOf(o, cx, cz); facade[k] = (facade[k] || 0) + len(o) * o.h / 100; }
-  // imported walls are solid behind their windows, so take the glass off
-  if (inp.cadDoors) for (const w of wins) { const k = facadeOf(w.o, cx, cz); if (facade[k]) facade[k]! -= w.w * w.h / 1e4; }
-  for (const k of FACADES) if (facade[k]) add(`(牆面)${EXT_FINISHES[S.ext] || EXT_FINISHES[0]}`, 'M2', S.floor, `${k}外牆`, facade[k]!);
-  for (const k of FACADES) if (facade[k]) add('(牆面)外牆防水處理', 'M2', S.floor, `${k}外牆`, facade[k]!);
+  // exterior walls: the pieces next to openings are already cut, so area is length × height
+  const facade: Partial<Record<Facade, { a: number; L: number }>> = {};
+  for (const o of ext) { const k = facadeOf(o, cx, cz); const cur = facade[k] || { a: 0, L: 0 }; cur.a += len(o) * o.h / 100; cur.L += len(o); facade[k] = cur; }
+  // imported single drawings have solid walls behind their windows, so take the glass off
+  const winOff: Partial<Record<Facade, number>> = {};
+  if (inp.cadDoors) for (const w of wins) { const k = facadeOf(w.o, cx, cz); winOff[k] = (winOff[k] || 0) + w.w * w.h / 1e4; }
+  for (const k of FACADES) {
+    const v = facade[k];
+    if (!v) continue;
+    const q = v.a - (winOff[k] || 0), expr = `Σ 牆段 長×高（${r2(v.L)} m 牆段，開口已扣）${winOff[k] ? ` − 窗 ${r2(winOff[k]!)} ㎡` : ''}`;
+    add(`(牆面)${EXT_FINISHES[S.ext] || EXT_FINISHES[0]}`, 'M2', `${k}外牆`, q, expr);
+    add('(牆面)外牆防水處理', 'M2', `${k}外牆`, q, expr);
+  }
   const G = [...groups.values()].map(g => ({ ...g, total: r2(sum(g.rows, r => r.q)) }));
 
-  const extVol = sum(ext, o => o.w * o.d * o.h / 1e6), extFace = sum(ext, o => len(o) * o.h / 100);
-  const footprint = bounds.W * bounds.D / 1e4, extPerim = 2 * (bounds.W + bounds.D) / 100;
-  const slabVol = footprint * S.slab / 100, conc = extVol + slabVol, steel = conc * S.rebar / 1000;
-  const intArea = sum(int, o => len(o) * o.h / 100);
+  /* structure: concrete and formwork per element, written out per size */
+  const byDims = (list: BoxObject[], key: (o: BoxObject) => string) => {
+    const g = new Map<string, BoxObject[]>();
+    for (const o of list) { const k = key(o); if (!g.has(k)) g.set(k, []); g.get(k)!.push(o); }
+    return [...g.entries()];
+  };
+  for (const [k, list] of byDims(cols, o => `${Math.round(Math.min(o.w, o.d))}×${Math.round(Math.max(o.w, o.d))}×${Math.round(o.h)}`)) {
+    const o = list[0], a = Math.min(o.w, o.d), b = Math.max(o.w, o.d);
+    row(SEC.rc, CONCRETE, 'M3', `柱 ${k}`, `${m(a)} × ${m(b)} × ${m(o.h)} m × ${list.length} 支`, a * b * o.h / 1e6 * list.length);
+    row(SEC.rc, FORMWORK, '㎡', `柱 ${k}`, `周長 2×(${m(a)}+${m(b)}) m × 高 ${m(o.h)} m × ${list.length} 支`, 2 * (a + b) * o.h / 1e4 * list.length);
+  }
+  for (const [, list] of byDims(ext, o => `${Math.round(Math.min(o.w, o.d))}|${Math.round(o.h)}`)) {
+    const t = Math.min(list[0].w, list[0].d), h = list[0].h, L = sum(list, o => Math.max(o.w, o.d));
+    const where = `RC牆 厚${Math.round(t)} 高${Math.round(h)}${/窗台|窗楣|門楣/.test(list[0].name) ? '（窗台/窗楣）' : ''}`;
+    row(SEC.rc, CONCRETE, 'M3', where, `長 ${m(L)} m × 厚 ${m(t)} m × 高 ${m(h)} m（${list.length} 段）`, L * t * h / 1e6);
+    row(SEC.rc, FORMWORK, '㎡', where, `長 ${m(L)} m × 高 ${m(h)} m × 2 面`, L * h * 2 / 1e4);
+  }
+  const ground = /^1F$|^B/.test(fl) || slabs.some(o => /地坪/.test(o.name));
+  const slabA = sum(slabs, o => o.w * o.d / 1e4);
+  if (slabA > 0) {
+    const t = slabs[0].h || S.slab, name = ground ? '地坪' : slabs.some(o => /屋頂/.test(o.name)) ? '屋頂板' : '樓板';
+    row(SEC.rc, CONCRETE, 'M3', name, `面積 ${r2(slabA)} ㎡ × 厚 ${m(t)} m`, slabA * t / 100);
+    if (!ground) row(SEC.rc, FORMWORK, '㎡', `${name}底模`, `面積 ${r2(slabA)} ㎡`, slabA);
+    if (name === '屋頂板') row(SEC.water, '屋頂.露台防水處理（含保護層）', '㎡', '屋頂板', `面積 ${r2(slabA)} ㎡`, slabA);
+  } else if (!inp.objects.some(o => o.floor)) {
+    // single plans have no slab objects: use the outline
+    const fp = bounds.W * bounds.D / 1e4;
+    row(SEC.rc, CONCRETE, 'M3', '樓板', `建築外框 ${m(bounds.W)} × ${m(bounds.D)} m × 厚 ${m(S.slab)} m`, fp * S.slab / 100);
+    row(SEC.rc, FORMWORK, '㎡', '樓板底模', `建築外框 ${m(bounds.W)} × ${m(bounds.D)} m`, fp);
+  }
+  const beams = boxes.filter(o => /梁/.test(o.name));
+  for (let [k, list] of byDims(beams, o => `${Math.round(Math.min(o.w, o.d))}×${Math.round(o.h)}`)) {
+    const b = Math.min(list[0].w, list[0].d), h = list[0].h, L = sum(list, o => Math.max(o.w, o.d));
+    if (/估算/.test(list[0].name)) k = `${k}（估算：沿柱列軸線，待結構圖）`;
+    row(SEC.rc, CONCRETE, 'M3', `梁 ${k}`, `長 ${m(L)} m × 寬 ${m(b)} m × (梁深 ${m(h)} − 板厚 ${m(S.slab)}) m`, L * b * Math.max(0, h - S.slab) / 1e6);
+    row(SEC.rc, FORMWORK, '㎡', `梁 ${k}`, `長 ${m(L)} m × (底 ${m(b)} + 2 側 × ${m(h - S.slab)}) m`, L * (b + 2 * Math.max(0, h - S.slab)) / 1e4);
+  }
+  // stairs: riser count as written on the plan (上16); each flight is wedge steps on a waist slab
+  for (const st of boxes.filter(o => o.stair).map(o => o.stair!)) {
+    const { risers: N, flights: F, width: w, run, rise, landing } = st;
+    const treads = Math.max(0, N - F), slope = Math.hypot(run, rise), flightLen = treads / F * slope;
+    const where = `樓梯 ${N} 階（寬 ${m(w)} m，踏 ${m(run)} m，級高 ${m(rise)} m）`;
+    row(SEC.rc, CONCRETE, 'M3', where, `踏階 ${treads} × ½ × ${m(w)} × ${m(run)} × ${m(rise)} + 斜板 ${F} 跑 × ${m(w)} × ${m(flightLen)} × ${m(S.slab)} + 平台 ${r2(landing)} ㎡ × ${m(S.slab)}`,
+      (treads * w * run * rise / 2 + F * w * flightLen * S.slab) / 1e6 + landing * S.slab / 100);
+    row(SEC.rc, FORMWORK, '㎡', where, `斜板底 ${F} 跑 × ${m(w)} × ${m(flightLen)} + 踢面 ${N} × ${m(w)} × ${m(rise)} + 平台底 ${r2(landing)} ㎡`,
+      F * w * flightLen / 1e4 + N * w * rise / 1e4 + landing);
+    row(SEC.finish, '樓梯踢面石英磚', '㎡', where, `${N} 階 × ${m(w)} × ${m(rise)}（踏面含在樓梯間地坪）`, N * w * rise / 1e4);
+    row(SEC.finish, '樓梯止滑條', 'M', where, `${treads} 階 × ${m(w)}`, treads * w / 100);
+    row(SEC.misc, '樓梯欄杆扶手 H=90cm', 'M', where, `${F} 跑 × 斜長 ${m(flightLen)} m（√(踏² + 級高²) × ${treads / F} 階）`, F * flightLen / 100);
+  }
+  for (const [k, list] of byDims(railings, o => `${o.name}|${Math.round(o.h)}`)) {
+    const L = sum(list, o => Math.max(o.w, o.d)), [name, h] = k.split('|');
+    row(SEC.misc, `${name.replace(/（CAD）/, '')} H=${h}cm`, 'M', '陽台.露台', `${list.length} 段 合計長 ${m(L)} m`, L / 100);
+  }
 
-  const B: BudgetLine[] = [];
-  let n = 0;
-  const sec = (t: string) => { B.push({ sec: t }); n = 0; };
-  const item = (name: string, unit: string, q: number | string, note = '') => B.push({ i: ++n, name, unit, q: typeof q === 'number' ? r2(q) : q, note });
-  const strip = (t: string) => t.replace(/^\([^)]*\)/, '');
-  sec('一、假設工程');
-  item('交屋清潔費', '坪', floorArea / PING, `室內面積 ${r2(floorArea)} ㎡`);
-  sec('二、放樣.土方及搭架工程');
-  item('放樣', '㎡', footprint, `建築外框 ${Math.round(bounds.W)}×${Math.round(bounds.D)} cm`);
-  item('施工架', '㎡', extPerim * (H + 100) / 100, `外周長 ${r2(extPerim)} m × (牆高+1 m)`);
-  item('挖土／回填', 'M3', '需基礎圖', '模型未含基礎深度');
-  sec('三、結構體工程');
-  item('4000PSI 預拌混凝土', 'M3', conc, `外牆 ${r2(extVol)} + 樓板 ${r2(slabVol)}（板厚 ${S.slab} cm）`);
-  item('壓送', 'M3', conc);
-  item('鋼筋（SD420＋SD280）', '噸', steel, `以 ${S.rebar} kg/M3 估算`);
-  item('鋼筋綁紮', '噸', steel);
-  item('鋼筋運費', '噸', steel);
-  item('一般模板組立及損耗', '㎡', extFace * 2 + footprint, '外牆兩面＋樓板底');
-  sec('四、泥作.裝修工程');
-  for (const g of G) if (!/防水處理/.test(g.title)) item(strip(g.title), g.unit === 'M2' ? '㎡' : 'M', g.total);
-  item('內牆雙面矽酸鈣板(一小時防火時效)', '㎡', intArea, `隔間牆 ${int.length} 段，若為磚牆請改項目`);
-  sec('五、防水工程');
-  for (const g of G) if (/防水處理/.test(g.title)) item(strip(g.title), '㎡', g.total);
-  sec('六、門窗工程');
-  const dk: Record<string, number> = {};
-  for (const d of doors) { const k = schedKey(d.name) || `D 門 ${Math.round(d.w)}*${Math.round(d.h)}`; dk[k] = (dk[k] || 0) + 1; }
-  for (const k of Object.keys(dk).sort()) item(k, '樘', dk[k]);
-  const wk: Record<string, number> = {};
-  for (const w of wins) { const k = schedKey(w.o.name) || `W 鋁窗 ${Math.round(w.w)}*${Math.round(w.h)}`; wk[k] = (wk[k] || 0) + 1; }
-  for (const k of Object.keys(wk).sort()) item(k, '樘', wk[k]);
-  item('鋁窗玻璃', '㎡', winArea);
+  /* other items */
+  row(SEC.temp, '交屋清潔費', '坪', '室內', `面積 ${r2(floorArea)} ㎡ ÷ 3.3058`, floorArea / PING);
+  const fp = bounds.W * bounds.D / 1e4, extPerim = 2 * (bounds.W + bounds.D) / 100;
+  row(SEC.site, '放樣', '㎡', '建築外框', `${m(bounds.W)} × ${m(bounds.D)} m`, fp);
+  row(SEC.site, '施工架', '㎡', '外周', `外周長 ${r2(extPerim)} m × (牆高 ${m(H)} + 1) m`, extPerim * (H + 100) / 100);
+  if (fl === '1F' || !objects.some(o => o.floor)) {
+    const dig = S.dig ?? 150;
+    row(SEC.site, '挖土（估算）', 'M3', '基礎開挖', `建築外框 ${r2(fp)} ㎡ × 開挖深 ${m(dig)} m（依基礎圖調整）`, fp * dig / 100);
+    row(SEC.site, '回填土（估算）', 'M3', '基礎開挖', `挖土 × 30%`, fp * dig / 100 * 0.3);
+    row(SEC.site, '餘土運棄（估算）', 'M3', '基礎開挖', `挖土 × 70% × 鬆方 1.3`, fp * dig / 100 * 0.7 * 1.3);
+  }
+  // concrete totals carry the pumping and the rebar
+  const conc = sum(calc.filter(c => c.item === CONCRETE), c => c.q);
+  if (conc > 0) {
+    row(SEC.rc, '壓送', 'M3', '同混凝土', `混凝土 ${r2(conc)} M3`, conc);
+    row(SEC.rc, '鋼筋（SD420＋SD280）', '噸', '同混凝土', `混凝土 ${r2(conc)} M3 × ${S.rebar} kg/M3 ÷ 1000`, conc * S.rebar / 1000);
+    row(SEC.rc, '鋼筋綁紮', '噸', '同鋼筋', `混凝土 ${r2(conc)} M3 × ${S.rebar} kg/M3 ÷ 1000`, conc * S.rebar / 1000);
+    row(SEC.rc, '鋼筋運費', '噸', '同鋼筋', `混凝土 ${r2(conc)} M3 × ${S.rebar} kg/M3 ÷ 1000`, conc * S.rebar / 1000);
+  }
+  if (int.length) {
+    const L = sum(int, o => Math.max(o.w, o.d)), A = sum(int, o => len(o) * o.h / 100);
+    row(SEC.finish, '內牆雙面矽酸鈣板(一小時防火時效)', '㎡', `隔間牆 ${int.length} 段`, `合計長 ${m(L)} m × 高（各段 ${[...new Set(int.map(o => m(o.h)))].join('/')} m）`, A);
+  }
+  // doors and windows by schedule type
+  const dk = new Map<string, { n: number; w: number; h: number; ext: boolean }>();
+  for (const d of doors) { const k = schedKey(d.name) || `D 門 ${Math.round(d.w)}*${Math.round(d.h)}`; const c = dk.get(k) || { n: 0, w: d.w, h: d.h, ext: d.ext }; c.n++; dk.set(k, c); }
+  for (const [k, c] of dk) row(SEC.open, k, '樘', '門', `${c.n} 樘`, c.n);
+  const wk = new Map<string, { n: number; w: number; h: number }>();
+  for (const w of wins) { const k = schedKey(w.o.name) || `W 鋁窗 ${Math.round(w.w)}*${Math.round(w.h)}`; const c = wk.get(k) || { n: 0, w: w.w, h: w.h }; c.n++; wk.set(k, c); }
+  for (const [k, c] of wk) row(SEC.open, k, '樘', '窗', `${c.n} 樘`, c.n);
+  if (winArea) row(SEC.open, '鋁窗玻璃', '㎡', '窗', [...wk.values()].map(c => `${m(c.w)}×${m(c.h)}×${c.n}`).join(' + '), winArea);
   const winPerim = sum(wins, w => 2 * (w.w + w.h) / 100);
-  item('外牆門窗防水工程', 'M', winPerim + sum(doors.filter(d => d.ext), d => (d.w + 2 * d.h) / 100), '外牆開口周長');
-  item('門窗填縫', 'M', winPerim + sum(doors, d => (d.w + 2 * d.h) / 100), '所有門窗周長');
-  sec('九、衛浴設備');
+  const extDoors = doors.filter(d => d.ext), doorPerim = (d: { w: number; h: number }) => (d.w + 2 * d.h) / 100;
+  if (winPerim + sum(extDoors, doorPerim) > 0) row(SEC.open, '外牆門窗防水工程', 'M', '外牆開口', `窗周長 ${r2(winPerim)} m + 外門 ${r2(sum(extDoors, doorPerim))} m`, winPerim + sum(extDoors, doorPerim));
+  if (winPerim + sum(doors, doorPerim) > 0) row(SEC.open, '門窗填縫', 'M', '所有門窗', `窗周長 ${r2(winPerim)} m + 門 (寬+2高) ${r2(sum(doors, doorPerim))} m`, winPerim + sum(doors, doorPerim));
   const bath = boxes.filter(o => o.layer === 'bath' && o.h > 10);
-  const basins = bath.filter(o => /洗手|檯|台/.test(o.name)).length, wc = bath.filter(o => /馬桶/.test(o.name)).length;
-  item('洗手台人造石檯面', '組', basins);
-  item('明鏡', '面', basins);
-  item('馬桶(座式)', '組', wc);
-  sec('其他（模型未含，請依圖說另計）');
-  for (const t of ['鋼架工程', '水電工程', '弱電工程', '消防工程', '道路排水溝及圍牆工程', '雜項工程']) item(t, '式', '另計');
-  return { budget: B, groups: G, rooms, floorArea, wallH: H };
+  const wet = rooms.filter(r => /廁|浴|衛/.test(r.name)).length;
+  const basins = bath.filter(o => /洗手|檯|台/.test(o.name)).length || wet, wc = bath.filter(o => /馬桶/.test(o.name)).length || wet;
+  const bathNote = bath.length ? '模型衛浴設備' : '每間浴廁 1 組';
+  row(SEC.bath, '洗手台人造石檯面', '組', '浴廁', bathNote, basins);
+  row(SEC.bath, '明鏡', '面', '浴廁', bathNote, basins);
+  row(SEC.bath, '馬桶(座式)', '組', '浴廁', bathNote, wc);
+  for (const t of ['水電工程', '弱電工程', '消防工程']) row(SEC.mep, t, '坪', '室內', `樓地板面積 ${r2(floorArea)} ㎡ ÷ 3.3058（依設備圖確認）`, floorArea / PING);
+  return { budget: budgetOf(calc, fl), groups: G, rooms, calc, floorArea, wallH: H };
+}
+
+/** Budget lines from calculation rows, in the template's section order; door and window types lead their section. */
+export function budgetOf(calc: CalcRow[], fl?: string): BudgetLine[] {
+  const lines = new Map<string, BudgetLine & { sec0: string; n: number; fls: Set<string> }>();
+  for (const c of calc) {
+    const k = `${c.sec}|${c.item}|${c.unit}`;
+    const cur = lines.get(k);
+    if (cur) { cur.q = (cur.q as number) + c.q; cur.n++; cur.fls.add(c.fl); }
+    else lines.set(k, { sec0: c.sec, name: c.item, unit: c.unit, q: c.q, n: 1, fls: new Set([c.fl]) });
+  }
+  const out: BudgetLine[] = [];
+  const isType = (n: string) => /^(D 門|W 鋁窗) /.test(n) || /^[A-Z]{1,3}\d{0,3}[A-Z]? \S+ [\d.]+\*/.test(n);
+  for (const sec of SEC_ORDER) {
+    const body = [...lines.values()].filter(l => l.sec0 === sec);
+    if (sec === SEC.other) {
+      body.push(...['鋼架工程', '道路排水溝及圍牆工程'].map(t => ({ sec0: sec, name: t, unit: '式', q: '另計', n: 0, fls: new Set<string>() })));
+    }
+    if (!body.length) continue;
+    out.push({ sec });
+    const types = body.filter(l => isType(l.name!)).sort((a, b) => a.name!.localeCompare(b.name!));
+    let i = 0;
+    for (const l of [...types, ...body.filter(l => !isType(l.name!))]) {
+      const multi = l.fls.size > 1 ? `${l.fls.size} 層合計` : fl || [...l.fls][0] || '';
+      out.push({ i: ++i, name: l.name, unit: l.unit, q: typeof l.q === 'number' ? r2(l.q) : l.q, note: l.n ? `${multi}，見數量計算式` : '' });
+    }
+  }
+  return out;
 }
 
 /**
@@ -167,39 +296,16 @@ export function computeBuildingTakeoff(objects: ModelObject[], cad: CadData, fin
     finishes,
     settings: { ...settings, floor: f.key },
   }));
-  const budget: BudgetLine[] = [];
-  const at = new Map<string, BudgetLine>();
-  let sec = '';
-  for (const p of parts) for (const b of p.budget) {
-    if (b.sec) { sec = b.sec; if (!budget.some(x => x.sec === b.sec)) budget.push({ ...b }); continue; }
-    const k = `${sec}|${b.name}|${b.unit}`, cur = at.get(k);
-    if (!cur) {
-      const line = { ...b };
-      at.set(k, line);
-      // keep sections together: insert after the last line of the same section
-      let i = budget.findIndex(x => x.sec === sec) + 1;
-      while (i < budget.length && !budget[i].sec) i++;
-      budget.splice(i, 0, line);
-    } else if (typeof cur.q === 'number' && typeof b.q === 'number') { cur.q = r2(cur.q + b.q); cur.note = '各層合計'; }
-  }
   // building-wide items are not per storey
+  const calc = parts.flatMap(p => p.calc).filter(c => c.item !== '放樣' && c.item !== '施工架');
   const top = Math.max(0, ...floors.map(f => f.y + f.h));
   const perim = 2 * (cad.W + cad.D) / 100;
-  for (const b of budget) {
-    if (b.name === '放樣') { b.q = r2(cad.W * cad.D / 1e4); b.note = `建築外框 ${Math.round(cad.W)}×${Math.round(cad.D)} cm`; }
-    if (b.name === '施工架') { b.q = r2(perim * (top + 100) / 100); b.note = `外周長 ${r2(perim)} m × (建物高 ${r2(top / 100)} m＋1 m)`; }
-  }
-  // door and window types first in their section, as a single storey lists them
-  const isType = (b: BudgetLine) => !!b.name && (/^(D 門|W 鋁窗) /.test(b.name) || /^[A-Z]{1,3}\d{0,3}[A-Z]? \S+ [\d.]+\*/.test(b.name));
-  for (let i = 0; i < budget.length;) {
-    let j = i + 1;
-    while (j < budget.length && !budget[j].sec) j++;
-    const body = budget.slice(i + 1, j);
-    budget.splice(i + 1, body.length, ...body.filter(isType).sort((a, b) => a.name!.localeCompare(b.name!)), ...body.filter(b => !isType(b)));
-    i = j;
-  }
-  let n = 0;
-  for (const b of budget) { if (b.sec) n = 0; else b.i = ++n; }
+  const whole = (sec: string, item: string, unit: string, where: string, expr: string, q: number) => calc.push({ sec, item, unit, fl: '整棟', where, expr, q: r2(q) });
+  whole(SEC.site, '放樣', '㎡', '建築外框', `${r2(cad.W / 100)} × ${r2(cad.D / 100)} m`, cad.W * cad.D / 1e4);
+  whole(SEC.site, '施工架', '㎡', '外周', `外周長 ${r2(perim)} m × (建物高 ${r2(top / 100)} + 1) m`, perim * (top + 100) / 100);
+  const order = new Map(SEC_ORDER.map((s, i) => [s, i]));
+  const fl = new Map(floors.map((f, i) => [f.key, i]));
+  calc.sort((a, b) => (order.get(a.sec)! - order.get(b.sec)!) || a.item.localeCompare(b.item) || ((fl.get(a.fl) ?? -1) - (fl.get(b.fl) ?? -1)));
   const groups = new Map<string, FinishGroup>();
   for (const p of parts) for (const g of p.groups) {
     const cur = groups.get(g.title);
@@ -207,9 +313,10 @@ export function computeBuildingTakeoff(objects: ModelObject[], cad: CadData, fin
     else { cur.rows.push(...g.rows); cur.total = r2(cur.total + g.total); }
   }
   return {
-    budget,
+    budget: budgetOf(calc),
     groups: [...groups.values()],
     rooms: parts.flatMap(p => p.rooms),
+    calc,
     floorArea: parts.reduce((s, p) => s + p.floorArea, 0),
     wallH: Math.max(WALL_H, ...parts.map(p => p.wallH)),
   };

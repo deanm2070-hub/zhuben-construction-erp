@@ -13,11 +13,19 @@ const CELL = 10, MARGIN = 60, CLOSE = 5; // cm, cm, cells (doorways up to ~100 c
  * rooms grow back to the walls. Area is in m², perimeter (wall contact) in m.
  */
 export function computeRooms(objects: ModelObject[], bounds: Bounds, labels: RoomLabel[], rects?: RoomRect[]): RoomStat[] {
+  return roomMap(objects, bounds, labels, rects).rooms;
+}
+
+/** Rooms plus a lookup of the room a plan point lies in (null for walls and outside). */
+export function roomMap(objects: ModelObject[], bounds: Bounds, labels: RoomLabel[], rects?: RoomRect[]): { rooms: RoomStat[]; at: (x: number, z: number) => string | null } {
   const C = CELL, x0 = -MARGIN, z0 = -MARGIN;
   const nx = Math.ceil((bounds.W + 2 * MARGIN) / C), nz = Math.ceil((bounds.D + 2 * MARGIN) / C), N = nx * nz;
   const wall = new Uint8Array(N);
-  for (const o of objects) {
-    if (!isBox(o) || o.layer !== 'wall' || o.y > 150) continue;
+  for (const o0 of objects) {
+    // railings close balconies like walls do
+    if (!isBox(o0) || (o0.layer !== 'wall' && !/欄杆/.test(o0.name)) || o0.y > 150) continue;
+    // thin pieces (glass, 10 cm single lines) must still cover the grid
+    const o = { ...o0, w: Math.max(o0.w, C + 1), d: Math.max(o0.d, C + 1) };
     const test = footprintTest(o), r = Math.hypot(o.w, o.d) / 2;
     const i0 = Math.max(0, Math.floor((o.x - r - x0) / C)), i1 = Math.min(nx - 1, Math.ceil((o.x + r - x0) / C));
     const j0 = Math.max(0, Math.floor((o.z - r - z0) / C)), j1 = Math.min(nz - 1, Math.ceil((o.z + r - z0) / C));
@@ -37,7 +45,10 @@ export function computeRooms(objects: ModelObject[], bounds: Bounds, labels: Roo
       res[ri].cells++;
       for (const [a, b] of nb(i, j)) if (wall[b * nx + a]) res[ri].edges++;
     }
-    return finish(res);
+    return {
+      rooms: finish(res),
+      at: (x, z) => rects.find(r => x >= r.x0 && x < r.x1 && z >= r.z0 && z < r.z1)?.n ?? null,
+    };
   }
 
   const R = CLOSE, dil = new Uint8Array(N);
@@ -47,6 +58,17 @@ export function computeRooms(objects: ModelObject[], bounds: Bounds, labels: Roo
       const a = i + di, b = j + dj;
       if (a >= 0 && b >= 0 && a < nx && b < nz) dil[b * nx + a] = 1;
     }
+  // doors and floor-level glass close their openings while rooms are told apart, but are not wall
+  const closed = (x0c: number, x1c: number, z0c: number, z1c: number) => {
+    for (let j = Math.max(0, Math.floor((z0c - z0) / C)); j <= Math.min(nz - 1, Math.floor((z1c - z0) / C)); j++)
+      for (let i = Math.max(0, Math.floor((x0c - x0) / C)); i <= Math.min(nx - 1, Math.floor((x1c - x0) / C)); i++) dil[j * nx + i] = 1;
+  };
+  for (const o of objects) {
+    if (o.layer === 'door') {
+      const along = o.axis === 'x';
+      if (along) closed(o.a, o.b, o.at - 8, o.at + 8); else closed(o.at - 8, o.at + 8, o.a, o.b);
+    } else if (o.layer === 'glass' && o.y < 150 && !o.rot) closed(o.x - o.w / 2 - 4, o.x + o.w / 2 + 4, o.z - o.d / 2 - 4, o.z + o.d / 2 + 4);
+  }
   const owner = new Int32Array(N).fill(-1);
   const flood = (seeds: number[], id: number) => {
     const q = [...seeds];
@@ -103,5 +125,13 @@ export function computeRooms(objects: ModelObject[], bounds: Bounds, labels: Roo
     r.cells++;
     for (const [a, b] of nb(k % nx, (k / nx) | 0)) if (wall[b * nx + a]) r.edges++;
   }
-  return finish(res);
+  return {
+    rooms: finish(res),
+    at: (x, z) => {
+      const i = Math.floor((x - x0) / C), j = Math.floor((z - z0) / C);
+      if (i < 0 || j < 0 || i >= nx || j >= nz) return null;
+      const id = owner[j * nx + i];
+      return id > 0 && !wall[j * nx + i] ? res[id - 1].name : null;
+    },
+  };
 }

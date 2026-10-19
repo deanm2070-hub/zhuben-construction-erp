@@ -1,5 +1,5 @@
 import {
-  analyzeBuilding, buildBuilding, buildFromDxf, decodeDxf, DWG_VERSIONS, dwgSignature, guessLayerKind, guessUnits, parseDxf, sampleDxf,
+  analyzeBuilding, buildBuilding, buildFromDxf, decodeDxf, mergeDrawings, DWG_VERSIONS, dwgSignature, guessLayerKind, guessUnits, parseDxf, sampleDxf,
   UNIT_NAME, UNIT_SCALE, WALL_H, type BuildingAnalysis, type CadData, type DxfDrawing, type LayerKind, type ModelObject,
 } from '@cloud-modeler/core';
 import { useState } from 'react';
@@ -46,32 +46,45 @@ export function CadImport({ firstId, onBuilt, onSource, onClose }: {
     route(dxf, name);
   };
 
-  const onFile = async (f: File) => {
+  /** One file to a drawing; null after showing the error. */
+  const readOne = async (f: File, n: number, of: number): Promise<DxfDrawing | null> => {
     const raw = await f.arrayBuffer(), buf = new Uint8Array(raw);
     const sig = dwgSignature(buf);
     if (sig) {
       const ver = DWG_VERSIONS[sig] ? `AutoCAD ${DWG_VERSIONS[sig]}（${sig}）` : sig;
-      setSt({ s: 'reading', name: f.name, ver });
+      setSt({ s: 'reading', name: of > 1 ? `${f.name}（第 ${n}／${of} 個檔）` : f.name, ver });
       try {
         const dxf = await readDwg(raw, sig);
         onSource(f);
-        route(dxf, f.name);
-      } catch (e) { setSt({ s: 'error', msg: `DWG 讀取失敗：${(e as Error).message}。可以在 AutoCAD 另存成 DXF 再試一次。` }); }
-      return;
+        return dxf;
+      } catch (e) { setSt({ s: 'error', msg: `${f.name} 讀取失敗：${(e as Error).message}。可以在 AutoCAD 另存成 DXF 再試一次。` }); return null; }
     }
-    if (new TextDecoder('latin1').decode(buf.slice(0, 18)) === 'AutoCAD Binary DXF') return setSt({ s: 'error', msg: '這是二進位 DXF，請在 AutoCAD 另存為 ASCII DXF 再匯入。' });
-    onSource(f);
-    fromText(decodeDxf(buf), f.name);
+    if (new TextDecoder('latin1').decode(buf.slice(0, 18)) === 'AutoCAD Binary DXF') { setSt({ s: 'error', msg: `${f.name} 是二進位 DXF，請在 AutoCAD 另存為 ASCII DXF 再匯入。` }); return null; }
+    try {
+      const dxf = parseDxf(decodeDxf(buf));
+      onSource(f);
+      return dxf;
+    } catch { setSt({ s: 'error', msg: `${f.name} 解析失敗，請確認是 DWG 或 ASCII 格式的 DXF。` }); return null; }
+  };
+  /** Several files (architectural + structural sets) are read one by one and laid side by side. */
+  const onFiles = async (files: File[]) => {
+    const ds: DxfDrawing[] = [];
+    for (let i = 0; i < files.length; i++) {
+      const d = await readOne(files[i], i + 1, files.length);
+      if (!d) return;
+      ds.push(d);
+    }
+    route(mergeDrawings(ds), files.map(f => f.name).join('、'));
   };
 
   const close = <button className="chip" onClick={onClose}>取消</button>;
   if (st.s === 'pick') return (
-    <Modal title="匯入 AutoCAD 圖面" desc="支援 DWG 與 DXF，直接在瀏覽器讀取。" onClose={onClose} actions={<>
+    <Modal title="匯入 AutoCAD 圖面" desc="支援 DWG 與 DXF，直接在瀏覽器讀取，可一次選多個檔。" onClose={onClose} actions={<>
       {close}
       <button className="chip" onClick={() => fromText(sampleDxf(), '範例 2房2廳.dxf')}>用範例 DXF 試試</button>
-      <label className="chip on">選擇檔案<input id="cad-file" type="file" accept=".dwg,.dxf" hidden onChange={e => { const f = e.target.files?.[0]; if (f) onFile(f); }} /></label>
+      <label className="chip on">選擇檔案<input id="cad-file" type="file" accept=".dwg,.dxf" multiple hidden onChange={e => { const fs = [...(e.target.files || [])]; if (fs.length) onFiles(fs); }} /></label>
     </>}>
-      <p>整套執照圖（各層平面、立面或剖面、門窗表放在同一個檔）會自動分出樓層，依高程算樓高，門窗依門窗表的尺寸與窗台高開口，蓋出整棟 3D。</p>
+      <p>整套執照圖（各層平面、立面或剖面、門窗表）會自動分出樓層，依高程算樓高，門窗依門窗表的尺寸與窗台高開口，蓋出整棟 3D。圖分在好幾個檔（例如建築圖和結構圖）時，按住 Ctrl（Mac 按 ⌘）一次選取全部檔案。</p>
       <p>只有一張平面圖時，牆圖層會擠出成有厚度的 3D 牆（雙線牆自動配對），門弧算門、窗線算窗，房間名稱用來自動分區算面積。</p>
     </Modal>
   );
@@ -133,7 +146,7 @@ function BuildingStep({ st, firstId, onBuilt, onLayers, onClose }: {
   const build = () => {
     const r = buildBuilding(dxf, { ...a, storeys }, name, firstId);
     const s = r.stats;
-    onBuilt({ objects: r.objects, cad: r.cad, summary: `已建立 ${s.floors} 層：${s.walls} 道牆、${s.doors} 樘門、${s.windows} 樘窗` });
+    onBuilt({ objects: r.objects, cad: r.cad, summary: `已建立 ${s.floors} 層：${s.walls} 道牆、${s.doors} 樘門、${s.windows} 樘窗` + (s.railings ? `、${s.railings} 段欄杆` : '') });
   };
   return (
     <Modal title="整棟自動建模" desc={`來源：${name}。確認辨識結果後建立 3D。`} onClose={onClose} actions={<>

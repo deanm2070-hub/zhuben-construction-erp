@@ -1,5 +1,5 @@
 /** All lengths are centimetres. Plan x grows east, z grows south (north is the top of the plan). */
-export type LayerKey = 'wall' | 'cabinet' | 'furniture' | 'bath' | 'door' | 'glass' | 'custom';
+export type LayerKey = 'wall' | 'slab' | 'stair' | 'rail' | 'cabinet' | 'furniture' | 'bath' | 'door' | 'glass' | 'custom';
 
 export interface BoxObject {
   id: number;
@@ -19,7 +19,13 @@ export interface BoxObject {
   color: number;
   /** storey key (1F, 2F … RF) for whole-building imports; y is then measured from 1F */
   floor?: string;
+  /** stair steps and stair handrail pieces: riser height, cm */
+  rise?: number;
+  /** on the first step of each stair: the whole stair for the takeoff (risers as labelled 上16) */
+  stair?: StairInfo;
 }
+
+export interface StairInfo { risers: number; flights: number; width: number; run: number; rise: number; landing: number }
 
 export interface DoorObject {
   id: number;
@@ -94,6 +100,8 @@ export interface TakeoffSettings {
   slab: number;
   /** rebar ratio, kg per m³ of concrete */
   rebar: number;
+  /** excavation depth for the foundation estimate, cm (default 150) */
+  dig?: number;
 }
 
 export interface ProjectModel {

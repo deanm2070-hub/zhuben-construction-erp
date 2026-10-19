@@ -20,6 +20,9 @@ export interface ViewerEvents {
 
 export const LAYER_COLORS: Record<string, { name: string; color: number }> = {
   wall: { name: '結構牆', color: 0x3f4b5e },
+  slab: { name: '樓板', color: 0xb8b2a6 },
+  stair: { name: '樓梯', color: 0x9ca3af },
+  rail: { name: '欄杆扶手', color: 0x475569 },
   cabinet: { name: '櫃體', color: 0xf08c2e },
   furniture: { name: '家具', color: 0x8b5cf6 },
   bath: { name: '衛浴', color: 0x14b8a6 },
@@ -304,8 +307,72 @@ export class Viewer {
     g.add(header);
     return g;
   }
+  /** a part drawn in the material of another layer (frames, handrails), not pickable */
+  private part(o: BoxObject, layer: BoxObject['layer'], color: number, w: number, h: number, d: number, x: number, y: number, z: number) {
+    const m = this.boxMesh(w, h, d, { ...o, layer, color });
+    m.position.set(x, y, z);
+    m.raycast = () => {};
+    return m;
+  }
+  /** Windows get an aluminium frame and mullions; glass railings a handrail; railings posts and a top rail. */
+  private buildFramed(o: BoxObject): THREE.Object3D | null {
+    const railing = /欄杆|扶手/.test(o.name);
+    if (o.layer !== 'rail' && !(o.layer === 'glass' && (railing || o.h >= 40))) return null;
+    const along = o.w >= o.d, L = along ? o.w : o.d, T = along ? o.d : o.w;
+    const g = new THREE.Group();
+    g.position.set(o.x, o.y, o.z);
+    g.rotation.y = (o.rot || 0) + (along ? 0 : Math.PI / 2);
+    const metal = 0x8d939b;
+    if (o.layer === 'rail') {
+      // top rail and balusters every 12 cm
+      g.add(this.part(o, 'rail', o.color, L, 4, 5, 0, o.h - 2, 0));
+      const n = Math.max(1, Math.round(L / 12));
+      for (let i = 0; i <= n; i++) g.add(this.part(o, 'rail', o.color, 1.6, o.h - 4, 1.6, -L / 2 + L * i / n, (o.h - 4) / 2, 0));
+      const hit = this.boxMesh(L, o.h, Math.max(T, 4), { ...o, layer: 'glass' });
+      (hit.material as THREE.Material).visible = false;
+      hit.position.y = o.h / 2;
+      hit.userData.id = o.id;
+      g.add(hit);
+      return g;
+    }
+    const pane = this.boxMesh(L, railing ? o.h - 6 : o.h, Math.min(T, 2), { ...o, w: L, d: 2 });
+    pane.position.y = railing ? (o.h - 6) / 2 : o.h / 2;
+    pane.userData.id = o.id;
+    g.add(pane);
+    if (railing) {
+      g.add(this.part(o, 'rail', metal, L, 5, 6, 0, o.h - 2.5, 0));
+      for (const x of [-L / 2 + 2, L / 2 - 2]) g.add(this.part(o, 'rail', metal, 4, o.h - 5, 4, x, (o.h - 5) / 2, 0));
+      return g;
+    }
+    const f = 5, D = Math.max(6, Math.min(T, 10));
+    g.add(this.part(o, 'rail', metal, L, f, D, 0, f / 2, 0));
+    g.add(this.part(o, 'rail', metal, L, f, D, 0, o.h - f / 2, 0));
+    const n = Math.max(1, Math.round(L / 150));
+    for (let i = 0; i <= n; i++) g.add(this.part(o, 'rail', metal, f, o.h, D, -L / 2 + f / 2 + (L - f) * i / n, o.h / 2, 0));
+    return g;
+  }
+  private buildShutter(o: DoorObject) {
+    const len = o.b - o.a, h = o.h || 210, g = new THREE.Group();
+    const cx = o.axis === 'x' ? (o.a + o.b) / 2 : o.at, cz = o.axis === 'x' ? o.at : (o.a + o.b) / 2;
+    g.position.set(cx, o.y || 0, cz);
+    g.rotation.y = o.axis === 'x' ? 0 : Math.PI / 2;
+    const slats = Math.max(4, Math.round(h / 12));
+    for (let i = 0; i < slats; i++) {
+      const m = this.boxMesh(len, h / slats - 0.6, 3, { ...o, color: 0x9aa3ad } as unknown as ModelObject);
+      m.position.y = (i + 0.5) * h / slats;
+      m.userData.id = o.id;
+      g.add(m);
+    }
+    const box = this.boxMesh(len + 10, 30, 30, { ...o, color: 0x6b7280 } as unknown as ModelObject);
+    box.position.set(0, h + 15, 8);
+    box.raycast = () => {};
+    g.add(box);
+    return g;
+  }
   private buildObj(o: ModelObject): THREE.Object3D {
-    if (isDoor(o)) return this.buildDoor(o);
+    if (isDoor(o)) return /捲門/.test(o.name) ? this.buildShutter(o) : this.buildDoor(o);
+    const framed = this.buildFramed(o);
+    if (framed) return framed;
     const m = this.boxMesh(o.w, o.h, o.d, o);
     m.position.set(o.x, o.y + o.h / 2, o.z);
     m.rotation.y = o.rot || 0;

@@ -8,3 +8,5 @@ export * from './rooms';
 export * from './takeoff';
 export * from './dwgDb';
 export * from './building';
+export * from './legend';
+export * from './stairs';

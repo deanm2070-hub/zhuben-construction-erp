@@ -60,6 +60,15 @@ export function takeoffWorkbook(t: Takeoff, project: string) {
   const ws2 = XLSX.utils.aoa_to_sheet(detail);
   ws2['!cols'] = [{ wch: 8 }, { wch: 28 }, { wch: 10 }, { wch: 6 }];
   XLSX.utils.book_append_sheet(wb, ws2, '裝修細項');
+  const calc: (string | number)[][] = [['工程名稱:  ' + project + '  數量計算式'], [], ['工程項目', '樓層', '位置／構件', '計算式', '數量', '單位']];
+  for (const k of [...new Set(t.calc.map(c => `${c.item}|${c.unit}`))]) {
+    const [item, unit] = k.split('|'), rows = t.calc.filter(c => c.item === item && c.unit === unit);
+    for (const c of rows) calc.push([c.item, c.fl, c.where, c.expr, c.q, c.unit]);
+    calc.push(['', '', '', `${item} 小計`, Math.round(rows.reduce((s, c) => s + c.q, 0) * 100) / 100, unit], []);
+  }
+  const ws4 = XLSX.utils.aoa_to_sheet(calc);
+  ws4['!cols'] = [{ wch: 36 }, { wch: 6 }, { wch: 30 }, { wch: 70 }, { wch: 10 }, { wch: 6 }];
+  XLSX.utils.book_append_sheet(wb, ws4, '數量計算式');
   const rooms: (string | number)[][] = [['空間', '面積㎡', '坪', '周長 m', '地坪', '天花', '牆面']];
   for (const r of t.rooms) rooms.push([r.name, Math.round(r.area * 100) / 100, Math.round(r.area / 3.3058 * 100) / 100, Math.round(r.perim * 10) / 10, r.fin.f, r.fin.c, r.fin.w]);
   XLSX.utils.book_append_sheet(wb, XLSX.utils.aoa_to_sheet(rooms), '空間做法');
