@@ -144,6 +144,25 @@ describe('stairs', () => {
   });
 });
 
+describe('structural plans', () => {
+  it('puts the beams of 二層結構平面圖 under the 2F slab with their marked size', () => {
+    const arch = drawingSet();
+    const st: DxfDrawing = { segs: [], polys: [], texts: [], arcs: [], layers: new Map(), units: 5, version: '', blockCount: 0, inserts: 0 };
+    st.texts.push({ layer: '0', x: 0, y: 0, s: '二層結構平面圖', h: 60 }, { layer: 'GTAG', x: 300, y: 800, s: '1' }, { layer: 'GTAG', x: 200, y: 700, s: 'A' });
+    // beam along the window wall line y 680–700, 40 wide on the plan
+    st.segs.push({ layer: 'BM1', a: [300, 670], b: [900, 670] }, { layer: 'BM1', a: [300, 710], b: [900, 710] });
+    st.texts.push({ layer: 'TB', x: 500, y: 715, s: 'G1a(40x70)', h: 20 });
+    const d = mergeDrawings([st, arch]), a = analyzeBuilding(d)!;
+    const beams = buildBuilding(d, a, 'x').objects.filter(o => /梁/.test(o.name)) as any[];
+    const g = beams.find(b => /G1a/.test(b.name));
+    expect(g).toBeTruthy();
+    expect(g.floor).toBe('1F');
+    expect([g.d, g.h]).toEqual([40, 70]);
+    expect(g.y + g.h).toBe(a.storeys[1].base);
+    expect(beams.some(b => /估算/.test(b.name) && b.floor === '1F')).toBe(false);
+  });
+});
+
 describe('mergeDrawings', () => {
   it('lays several files side by side', () => {
     const one = (x: number): DxfDrawing => ({ segs: [{ layer: 'A', a: [x, 0], b: [x + 100, 0] }], polys: [], texts: [{ layer: 'T', x, y: 0, s: 'x' }], arcs: [], layers: new Map([['A', 1]]), units: 5, version: '', blockCount: 0, inserts: 0 });

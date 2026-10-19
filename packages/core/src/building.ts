@@ -12,7 +12,7 @@ import type { BoxObject, CadData, CadFloor, DoorObject, ModelObject } from './ty
  * marks, and a door & window schedule. Each plan becomes one or more storeys.
  */
 
-export type ViewKind = 'plan' | 'elevation' | 'section' | 'schedule';
+export type ViewKind = 'plan' | 'elevation' | 'section' | 'schedule' | 'structure';
 export interface SheetView {
   title: string;
   kind: ViewKind;
@@ -98,15 +98,18 @@ export function findViews(d: DxfDrawing): SheetView[] {
   }
   // sheets often skip a slot, so the typical view width is the smaller spacings
   const w = quantile(gaps, 0.25) || (hMax ? hMax * 30 : 3000);
-  return titles.filter(t => !SKIP_RE.test(t.s)).map(t => {
+  const STRUCT = /結構平面圖$/;
+  return titles.filter(t => STRUCT.test(t.s.replace(/\s/g, '')) || !SKIP_RE.test(t.s)).map(t => {
     const s = t.s.replace(/\s/g, '');
-    const kind: ViewKind = /平面圖$/.test(s) ? 'plan' : /立面圖$/.test(s) ? 'elevation' : /剖面圖$/.test(s) ? 'section' : 'schedule';
+    const kind: ViewKind = STRUCT.test(s) ? 'structure' : /平面圖$/.test(s) ? 'plan' : /立面圖$/.test(s) ? 'elevation' : /剖面圖$/.test(s) ? 'section' : 'schedule';
     let top = w * 1.3;
     for (const o of titles) if (o !== t && o.y > t.y + w * 0.2 && Math.abs(o.x - t.x) < w * 0.5) top = Math.min(top, o.y - t.y);
     const box: SheetView['box'] = kind === 'schedule'
       ? [t.x - w * 0.3, t.y - w * 0.05, t.x + w * 2, t.y + top]
       : [t.x - w * 0.15, t.y - w * 0.02, t.x + w * 0.85, t.y + top];
-    return { title: s, kind, x: t.x, y: t.y, box, floors: kind === 'plan' ? parseFloors(s) : [] };
+    // 基礎及一層結構平面圖 → 1F (its foundation beams sit under the ground floor)
+    const floors = kind === 'plan' ? parseFloors(s) : kind === 'structure' ? parseFloors(s.replace(STRUCT, '').replace(/^基礎及?/, '')) : [];
+    return { title: s, kind, x: t.x, y: t.y, box, floors };
   });
 }
 
@@ -519,6 +522,39 @@ export interface BuildingResult {
   stats: { floors: number; walls: number; doors: number; windows: number; railings: number };
 }
 
+const BEAM_LAYER = /^BM|BEAM|梁/i;
+/** Beam marks on structural plans: G1a(30x60), FG4a(50x155/195), or the mark and the size as two texts. */
+const BEAM_MARK = /^(F?[GBJ]\d*[a-z]?|F?J\d*[a-z]?)\s*\((\d{2,3})\s*[xX×]\s*(\d{2,3})(?:\s*\/\s*(\d{2,3}))?\)$/;
+const BEAM_CODE = /^F?[GBJ]\d*[a-z]?$/, BEAM_SIZE = /^\((\d{2,3})\s*[xX×]\s*(\d{2,3})(?:\s*\/\s*(\d{2,3}))?\)$/;
+
+/** Beams of one structural plan: paired beam outlines, each named and sized by the nearest beam mark. */
+function readBeams(d: DxfDrawing, v: SheetView, X: (x: number) => number, Z: (y: number) => number, S: number) {
+  const segs = d.segs.filter(s => BEAM_LAYER.test(s.layer) && inBox(v.box, s.a[0], s.a[1]) && inBox(v.box, s.b[0], s.b[1]));
+  const texts = d.texts.filter(t => inBox(v.box, t.x, t.y));
+  const marks: { code: string; w: number; h: number; x: number; z: number }[] = [];
+  for (const t of texts) {
+    const m = BEAM_MARK.exec(t.s.trim());
+    if (m) { marks.push({ code: m[1], w: +m[2], h: m[4] ? (+m[3] + +m[4]) / 2 : +m[3], x: X(t.x), z: Z(t.y) }); continue; }
+    if (!BEAM_CODE.test(t.s.trim())) continue;
+    const sz = texts.map(o => ({ o, m: BEAM_SIZE.exec(o.s.trim()) })).filter(q => q.m && Math.hypot(q.o.x - t.x, q.o.y - t.y) < (t.h || 25) * 4)
+      .sort((p, q) => Math.hypot(p.o.x - t.x, p.o.y - t.y) - Math.hypot(q.o.x - t.x, q.o.y - t.y))[0];
+    if (sz) marks.push({ code: t.s.trim(), w: +sz.m![1], h: sz.m![3] ? (+sz.m![2] + +sz.m![3]) / 2 : +sz.m![2], x: X(t.x), z: Z(t.y) });
+  }
+  const lines = pairWalls(segs.map(s => ({ x1: X(s.a[0]), z1: Z(s.a[1]), x2: X(s.b[0]), z2: Z(s.b[1]) }))).filter(l => !l.single && l.t >= 15 && l.t <= 80);
+  return lines.map(l => {
+    const len = Math.hypot(l.bx - l.ax, l.bz - l.az), ux = (l.bx - l.ax) / len, uz = (l.bz - l.az) / len;
+    // the mark is written beside the beam, within its length
+    let best: (typeof marks)[number] | null = null, bd = Infinity;
+    for (const m of marks) {
+      const u = (m.x - l.ax) * ux + (m.z - l.az) * uz, off = Math.abs((m.x - l.ax) * uz - (m.z - l.az) * ux);
+      if (u < -60 || u > len + 60 || off > 70 * S + l.t) continue;
+      const dist = off + Math.max(0, -u, u - len);
+      if (dist < bd) { bd = dist; best = m; }
+    }
+    return { ax: l.ax, az: l.az, bx: l.bx, bz: l.bz, len, t: l.t, mark: best };
+  });
+}
+
 /** Builds every storey of the analysed drawing set, stacked at its level. */
 export function buildBuilding(d: DxfDrawing, a: BuildingAnalysis, name: string, firstId = 1): BuildingResult {
   const S = a.scale;
@@ -639,8 +675,30 @@ export function buildBuilding(d: DxfDrawing, a: BuildingAnalysis, name: string, 
     }
     floors.push({ key: st.key, title: plan.title, y: st.base, h: H, segs, texts });
   }
+  // beams from structural plans (二層結構平面圖 → under the 2F slab), lined up on the grid bubbles
+  const drawn = new Set<string>();
+  for (const v of a.views.filter(v => v.kind === 'structure' && v.floors.length)) {
+    const gs = planGeo(d, v);
+    if (!gs.gx.length || !gs.gy.length) continue;
+    const X = (x: number) => (x - gs.ox - minX) * S, Z = (y: number) => (maxY - (y - gs.oy)) * S;
+    const beams = readBeams(d, v, X, Z, S).filter(b => b.mark);
+    if (!beams.length) continue;
+    for (const key of v.floors) {
+      const i = a.storeys.findIndex(s => s.key === key);
+      if (i < 0) continue;
+      // the beams carry this floor: they hang under its slab, in the storey below (foundation beams under 1F)
+      const host = i > 0 ? a.storeys[i - 1] : a.storeys[0], top = a.storeys[i].base;
+      if (i > 0) drawn.add(host.key);
+      for (const b of beams) {
+        const m = b.mark!, ground = i === 0, along = Math.abs(b.bx - b.ax) >= Math.abs(b.bz - b.az);
+        objects.push({ id: id++, layer: 'slab', name: `${ground ? '地梁' : '梁'} ${m.code}（結構圖）`, floor: host.key, y: top - m.h, h: m.h, color: 0xcfc9bd,
+          x: (b.ax + b.bx) / 2, z: (b.az + b.bz) / 2, ...(along ? { w: b.len, d: m.w } : { w: m.w, d: b.len }) });
+      }
+    }
+  }
   // beams are rarely on architectural plans: estimate one along every grid line, under the slab of the storey above
   for (const { st, xs, zs } of beamLines) {
+    if (drawn.has(st.key)) continue;
     const next = a.storeys[a.storeys.indexOf(st) + 1], above = next ? slabsOf.get(next.key) || [] : [];
     const beam = (axis: 'x' | 'z', at: number) => {
       // where the slab above covers the grid line

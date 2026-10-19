@@ -187,6 +187,12 @@ export function computeTakeoff(inp: TakeoffInput): Takeoff {
   for (let [k, list] of byDims(beams, o => `${Math.round(Math.min(o.w, o.d))}×${Math.round(o.h)}`)) {
     const b = Math.min(list[0].w, list[0].d), h = list[0].h, L = sum(list, o => Math.max(o.w, o.d));
     if (/估算/.test(list[0].name)) k = `${k}（估算：沿柱列軸線，待結構圖）`;
+    else {
+      // marks from the structural plans: 地梁 FG1a、FB1a … / 梁 G1a、B1a …
+      const marks = [...new Set(list.map(o => /^(地?梁) (\S+?)（/.exec(o.name)).filter(Boolean).map(m => m![2]))].sort();
+      const kind = list.some(o => /^地梁/.test(o.name)) ? '地梁' : '';
+      if (marks.length) k = `${k}（${kind ? '地梁 ' : ''}${marks.join('、')}）`;
+    }
     row(SEC.rc, CONCRETE, 'M3', `梁 ${k}`, `長 ${m(L)} m × 寬 ${m(b)} m × (梁深 ${m(h)} − 板厚 ${m(S.slab)}) m`, L * b * Math.max(0, h - S.slab) / 1e6);
     row(SEC.rc, FORMWORK, '㎡', `梁 ${k}`, `長 ${m(L)} m × (底 ${m(b)} + 2 側 × ${m(h - S.slab)}) m`, L * (b + 2 * Math.max(0, h - S.slab)) / 1e4);
   }
