@@ -32,6 +32,8 @@ export function Editor({ projectId, importNow, onExit }: { projectId: string; im
   const [delta, setDelta] = useState('ΔX 0 · ΔZ 0 cm');
   const [toast, setToast] = useState({ text: '', show: false });
   const [dialog, setDialog] = useState<'none' | 'cad' | 'takeoff'>(importNow ? 'cad' : 'none');
+  // the import dialog is for a new project only: a reload (or the 更新 button) must not bring it back over the model
+  useEffect(() => { if (importNow) history.replaceState(null, '', `#/p/${projectId}`); }, []);
   const [underlay, setUnderlay] = useState(false);
   const [floor, setFloor] = useState<string | null>(null);
   const [finishes, setFinishes] = useState<Record<string, Partial<FinishChoice>>>({});
