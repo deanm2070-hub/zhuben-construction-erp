@@ -109,7 +109,7 @@ export function CadImport({ firstId, onBuilt, onSource, onClose }: {
           <b>{st.files.length ? '＋ 再加入檔案' : '點這裡選擇檔案'}</b>
           <span>DWG 或 DXF，可以一次選多個，也可以分次加入（建築圖、結構圖）</span>
           <small className="how">{MULTI_HINT}</small>
-          <input id="cad-file" type="file" multiple hidden onChange={e => { add(e.target.files); e.target.value = ''; }} />
+          <input id="cad-file" className="tap-input" type="file" multiple onChange={e => { add(e.target.files); e.target.value = ''; }} />
         </label>
         {st.files.length > 0 && <ul className="files">
           {st.files.map((f, i) => <li key={f.name + f.size}>
