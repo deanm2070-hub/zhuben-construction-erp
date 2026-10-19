@@ -136,9 +136,10 @@ export function Editor({ projectId, importNow, onExit }: { projectId: string; im
       <div className="bars">
         <div className="row">
           <button className="chip ghost" onClick={async () => { if (save !== 'saved') await persist(true); onExit(); }}>← 專案</button>
-          <span className="brand" title={name}>{name}</span>
+          <span className="brand title" title={name}>{name}</span>
           <span className="save" role="status">{saveLabel}</span>
-          <span className="sep" />
+        </div>
+        <div className="row wrap">
           {MODES.map(([k, l]) => <button key={k} className={`chip ${mode === k ? 'on' : ''}`} onClick={() => { v().setMode(k); setMode(k); }}>{l}</button>)}
           <span className="sep" />
           <button className={`chip ${magnet ? 'on' : ''}`} onClick={() => { v().setMagnet(!magnet); setMagnet(!magnet); showToast(magnet ? '磁吸貼合：關' : '磁吸貼合：開'); }}>磁吸貼合</button>
@@ -152,7 +153,7 @@ export function Editor({ projectId, importNow, onExit }: { projectId: string; im
           <button className="chip" onClick={() => download(`${name || 'model'}.obj`, v().exportOBJ(name), 'text/plain')}>匯出 .OBJ（SketchUp）</button>
           <button className="chip ghost" onClick={toggleTheme}>{darkNow ? '切換白底介面' : '切換黑底介面'}</button>
         </div>
-        <div className="row">
+        <div className="row wrap">
           <span className="lbl">SCENES</span>
           {SCENES.map(([k, l]) => <button key={k} className={`chip ${scene === k ? 'on' : ''}`} onClick={() => { v().goScene(k); setScene(k); if (tool === 'walk') setTool('orbit'); }}>{l}</button>)}
           {viewer.current && viewer.current.floors.length > 0 && <>

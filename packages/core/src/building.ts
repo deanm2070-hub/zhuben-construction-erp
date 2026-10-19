@@ -166,6 +166,9 @@ export function readLevels(d: DxfDrawing, views: SheetView[], scale: number): Re
   return out;
 }
 
+/** upstand round the top roof slab (屋頂層), read off the sections, cm */
+const ROOF_UPSTAND = 30;
+
 export function analyzeBuilding(d: DxfDrawing, defaultH = WALL_H): BuildingAnalysis | null {
   const views = findViews(d);
   // when two files both have a plan of a storey (architectural and structural), the one with the most wall lines wins
@@ -185,7 +188,7 @@ export function analyzeBuilding(d: DxfDrawing, defaultH = WALL_H): BuildingAnaly
     if (k in levels) base = levels[k];
     else if (i > 0) base = storeys[i - 1].base + storeys[i - 1].h;
     const above = lv.find(([, v]) => v > base + 1);
-    const h = k === 'RF' || (!above && i === keys.length - 1 && k.startsWith('R')) ? parapet : above ? above[1] - base : defaultH;
+    const h = k === 'RF' ? ROOF_UPSTAND : !above && i === keys.length - 1 && k.startsWith('R') ? parapet : above ? above[1] - base : defaultH;
     storeys.push({ key: k, title: plans.find(p => p.floors.includes(k))!.title, base, h });
   }
   return { views, plans, levels, storeys, schedule, parapet, scale };
@@ -473,6 +476,8 @@ function railingDefault(d: DxfDrawing, a: BuildingAnalysis): Railing {
  */
 function railingFor(w: BoxObject, notes: { x: number; z: number; s: string }[], def: Railing, label: string, parapet: number | null): Railing {
   if (/露台/.test(label) && parapet) return { h: parapet, glass: false, solid: true, name: '女兒牆（CAD）' };
+  // a roof deck with a 女兒牆 height on the drawings is walled by an RC parapet, level with the column heads
+  if (/平台/.test(label) && parapet) return { h: parapet, glass: false, solid: true, name: '女兒牆（CAD）' };
   if (/平台/.test(label)) {
     const m = notes.map(n => HEIGHT_NOTE.exec(n.s)).find(m => m && /欄杆|扶手/.test(m[1]));
     if (m) { const glass = /玻璃/.test(m[1]); return { h: +m[2], glass, solid: false, name: glass ? '玻璃欄杆（CAD）' : '欄杆（CAD）' }; }
@@ -520,7 +525,7 @@ export interface BuildingResult {
   objects: ModelObject[];
   cad: CadData;
   analysis: BuildingAnalysis;
-  stats: { floors: number; walls: number; doors: number; windows: number; railings: number };
+  stats: { floors: number; walls: number; doors: number; windows: number; railings: number; heads: number };
 }
 
 const BEAM_LAYER = /^BM|BEAM|梁/i;
@@ -617,12 +622,13 @@ export function buildBuilding(d: DxfDrawing, a: BuildingAnalysis, name: string, 
   let id = firstId;
   const objects: ModelObject[] = [];
   const floors: CadFloor[] = [];
-  let nWalls = 0, nDoors = 0, nWins = 0, nRails = 0;
+  let nWalls = 0, nDoors = 0, nWins = 0, nRails = 0, cutHeads = 0;
   let below: StairPlan['holes'] = [];
   const railing = railingDefault(d, a), beamDepth = beamDepthOf(d, a);
   // 女兒牆高度 written anywhere (plans, elevations, sections)
   const parapetNote = d.texts.some(t => /女兒牆/.test(HEIGHT_NOTE.exec(t.s)?.[1] || '')) ? a.parapet : null;
   const slabsOf = new Map<string, { x0: number; x1: number; z0: number; z1: number }[]>();
+  const terraces = new Map<string, { x: number; z: number; s: string }[]>();
   const beamLines: { st: Storey; xs: number[]; zs: number[] }[] = [];
 
   for (const st of a.storeys) {
@@ -689,6 +695,7 @@ export function buildBuilding(d: DxfDrawing, a: BuildingAnalysis, name: string, 
     if (!parapet) beamLines.push({ st, xs: g.gx.map(X), zs: g.gy.map(Z) });
     const holes = below;
     slabsOf.set(st.key, []);
+    terraces.set(st.key, texts.filter(t => /露台|平台/.test(t.s) && !/屋突屋頂平台|上方/.test(t.s) || /屋突屋頂平台/.test(t.s)));
     below = stairs.flatMap(sp => sp.holes);
     for (const r of slabRects(walls.length ? [...walls, ...shut, ...slabEdges] : walls, texts, W, D, holes)) {
       add({ layer: 'slab', name: st.key === '1F' ? '地坪（CAD）' : st.key === 'RF' ? '屋頂板（CAD）' : '樓板（CAD）', x: (r.x0 + r.x1) / 2, z: (r.z0 + r.z1) / 2, w: r.x1 - r.x0, d: r.z1 - r.z0, h: SLAB, y: -SLAB, color: 0xd6d1c7 });
@@ -776,12 +783,30 @@ export function buildBuilding(d: DxfDrawing, a: BuildingAnalysis, name: string, 
     for (const x of xs) if (x > -5 && x < W + 5) beam('z', x);
     for (const z of zs) if (z > -5 && z < D + 5) beam('x', z);
   }
+  // columns and walls standing on a terrace or roof deck (nothing above them) end level with the parapet round it
+  const headH = parapetNote ?? a.parapet;
+  a.storeys.forEach((st, i) => {
+    const next = a.storeys[i + 1];
+    if (!next) return;
+    const cover = slabsOf.get(next.key) || [];
+    for (const o of objects) {
+      if (!isBox(o) || o.floor !== st.key || o.layer !== 'wall' || o.rot || o.y !== st.base || o.h < headH + 40 || o.h < st.h - 5) continue;
+      if (/窗台|窗楣|門楣|隔間牆下/.test(o.name)) continue;
+      const inside = (r: { x0: number; x1: number; z0: number; z1: number }) => o.x >= r.x0 - 30 && o.x <= r.x1 + 30 && o.z >= r.z0 - 30 && o.z <= r.z1 + 30;
+      // a terrace's own slab: a 露台 / 平台 label inside it, the sunshade slab over it does not count as a roof
+      const onTerrace = (slabsOf.get(st.key) || []).some(r => inside(r) && (terraces.get(st.key) || []).some(t => t.x >= r.x0 && t.x <= r.x1 && t.z >= r.z0 && t.z <= r.z1));
+      if (!onTerrace && cover.some(inside)) continue;
+      o.h = headH;
+      o.name = /柱/.test(o.name) || o.rc ? o.name : `${o.name}（露台頂，同女兒牆高）`;
+      cutHeads++;
+    }
+  });
   const spec = readRebarSpec(d, a.storeys.map(s => s.key));
   return {
     objects,
     cad: { name, W, D, segs: [], texts: [], doors: [], floors, ...(spec ? { rc: { spec, panels: rcPanels } } : {}) },
     analysis: a,
-    stats: { floors: floors.length, walls: nWalls, doors: nDoors, windows: nWins, railings: nRails },
+    stats: { floors: floors.length, walls: nWalls, doors: nDoors, windows: nWins, railings: nRails, heads: cutHeads },
   };
 }
 
