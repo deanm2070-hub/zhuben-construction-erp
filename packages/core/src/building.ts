@@ -38,6 +38,8 @@ export interface BuildingAnalysis {
   scale: number;
   /** layers read as walls because their lines pair up like double-line walls (drawings whose layer names say nothing) */
   wallLayers: string[];
+  /** layers whose repeated small squares are columns (named by colour or pen rather than COL) */
+  colLayers: string[];
 }
 
 const TITLE_RE = /(平面圖|立面圖|剖面圖|門窗表|門窗圖|門窗詳圖)$/;
@@ -178,7 +180,12 @@ export function analyzeBuilding(d: DxfDrawing, defaultH = WALL_H): BuildingAnaly
   const views = findViews(d);
   const planViews = views.filter(v => v.kind === 'plan' && v.floors.length);
   if (!planViews.length) return null;
+  // a plan with nothing above its title would span a whole column of the sheet: no taller than its siblings
+  const hs = planViews.map(v => v.box[3] - v.box[1]).sort((a, b) => a - b), med = hs[Math.floor((hs.length - 1) / 2)];
+  for (const v of planViews) if (v.box[3] - v.box[1] > med * 2.5) v.box[3] = v.box[1] + med * 1.4;
+  growPlans(d, planViews);
   const { scale, wallLayers } = learnWalls(d, planViews);
+  const colLayers = wallLayers.length ? learnColumns(d, planViews, scale) : [];
   extraWall = new Set(wallLayers); scaleNow = scale;
   // when two files both have a plan of a storey (architectural and structural), the one with the most wall lines wins
   const walls = (v: SheetView) => d.segs.filter(s => isWallLayer(s.layer) && inBox(v.box, s.a[0], s.a[1]) && inBox(v.box, s.b[0], s.b[1])).length;
@@ -198,7 +205,49 @@ export function analyzeBuilding(d: DxfDrawing, defaultH = WALL_H): BuildingAnaly
     const h = k === 'RF' ? ROOF_UPSTAND : !above && i === keys.length - 1 && k.startsWith('R') ? parapet : above ? above[1] - base : defaultH;
     storeys.push({ key: k, title: plans.find(p => p.floors.includes(k))!.title, base, h });
   }
-  return { views, plans, levels, storeys, schedule, parapet, scale, wallLayers };
+  return { views, plans, levels, storeys, schedule, parapet, scale, wallLayers, colLayers };
+}
+
+/**
+ * A plan's region is guessed from its title, but the title is not always under the drawing's left edge.
+ * While lines keep running up to a side edge of the region, the region grows that way (by at most 70% of its width).
+ */
+function growPlans(d: DxfDrawing, plans: SheetView[]) {
+  for (const v of plans) {
+    const [x0, y0, x1, y1] = v.box, w = x1 - x0, step = w * 0.02, max = w * 0.7;
+    const busy = (a: number, b: number) => {
+      let n = 0;
+      for (const s of d.segs) {
+        const my = (s.a[1] + s.b[1]) / 2;
+        if (my < y0 || my > y1 || /TEXT|DIM|圖框|PEN|AREA/i.test(s.layer)) continue;
+        if ((s.a[0] >= a && s.a[0] <= b) || (s.b[0] >= a && s.b[0] <= b)) if (++n >= 8) return true;
+      }
+      return false;
+    };
+    let lo = x0, hi = x1;
+    while (x0 - lo < max && busy(lo - step, lo)) lo -= step;
+    while (hi - x1 < max && busy(hi, hi + step)) hi += step;
+    v.box = [lo, y0, hi, y1];
+  }
+}
+
+/** A square column outline: 25–100 cm on a side, at most 2:1. */
+const squareCol = (pts: Pt[], k: number) => {
+  if (pts.length < 4 || pts.length > 5) return null;
+  const xs = pts.map(q => q[0] * k), ys = pts.map(q => q[1] * k), w = Math.max(...xs) - Math.min(...xs), h = Math.max(...ys) - Math.min(...ys);
+  return w >= 25 && h >= 25 && w <= 100 && h <= 100 && Math.max(w, h) <= Math.min(w, h) * 2 ? { w, h, x: (Math.max(...xs) + Math.min(...xs)) / 2 / k, y: (Math.max(...ys) + Math.min(...ys)) / 2 / k } : null;
+};
+/** Layers drawing at least four equal small squares in the plans: those squares are columns. */
+function learnColumns(d: DxfDrawing, plans: SheetView[], k: number): string[] {
+  const seen = new Map<string, number>();
+  for (const p of d.polys) {
+    if (/TEXT|DIM|FURN|TOIL|DW|SYM|AREA|PEN|圖框|變更/i.test(p.layer)) continue;
+    const c = squareCol(p.pts, k);
+    if (!c || !plans.some(v => inBox(v.box, c.x, c.y))) continue;
+    const key = `${p.layer}|${Math.round(c.w / 5)}|${Math.round(c.h / 5)}`;
+    seen.set(key, (seen.get(key) || 0) + 1);
+  }
+  return [...new Set([...seen].filter(([, n]) => n >= 4).map(([key]) => key.split('|')[0]))];
 }
 
 let extraWall = new Set<string>(), scaleNow = 0;
@@ -215,7 +264,7 @@ function learnWalls(d: DxfDrawing, plans: SheetView[]): { scale: number; wallLay
   if (named) return { scale: header, wallLayers: [] };
   const byLayer = new Map<string, DxfSeg[]>();
   for (const v of plans) for (const sg of d.segs) {
-    if (!inBox(v.box, sg.a[0], sg.a[1]) || !inBox(v.box, sg.b[0], sg.b[1]) || guessLayerKind(sg.layer) !== 'line' || /TEXT|AREA|PEN|DIM|圖框|TOIL|DOOR|DW|STAIR|SYM|AID|PAVE/i.test(sg.layer)) continue;
+    if (!inBox(v.box, sg.a[0], sg.a[1]) || !inBox(v.box, sg.b[0], sg.b[1]) || guessLayerKind(sg.layer) !== 'line' || /TEXT|AREA|PEN|DIM|圖框|TOIL|DOOR|DW|STAIR|SYM|AID|PAVE|變更/i.test(sg.layer)) continue;
     (byLayer.get(sg.layer) || byLayer.set(sg.layer, []).get(sg.layer)!).push(sg);
   }
   let best = { scale: header, layers: [] as string[], total: 0 };
@@ -228,7 +277,8 @@ function learnWalls(d: DxfDrawing, plans: SheetView[]): { scale: number; wallLay
       const len = w.reduce((n, x) => n + Math.hypot(x.bx - x.ax, x.bz - x.az), 0);
       if (len >= 1000 && w.length >= 6) { layers.push(l); total += len; }
     }
-    if (total > best.total * 1.2) best = { scale: k, layers, total };
+    // the header's unit and plain cm are the likely ones; 0.1 and 10 only when neither finds walls
+    if (total > best.total * 1.2 && (best.total === 0 || k === 1 || k === header || best.total < 1000)) best = { scale: k, layers, total };
   }
   return { scale: best.scale, wallLayers: best.layers };
 }
@@ -754,6 +804,15 @@ export function buildBuilding(d: DxfDrawing, a: BuildingAnalysis, name: string, 
       nRails++;
     }
     for (const b of walls) if (b.w > 1 && b.d > 1) add({ ...b, y: 0, name: parapet ? '女兒牆（CAD）' : b.name });
+    // columns drawn as plain squares on a colour- or pen-named layer
+    if (!parapet && a.colLayers.length) for (const p of d.polys) {
+      if (!a.colLayers.includes(p.layer)) continue;
+      const c = squareCol(p.pts, S);
+      if (!c || !inBox(plan.box, c.x, c.y)) continue;
+      const x = X(c.x), z = Z(c.y);
+      if (walls.some(w => w.name === '柱' && Math.abs(w.x - x) < 5 && Math.abs(w.z - z) < 5)) continue;
+      add({ layer: 'wall', name: '柱', x, z, w: Math.round(c.w), d: Math.round(c.h), y: 0, h: H, color: 0xeeebe5 });
+    }
     nWalls += walls.length;
     // stairs: steps, half landings and the inner handrail; the storey above gets a hole in its slab
     const stairSegs = g.segs.filter(s => STAIR_LAYER.test(s.layer)).map(s => ({ x1: X(s.a[0]), z1: Z(s.a[1]), x2: X(s.b[0]), z2: Z(s.b[1]) }));
