@@ -1,0 +1,6 @@
+# Pages and the version file are always revalidated so the home-screen shortcut gets new builds;
+# hashed bundles under /assets never change and can be cached for good.
+/*
+  Cache-Control: no-cache
+/assets/*
+  Cache-Control: public, max-age=31536000, immutable

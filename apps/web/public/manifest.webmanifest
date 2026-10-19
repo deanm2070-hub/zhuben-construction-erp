@@ -1,0 +1,9 @@
+{
+  "name": "雲端室內建模",
+  "short_name": "雲端建模",
+  "start_url": "/",
+  "display": "standalone",
+  "background_color": "#ffffff",
+  "theme_color": "#ffffff",
+  "lang": "zh-Hant"
+}

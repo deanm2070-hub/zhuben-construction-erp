@@ -7,7 +7,7 @@ import { readDwg } from '../lib/dwg';
 import { Modal } from './Modal';
 
 type Stage =
-  | { s: 'pick' }
+  | { s: 'pick'; files: File[] }
   | { s: 'reading'; name: string; ver: string }
   | { s: 'building'; name: string; dxf: DxfDrawing; a: BuildingAnalysis }
   | { s: 'layers'; name: string; dxf: DxfDrawing; map: Record<string, LayerKind>; unit: number; wallH: number }
@@ -25,7 +25,9 @@ export function CadImport({ firstId, onBuilt, onSource, onClose }: {
   onSource: (f: File) => void;
   onClose: () => void;
 }) {
-  const [st, setSt] = useState<Stage>({ s: 'pick' });
+  const [st, setSt] = useState<Stage>({ s: 'pick', files: [] });
+  const [picked, setPicked] = useState<File[]>([]);
+  const [drag, setDrag] = useState(false);
 
   const toLayers = (dxf: DxfDrawing, name: string) => {
     const map: Record<string, LayerKind> = {};
@@ -78,20 +80,44 @@ export function CadImport({ firstId, onBuilt, onSource, onClose }: {
   };
 
   const close = <button className="chip" onClick={onClose}>取消</button>;
-  if (st.s === 'pick') return (
-    <Modal title="匯入 AutoCAD 圖面" desc="支援 DWG 與 DXF，直接在瀏覽器讀取，可一次選多個檔。" onClose={onClose} actions={<>
-      {close}
-      <button className="chip" onClick={() => fromText(sampleDxf(), '範例 2房2廳.dxf')}>用範例 DXF 試試</button>
-      <label className="chip on">選擇檔案<input id="cad-file" type="file" accept=".dwg,.dxf" multiple hidden onChange={e => { const fs = [...(e.target.files || [])]; if (fs.length) onFiles(fs); }} /></label>
-    </>}>
-      <p>整套執照圖（各層平面、立面或剖面、門窗表）會自動分出樓層，依高程算樓高，門窗依門窗表的尺寸與窗台高開口，蓋出整棟 3D。圖分在好幾個檔（例如建築圖和結構圖）時，按住 Ctrl（Mac 按 ⌘）一次選取全部檔案。</p>
-      <p>只有一張平面圖時，牆圖層會擠出成有厚度的 3D 牆（雙線牆自動配對），門弧算門、窗線算窗，房間名稱用來自動分區算面積。</p>
-    </Modal>
-  );
+  if (st.s === 'pick') {
+    // files add up over several picks (handy on phones); the input is cleared so the same file can be picked again
+    const add = (list: FileList | null) => {
+      const fs = [...(list || [])];
+      if (!fs.length) return;
+      const files = [...st.files];
+      for (const f of fs) if (!files.some(o => o.name === f.name && o.size === f.size)) files.push(f);
+      setSt({ s: 'pick', files });
+    };
+    const start = () => { setPicked(st.files); onFiles(st.files); };
+    return (
+      <Modal title="匯入 AutoCAD 圖面" desc="支援 DWG 與 DXF，直接在瀏覽器讀取。" onClose={onClose} actions={<>
+        {close}
+        <button className="chip" onClick={() => fromText(sampleDxf(), '範例 2房2廳.dxf')}>用範例 DXF 試試</button>
+        <button className="chip on" disabled={!st.files.length} onClick={start}>{st.files.length > 1 ? `開始讀取 ${st.files.length} 個檔` : '開始讀取'}</button>
+      </>}>
+        <label className={`drop ${drag ? 'over' : ''}`}
+          onDragOver={e => { e.preventDefault(); setDrag(true); }} onDragLeave={() => setDrag(false)}
+          onDrop={e => { e.preventDefault(); setDrag(false); add(e.dataTransfer.files); }}>
+          <b>{st.files.length ? '＋ 再加入檔案' : '點這裡選擇檔案'}</b>
+          <span>DWG 或 DXF，可以一次選多個，也可以分次加入（建築圖、結構圖）</span>
+          <input id="cad-file" type="file" multiple hidden onChange={e => { add(e.target.files); e.target.value = ''; }} />
+        </label>
+        {st.files.length > 0 && <ul className="files">
+          {st.files.map((f, i) => <li key={f.name + f.size}>
+            <span>{f.name}</span><small>{(f.size / 1048576).toFixed(1)} MB</small>
+            <button className="chip ghost" aria-label={`移除 ${f.name}`} onClick={() => setSt({ s: 'pick', files: st.files.filter((_, j) => j !== i) })}>移除</button>
+          </li>)}
+        </ul>}
+        <p>整套執照圖（各層平面、立面或剖面、門窗表）會自動分出樓層，依高程算樓高，門窗依門窗表的尺寸與窗台高開口，蓋出整棟 3D。</p>
+        <p>只有一張平面圖時，牆圖層會擠出成有厚度的 3D 牆（雙線牆自動配對），門弧算門、窗線算窗，房間名稱用來自動分區算面積。</p>
+      </Modal>
+    );
+  }
   if (st.s === 'reading') return <Modal title="讀取 DWG 中" desc={`${st.name}｜${st.ver}`} onClose={() => {}} actions={null}><p>第一次開 DWG 會先下載讀取元件（約 10 MB），之後就很快。大型圖面需要幾秒鐘。</p></Modal>;
   if (st.s === 'building') return <BuildingStep st={st} firstId={firstId} onBuilt={onBuilt} onClose={onClose}
     onLayers={() => toLayers(st.dxf, st.name)} />;
-  if (st.s === 'error') return <Modal title="無法匯入" onClose={onClose} actions={<><button className="chip" onClick={() => setSt({ s: 'pick' })}>重新選擇</button>{close}</>}><p className="err">{st.msg}</p></Modal>;
+  if (st.s === 'error') return <Modal title="無法匯入" onClose={onClose} actions={<><button className="chip" onClick={() => setSt({ s: 'pick', files: picked })}>重新選擇</button>{close}</>}><p className="err">{st.msg}</p></Modal>;
 
   const { dxf, map, unit, wallH, name } = st;
   const layers = [...dxf.layers.entries()].sort((a, b) => b[1] - a[1]);

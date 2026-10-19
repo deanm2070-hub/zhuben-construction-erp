@@ -4,6 +4,7 @@ import { AuthPage } from './components/AuthPage';
 import { Editor } from './components/Editor';
 import { ProjectsPage } from './components/ProjectsPage';
 import { supabase, supabaseConfigError } from './lib/supabase';
+import { watchUpdates } from './lib/update';
 
 const readRoute = () => {
   const m = location.hash.match(/^#\/p\/([\w-]+)(\/import)?$/);
@@ -13,6 +14,7 @@ const readRoute = () => {
 export function App() {
   const [session, setSession] = useState<Session | null | undefined>(supabase ? undefined : null);
   const [route, setRoute] = useState(readRoute);
+  const [update, setUpdate] = useState(false);
 
   useEffect(() => {
     if (!supabase) return;
@@ -26,17 +28,24 @@ export function App() {
     return () => removeEventListener('hashchange', on);
   }, []);
 
-  if (supabaseConfigError) {
-    return (
-      <div className="page"><div className="wrap">
-        <h1>網站設定有誤</h1>
-        <p className="note">{supabaseConfigError}</p>
-        <p className="note">請到 Cloudflare 的 Build variables 檢查這兩個值，修正後重新部署。</p>
-      </div></div>
-    );
+  useEffect(() => watchUpdates(() => setUpdate(true), () => !readRoute()), []);
+
+  const page = view();
+  return update ? <>{page}<button className="update-bar" onClick={() => location.reload()}>有新版本，點這裡更新</button></> : page;
+
+  function view() {
+    if (supabaseConfigError) {
+      return (
+        <div className="page"><div className="wrap">
+          <h1>網站設定有誤</h1>
+          <p className="note">{supabaseConfigError}</p>
+          <p className="note">請到 Cloudflare 的 Build variables 檢查這兩個值，修正後重新部署。</p>
+        </div></div>
+      );
+    }
+    if (supabase && session === undefined) return <div className="page"><div className="wrap"><p className="note">載入中…</p></div></div>;
+    if (supabase && !session) return <AuthPage />;
+    if (route) return <Editor key={route.id} projectId={route.id} importNow={route.importNow} onExit={() => { location.hash = ''; }} />;
+    return <ProjectsPage email={session?.user.email ?? null} onOpen={(id, importNow) => { location.hash = `#/p/${id}${importNow ? '/import' : ''}`; }} />;
   }
-  if (supabase && session === undefined) return <div className="page"><div className="wrap"><p className="note">載入中…</p></div></div>;
-  if (supabase && !session) return <AuthPage />;
-  if (route) return <Editor key={route.id} projectId={route.id} importNow={route.importNow} onExit={() => { location.hash = ''; }} />;
-  return <ProjectsPage email={session?.user.email ?? null} onOpen={(id, importNow) => { location.hash = `#/p/${id}${importNow ? '/import' : ''}`; }} />;
 }
