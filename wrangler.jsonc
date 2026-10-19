@@ -1,0 +1,9 @@
+{
+  // Cloudflare Workers static-assets deploy for the web app (built by `npm run build`).
+  "name": "zhuben-construction-erp",
+  "compatibility_date": "2026-10-01",
+  "assets": {
+    "directory": "./apps/web/dist",
+    "not_found_handling": "single-page-application"
+  }
+}
