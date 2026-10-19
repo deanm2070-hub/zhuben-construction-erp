@@ -368,31 +368,83 @@ const STAIR_LAYER = /STAIR|樓梯|階梯/i;
 /**
  * Thin wall lines (12 cm or less) that border a space named 陽台 / 露台 / 平台 are its
  * railing or parapet, those bordering a 雨遮 are the canopy edge, and those round a
- * projection note (上方雨遮投影) are not built at all.
+ * projection note (上方雨遮投影) are not built at all. The outer edge of a 露台 / 平台, and
+ * of the roof deck of a 屋突 storey, is its parapet or railing whatever the wall thickness.
  */
-function classifyEdges(walls: BoxObject[], shut: BoxObject[], notes: { x: number; z: number; s: string }[], W: number, D: number) {
+function classifyEdges(walls: BoxObject[], shut: BoxObject[], notes: { x: number; z: number; s: string }[], W: number, D: number, roof: boolean) {
   const g = raster([...walls, ...shut], W, D);
-  const spaces: { kind: EdgeKind; cells: Uint8Array }[] = [];
+  const spaces: { kind: EdgeKind; label: string; cells: Uint8Array }[] = [];
   for (const n of notes) {
     const kind: EdgeKind | null = PLAN_NOTES.projection.test(n.s) ? 'projection' : PLAN_NOTES.canopy.test(n.s) ? 'canopy' : PLAN_NOTES.balcony.test(n.s) && n.s.length <= 8 ? 'balcony' : null;
     if (!kind) continue;
     // labels sit inside their space; a bigger space has leaked out through a doorway that was not found
     const cells = g.region(n.x, n.z, kind === 'balcony' ? 2500 : 4000);
-    if (cells) spaces.push({ kind, cells });
+    if (cells) spaces.push({ kind, label: n.s.trim(), cells });
   }
-  const out = new Map<BoxObject, EdgeKind>();
-  if (!spaces.length) return out;
-  for (const w of walls) {
-    if (w.rot || Math.min(w.w, w.d) > 12 || Math.max(w.w, w.d) < 40) continue;
-    const along = w.w >= w.d, half = Math.min(w.w, w.d) / 2 + 8, len = Math.max(w.w, w.d);
-    const hits = new Set<EdgeKind>();
-    for (const f of [0.2, 0.5, 0.8]) for (const side of [-1, 1]) {
-      const u = -len / 2 + len * f;
-      const k = g.cell(w.x + (along ? u : side * half), w.z + (along ? side * half : u));
-      for (const sp of spaces) if (k >= 0 && sp.cells[k]) hits.add(sp.kind);
+  // a note inside a terrace (上方透空遮陽, 雨遮 drawn over it) does not make the terrace a projection or canopy
+  const open = spaces.filter(sp => sp.kind === 'balcony');
+  for (let i = spaces.length - 1; i >= 0; i--) {
+    const sp = spaces[i];
+    if (sp.kind !== 'balcony' && open.some(b => b.cells.some((v, k) => v && sp.cells[k]))) spaces.splice(i, 1);
+  }
+  // outside the building: flooded in from the margin
+  const outside = g.region(-g.M + 1, -g.M + 1, g.N) || new Uint8Array(g.N);
+  // on a roof storey everything outdoors that is not the stair / machine rooms is roof deck
+  let deck: Uint8Array | null = null;
+  if (roof) {
+    deck = new Uint8Array(g.N);
+    const indoor = new Uint8Array(g.N);
+    for (const n of notes) {
+      if (!/梯|機房|水箱|室|電梯|梯廳|天井|管道/.test(n.s) || PLAN_NOTES.balcony.test(n.s)) continue;
+      const c = g.region(n.x, n.z, 2500);
+      if (c) for (let k = 0; k < g.N; k++) if (c[k]) indoor[k] = 1;
     }
-    const kind = hits.has('projection') ? 'projection' : hits.has('balcony') ? 'balcony' : hits.has('canopy') ? 'canopy' : null;
-    if (kind) out.set(w, kind);
+    // canopies and projections stay what they are
+    for (const sp of spaces) if (sp.kind !== 'balcony') for (let k = 0; k < g.N; k++) if (sp.cells[k]) indoor[k] = 1;
+    for (let k = 0; k < g.N; k++) if (!g.wall[k] && !outside[k] && !indoor[k]) deck[k] = 1;
+  }
+  const out = new Map<BoxObject, { kind: EdgeKind; label: string }>();
+  for (const w of walls) {
+    if (w.rot || Math.max(w.w, w.d) < 40) continue;
+    const along = w.w >= w.d, half = Math.min(w.w, w.d) / 2 + 8, len = Math.max(w.w, w.d), thin = Math.min(w.w, w.d) <= 12;
+    const hits = new Map<EdgeKind, number>(), labels: string[] = [];
+    let edge = 0, between = 0;
+    for (const f of [0.2, 0.5, 0.8]) {
+      const u = -len / 2 + len * f;
+      // the first open cell past this wall (and any wall layer drawn against it)
+      const at = (side: number) => {
+        let k = -1;
+        for (let o = half; o <= half + 60; o += 5) { k = g.cell(w.x + (along ? u : side * o), w.z + (along ? side * o : u)); if (k < 0 || !g.wall[k]) break; }
+        return k;
+      };
+      const ks = [at(-1), at(1)], here = new Set<EdgeKind>();
+      for (const k of ks) for (const sp of spaces) if (k >= 0 && sp.cells[k]) { here.add(sp.kind); if (sp.kind === 'balcony') labels.push(sp.label); }
+      for (const h of here) hits.set(h, (hits.get(h) || 0) + 1);
+      // a terrace or roof deck on one side and open air on the other: its parapet or railing, however thick
+      const terrace = (k: number) => k >= 0 && (spaces.some(sp => sp.cells[k] && sp.kind === 'balcony' && /露台|平台/.test(sp.label)) || !!deck?.[k]);
+      const air = (k: number) => k < 0 || !!outside[k];
+      if ((terrace(ks[0]) && air(ks[1])) || (terrace(ks[1]) && air(ks[0]))) edge++;
+      if (deck && terrace(ks[0]) && terrace(ks[1])) between++;
+    }
+    const label = labels[0] || (roof ? '屋頂平台' : '');
+    if (edge >= 2 && Math.min(w.w, w.d) <= 60) { out.set(w, { kind: 'balcony', label }); continue; }
+    // a line between two parts of a roof deck is only a step in the slab
+    if (between >= 2 && thin) { out.set(w, { kind: 'projection', label }); continue; }
+    if (!thin) continue;
+    const two = (k: EdgeKind) => (hits.get(k) || 0) >= 2;
+    const kind = two('projection') ? 'projection' : two('balcony') ? 'balcony' : two('canopy') ? 'canopy' : null;
+    if (kind) out.set(w, { kind, label });
+  }
+  // a double wall line gives two parallel edges: one railing or parapet stands there, the other line is dropped
+  const rails = [...out].filter(([, e]) => e.kind === 'balcony').map(([w]) => w);
+  for (const a of rails) for (const b of rails) {
+    if (a === b || out.get(a)?.kind !== 'balcony' || out.get(b)?.kind !== 'balcony') continue;
+    const ax = a.w >= a.d, bx = b.w >= b.d;
+    if (ax !== bx) continue;
+    const off = ax ? Math.abs(a.z - b.z) : Math.abs(a.x - b.x);
+    const lo = Math.max(ax ? a.x - a.w / 2 : a.z - a.d / 2, ax ? b.x - b.w / 2 : b.z - b.d / 2), hi = Math.min(ax ? a.x + a.w / 2 : a.z + a.d / 2, ax ? b.x + b.w / 2 : b.z + b.d / 2);
+    const short = Math.min(Math.max(a.w, a.d), Math.max(b.w, b.d));
+    if (off < 35 && hi - lo > short * 0.6 && Math.max(a.w, a.d) <= Math.max(b.w, b.d)) out.set(a, { ...out.get(a)!, kind: 'projection' });
   }
   return out;
 }
@@ -410,8 +462,17 @@ function railingDefault(d: DxfDrawing, a: BuildingAnalysis): Railing {
   const glass = d.texts.some(t => /玻璃欄杆/.test(t.s));
   return { h: 110, glass, solid: false, name: glass ? '玻璃欄杆（CAD）' : '欄杆（CAD）' };
 }
-/** The nearest height note on the plan decides a balcony edge: parapet (女兒牆 / 花台) or railing, and its height. */
-function railingFor(w: BoxObject, notes: { x: number; z: number; s: string }[], def: Railing): Railing {
+/**
+ * What stands on a balcony edge. A 露台 is walled round by its parapet when the drawings give a
+ * 女兒牆 height; a 平台 or roof deck takes the railing height written on its plan; otherwise the
+ * nearest height note on the plan decides between parapet (女兒牆 / 花台) and railing.
+ */
+function railingFor(w: BoxObject, notes: { x: number; z: number; s: string }[], def: Railing, label: string, parapet: number | null): Railing {
+  if (/露台/.test(label) && parapet) return { h: parapet, glass: false, solid: true, name: '女兒牆（CAD）' };
+  if (/平台/.test(label)) {
+    const m = notes.map(n => HEIGHT_NOTE.exec(n.s)).find(m => m && /欄杆|扶手/.test(m[1]));
+    if (m) { const glass = /玻璃/.test(m[1]); return { h: +m[2], glass, solid: false, name: glass ? '玻璃欄杆（CAD）' : '欄杆（CAD）' }; }
+  }
   let best: { m: RegExpExecArray; d: number } | null = null;
   for (const n of notes) {
     const m = HEIGHT_NOTE.exec(n.s), dist = Math.hypot(n.x - w.x, n.z - w.z);
@@ -474,6 +535,8 @@ export function buildBuilding(d: DxfDrawing, a: BuildingAnalysis, name: string, 
   let nWalls = 0, nDoors = 0, nWins = 0, nRails = 0;
   let below: StairPlan['holes'] = [];
   const railing = railingDefault(d, a), beamDepth = beamDepthOf(d, a);
+  // 女兒牆高度 written anywhere (plans, elevations, sections)
+  const parapetNote = d.texts.some(t => /女兒牆/.test(HEIGHT_NOTE.exec(t.s)?.[1] || '')) ? a.parapet : null;
   const slabsOf = new Map<string, { x0: number; x1: number; z0: number; z1: number }[]>();
   const beamLines: { st: Storey; xs: number[]; zs: number[] }[] = [];
 
@@ -512,13 +575,13 @@ export function buildBuilding(d: DxfDrawing, a: BuildingAnalysis, name: string, 
     const shut = openings.map(op => ({ ...walls[0], x: op.cx, z: op.cz, w: op.axis === 'x' ? op.len : op.t, d: op.axis === 'x' ? op.t : op.len, rot: 0 }));
     // thin lines round balconies are railings, round canopies the slab edge, and projections nothing
     const notes = d.texts.filter(t => inBox(plan.box, t.x, t.y)).map(t => ({ x: X(t.x), z: Z(t.y), s: t.s }));
-    const edges = parapet ? new Map<BoxObject, EdgeKind>() : classifyEdges(walls, shut, notes, W, D);
+    const edges = parapet ? new Map<BoxObject, { kind: EdgeKind; label: string }>() : classifyEdges(walls, shut, notes, W, D, st.key.startsWith('R'));
     const slabEdges: BoxObject[] = [];
-    for (const [w, kind] of edges) {
+    for (const [w, { kind, label }] of edges) {
       walls.splice(walls.indexOf(w), 1);
       if (kind === 'canopy') { slabEdges.push(w); continue; }
       if (kind !== 'balcony') continue;
-      const rail = railingFor(w, notes, railing);
+      const rail = railingFor(w, notes, railing, label, parapetNote);
       slabEdges.push(w);
       if (rail.solid) add({ ...w, layer: 'wall', y: 0, h: rail.h, name: rail.name, color: 0xeeebe5 });
       else add({ ...w, layer: rail.glass ? 'glass' : 'rail', y: 0, h: rail.h, w: w.w >= w.d ? w.w : 4, d: w.w >= w.d ? 4 : w.d, name: rail.name, color: rail.glass ? 0xa9dcff : 0x6b7280 });

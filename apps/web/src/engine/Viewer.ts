@@ -102,13 +102,17 @@ export class Viewer {
   private ground = new THREE.Plane(new THREE.Vector3(0, 1, 0), 0);
   private raf = 0;
   private last = performance.now();
+  private active = performance.now();
+  private drawn = 0;
   private disposers: (() => void)[] = [];
 
   constructor(private view: HTMLElement, private labelLayer: HTMLElement, private ev: ViewerEvents) {
-    this.renderer = new THREE.WebGLRenderer({ antialias: true, preserveDrawingBuffer: true });
-    this.renderer.setPixelRatio(Math.min(devicePixelRatio, 2));
+    // phones: fewer pixels and cheaper shadows keep the GPU (and the phone) cool
+    const phone = matchMedia('(pointer: coarse)').matches;
+    this.renderer = new THREE.WebGLRenderer({ antialias: !phone, preserveDrawingBuffer: true, powerPreference: phone ? 'low-power' : 'default' });
+    this.renderer.setPixelRatio(Math.min(devicePixelRatio, phone ? 1.5 : 2));
     this.renderer.shadowMap.enabled = true;
-    this.renderer.shadowMap.type = THREE.PCFSoftShadowMap;
+    this.renderer.shadowMap.type = phone ? THREE.PCFShadowMap : THREE.PCFSoftShadowMap;
     view.prepend(this.renderer.domElement);
     this.controls = new OrbitControls(this.camera, this.renderer.domElement);
     this.controls.enableDamping = true;
@@ -117,7 +121,7 @@ export class Viewer {
     this.scene.add(new THREE.HemisphereLight(0xffffff, 0x9aa6b8, 2.2));
     this.sun.intensity = 2.2;
     this.sun.castShadow = true;
-    this.sun.shadow.mapSize.set(2048, 2048);
+    this.sun.shadow.mapSize.set(phone ? 1024 : 2048, phone ? 1024 : 2048);
     this.sun.shadow.bias = -0.0008;
     this.scene.add(this.sun, this.sun.target, this.floorGroup, this.objGroup, this.measGroup, this.helperGroup, this.cadGroup);
     this.buildSampleFloors(SAMPLE_ROOMS);
@@ -129,9 +133,18 @@ export class Viewer {
     const onTheme = () => this.themeChanged();
     mq.addEventListener('change', onTheme);
     this.disposers.push(() => mq.removeEventListener('change', onTheme));
+    // draw only while something moves: any touch, click, key or camera change keeps it drawing for a moment
+    const wake = () => { this.active = performance.now(); };
+    for (const type of ['pointerdown', 'pointermove', 'wheel', 'keydown', 'touchstart'] as const) {
+      addEventListener(type, wake, { passive: true, capture: true });
+      this.disposers.push(() => removeEventListener(type, wake, { capture: true }));
+    }
+    this.controls.addEventListener('change', wake);
     this.resize();
     this.raf = requestAnimationFrame(t => this.frame(t));
   }
+  /** Ask for a redraw after a change made without user input. */
+  invalidate() { this.active = performance.now(); }
 
   dispose() {
     cancelAnimationFrame(this.raf);
@@ -529,6 +542,7 @@ export class Viewer {
     this.fly = { from: { pos: this.camera.position.clone(), target: this.controls.target.clone(), fov: this.camera.fov }, to, t0: performance.now() };
   }
   private resize() {
+    this.active = performance.now();
     const w = this.view.clientWidth, h = this.view.clientHeight;
     this.renderer.setSize(w, h);
     this.camera.aspect = w / Math.max(1, h);
@@ -866,10 +880,15 @@ export class Viewer {
       if (w.keys.has('b')) this.camera.position.addScaledVector(fw, -sp);
       if (w.keys.has('r')) this.camera.position.addScaledVector(r, sp);
       if (w.keys.has('l')) this.camera.position.addScaledVector(r, -sp);
-    } else this.controls.update();
-    this.selBox?.update();
-    this.renderer.render(this.scene, this.camera);
-    this.placeLabels();
+    } else if (this.controls.update()) this.active = now;
+    // idle: redraw about once a second only, which catches any change made without input
+    const busy = !!f || (this.walk.on && this.walk.keys.size > 0) || now - this.active < 1500;
+    if (busy || now - this.drawn > 1000) {
+      this.selBox?.update();
+      this.renderer.render(this.scene, this.camera);
+      this.placeLabels();
+      this.drawn = now;
+    }
     this.raf = requestAnimationFrame(t => this.frame(t));
   }
 }

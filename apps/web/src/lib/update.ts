@@ -7,11 +7,17 @@ declare const __BUILD__: string;
  */
 export function watchUpdates(onNew: (version: string) => void) {
   if (import.meta.env.DEV) return () => {};
+  let told = '';
   const check = async () => {
     try {
       const r = await fetch('/version.json', { cache: 'no-store' });
       const { build, version } = await r.json();
-      if (build && build !== __BUILD__) onNew(version || '');
+      if (build && build !== __BUILD__ && build !== told) {
+        told = build;
+        // a short buzz on phones that allow it (Android); iPhone browsers ignore it
+        try { navigator.vibrate?.([60, 80, 60]); } catch { /* not supported */ }
+        onNew(version || '');
+      }
     } catch { /* offline: try again later */ }
   };
   const onVis = () => { if (document.visibilityState === 'visible') check(); };
