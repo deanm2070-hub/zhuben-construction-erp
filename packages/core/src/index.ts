@@ -10,3 +10,4 @@ export * from './dwgDb';
 export * from './building';
 export * from './legend';
 export * from './stairs';
+export * from './rebar';

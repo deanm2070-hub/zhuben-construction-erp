@@ -23,7 +23,11 @@ export interface BoxObject {
   rise?: number;
   /** on the first step of each stair: the whole stair for the takeoff (risers as labelled 上16) */
   stair?: StairInfo;
+  /** structural members read from the structural plans: mark and the storey key of the plan (2F beams carry the 2F slab) */
+  rc?: RcTag;
 }
+
+export interface RcTag { kind: 'beam' | 'column'; mark: string; fl: string; b?: number; h?: number }
 
 export interface StairInfo { risers: number; flights: number; width: number; run: number; rise: number; landing: number }
 
@@ -75,7 +79,37 @@ export interface CadData {
   doors: CadDoor[];
   /** whole-building imports: one entry per storey, bottom to top */
   floors?: CadFloor[];
+  /** reinforcement read from the structural detail sheets, and the slab panels of the structural plans */
+  rc?: RcData;
 }
+
+/** n bars of size #s */
+export interface Bar { n: number; s: number }
+/** bars of size #s every `at` cm */
+export interface Spacing { s: number; at: number }
+/** a bar callout of a beam detail: r is its place along the span, 0 the left support and 1 the right */
+export interface BeamCallout { n: number; s: number; r: number; cut?: number }
+export interface BeamDetail {
+  mark: string;
+  /** storey keys of the structural plans the detail is for */
+  floors: string[];
+  b: number;
+  h: number;
+  top: BeamCallout[];
+  bot: BeamCallout[];
+  /** stirrup zones: n stirrups of #s every `at` cm (n missing on typical sections), sets 2 for 2*#4 */
+  stir: { s: number; n?: number; at: number; sets: number }[];
+  /** web bars, n on each face */
+  web?: Bar;
+}
+export interface ColumnDetail { fl: string; mark: string; b: number; h: number; bars: Bar[]; hoop: { s: number; at: [number, number, number]; ties: [number, number] } }
+/** a slab of the slab schedule; spacings are [top, bottom] */
+export interface SlabDetail { mark: string; floors: string[]; t: number; type: string; short: [Spacing, Spacing]; long: [Spacing, Spacing] }
+/** stair schedule: a distribution bars, b bottom main bars, c top main bars */
+export interface StairDetail { floors: string[]; t: number; a: Spacing; b: Spacing; c: Spacing }
+export interface RebarSpec { beams: BeamDetail[]; columns: ColumnDetail[]; slabs: SlabDetail[]; stairs: StairDetail[]; parapet?: { h: Spacing; v: Spacing }; sheets: string[] }
+export interface SlabPanel { fl: string; mark: string; x0: number; x1: number; z0: number; z1: number }
+export interface RcData { spec: RebarSpec; panels: SlabPanel[] }
 
 export interface CadFloor {
   key: string;

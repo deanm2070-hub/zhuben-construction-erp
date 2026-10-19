@@ -1,4 +1,4 @@
-import type { Takeoff } from '@cloud-modeler/core';
+import { REBAR_KINDS, REBAR_STD, rebarSummary, type Takeoff } from '@cloud-modeler/core';
 import * as pdfjs from 'pdfjs-dist';
 import workerUrl from 'pdfjs-dist/build/pdf.worker.min.mjs?url';
 import * as XLSX from 'xlsx';
@@ -69,6 +69,24 @@ export function takeoffWorkbook(t: Takeoff, project: string) {
   const ws4 = XLSX.utils.aoa_to_sheet(calc);
   ws4['!cols'] = [{ wch: 36 }, { wch: 6 }, { wch: 30 }, { wch: 70 }, { wch: 10 }, { wch: 6 }];
   XLSX.utils.book_append_sheet(wb, ws4, '數量計算式');
+  if (t.rebar?.rows.length) {
+    const rows = t.rebar.rows;
+    const list: (string | number)[][] = [['工程名稱:  ' + project + '  鋼筋明細'], [], ['樓層', '構件', '編號', '鋼筋位置', '號數', '單支長(m)', '支數', '總長(m)', '單位重(kg/m)', '重量(kg)', '計算式']];
+    for (const r of rows) list.push([r.fl, r.kind, r.mark, r.part, `#${r.s}`, r.len / 100, r.n, Math.round(r.len * r.n) / 100, REBAR_STD.kg[r.s], r.kg, r.expr]);
+    const ws5 = XLSX.utils.aoa_to_sheet(list);
+    ws5['!cols'] = [{ wch: 6 }, { wch: 7 }, { wch: 12 }, { wch: 18 }, { wch: 5 }, { wch: 9 }, { wch: 6 }, { wch: 9 }, { wch: 9 }, { wch: 10 }, { wch: 90 }];
+    XLSX.utils.book_append_sheet(wb, ws5, '鋼筋明細');
+    const { byFloor, bySize } = rebarSummary(rows);
+    const sum: (string | number)[][] = [['工程名稱:  ' + project + '  鋼筋分層統計（kg）'], [], ['樓層', ...REBAR_KINDS, '合計', '噸']];
+    for (const [f, v] of byFloor) sum.push([f, ...REBAR_KINDS.map(k => Math.round(v[k] * 10) / 10), Math.round(v.合計 * 10) / 10, Math.round(v.合計) / 1000]);
+    const all = rows.reduce((a, r) => a + r.kg, 0);
+    sum.push(['全棟', ...REBAR_KINDS.map(k => Math.round([...byFloor.values()].reduce((a, v) => a + v[k], 0) * 10) / 10), Math.round(all * 10) / 10, Math.round(all) / 1000]);
+    sum.push([], ['號數', '材質', '總長(m)', '單位重(kg/m)', '重量(kg)']);
+    for (const [z, v] of bySize) sum.push([`#${z}`, z >= 6 ? 'SD420' : 'SD280', Math.round(v.len * 100) / 100, REBAR_STD.kg[z], Math.round(v.kg * 10) / 10]);
+    const ws6 = XLSX.utils.aoa_to_sheet(sum);
+    ws6['!cols'] = [{ wch: 8 }, ...REBAR_KINDS.map(() => ({ wch: 10 })), { wch: 10 }, { wch: 8 }];
+    XLSX.utils.book_append_sheet(wb, ws6, '鋼筋統計');
+  }
   const rooms: (string | number)[][] = [['空間', '面積㎡', '坪', '周長 m', '地坪', '天花', '牆面']];
   for (const r of t.rooms) rooms.push([r.name, Math.round(r.area * 100) / 100, Math.round(r.area / 3.3058 * 100) / 100, Math.round(r.perim * 10) / 10, r.fin.f, r.fin.c, r.fin.w]);
   XLSX.utils.book_append_sheet(wb, XLSX.utils.aoa_to_sheet(rooms), '空間做法');

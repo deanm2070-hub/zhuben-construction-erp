@@ -4,7 +4,8 @@ import { pairWalls, wallBox } from './geometry';
 import { WALL_H } from './sample';
 import { findFlights, planStairs, type StairFlight, type StairPlan } from './stairs';
 import { HEIGHT_NOTE, isDoorType, openingName, openingType, PLAN_NOTES, type OpeningType } from './legend';
-import type { BoxObject, CadData, CadFloor, DoorObject, ModelObject } from './types';
+import { readRebarSpec } from './rebar';
+import { isBox, type BoxObject, type CadData, type CadFloor, type DoorObject, type ModelObject, type SlabPanel } from './types';
 
 /**
  * Whole-building import from a drawing set that has every sheet in model space
@@ -555,6 +556,54 @@ function readBeams(d: DxfDrawing, v: SheetView, X: (x: number) => number, Z: (y:
   });
 }
 
+/** column outlines; numbered variants (COL1) are the columns of the storey below, drawn hidden */
+const COL_LAYER = /^(?:S-)?(?:COL|COLUMN|COLS|柱)$/i, COL_MARK = /^C\d+[a-z]?$/;
+/** Columns of one structural plan: closed outlines on the column layer, each named by the nearest column mark (C1, C2 …). */
+function readColumns(d: DxfDrawing, v: SheetView, X: (x: number) => number, Z: (y: number) => number, S: number) {
+  const marks = d.texts.filter(t => COL_MARK.test(t.s.trim()) && inBox(v.box, t.x, t.y)).map(t => ({ mark: t.s.trim(), x: X(t.x), z: Z(t.y) }));
+  const out: { mark: string; x: number; z: number; w: number; d: number }[] = [];
+  for (const p of d.polys) {
+    if (!COL_LAYER.test(p.layer) || p.pts.length < 4 || !p.pts.every(q => inBox(v.box, q[0], q[1]))) continue;
+    const xs = p.pts.map(q => X(q[0])), zs = p.pts.map(q => Z(q[1]));
+    const x0 = Math.min(...xs), x1 = Math.max(...xs), z0 = Math.min(...zs), z1 = Math.max(...zs), w = x1 - x0, dd = z1 - z0;
+    if (w < 20 || dd < 20 || w > 200 || dd > 200) continue;
+    const x = (x0 + x1) / 2, z = (z0 + z1) / 2;
+    if (out.some(c => Math.abs(c.x - x) < 5 && Math.abs(c.z - z) < 5)) continue;
+    const m = marks.map(m => ({ m, dist: Math.hypot(m.x - x, m.z - z) })).sort((a, b) => a.dist - b.dist)[0];
+    if (!m || m.dist > Math.max(w, dd) + 120 * S) continue;
+    out.push({ mark: m.m.mark, x, z, w: Math.round(w), d: Math.round(dd) });
+  }
+  return out;
+}
+
+const SLAB_MARK = /^F?C?S\d{1,2}$/;
+/** Slab panels of one structural plan: from each slab mark (S1, CS1, FS1 …) out to the beam centre lines round it. */
+function readPanels(d: DxfDrawing, v: SheetView, X: (x: number) => number, Z: (y: number) => number, lines: ReturnType<typeof readBeams>, W: number, D: number) {
+  const out: { mark: string; x0: number; x1: number; z0: number; z1: number }[] = [];
+  const ln = lines.map(l => ({ ...l, xa: Math.min(l.ax, l.bx), xb: Math.max(l.ax, l.bx), za: Math.min(l.az, l.bz), zb: Math.max(l.az, l.bz), vert: Math.abs(l.bx - l.ax) < Math.abs(l.bz - l.az) }));
+  for (const t of d.texts) {
+    const mark = t.s.trim();
+    if (!SLAB_MARK.test(mark) || /圖框/.test(t.layer) || !inBox(v.box, t.x, t.y)) continue;
+    const x = X(t.x), z = Z(t.y);
+    const hit = (dir: 'x+' | 'x-' | 'z+' | 'z-') => {
+      let best = Infinity;
+      for (const l of ln) {
+        if (dir[0] === 'x' ? !l.vert || z < l.za - 20 || z > l.zb + 20 : l.vert || x < l.xa - 20 || x > l.xb + 20) continue;
+        const c = dir[0] === 'x' ? (l.xa + l.xb) / 2 : (l.za + l.zb) / 2, dd = dir[1] === '+' ? c - (dir[0] === 'x' ? x : z) : (dir[0] === 'x' ? x : z) - c;
+        if (dd > 5 && dd < best) best = dd;
+      }
+      return best;
+    };
+    let [xp, xm, zp, zm] = (['x+', 'x-', 'z+', 'z-'] as const).map(hit);
+    // a cantilever has no beam at its free edge: up to the outline, at most 1.5 m
+    const free = (v: number, edge: number) => isFinite(v) && v < 1500 ? v : Math.max(30, Math.min(150, edge));
+    xp = free(xp, W - x); xm = free(xm, x); zp = free(zp, D - z); zm = free(zm, z);
+    if (out.some(p => p.mark === mark && Math.abs(p.x0 - (x - xm)) < 5 && Math.abs(p.z0 - (z - zm)) < 5)) continue;
+    out.push({ mark, x0: x - xm, x1: x + xp, z0: z - zm, z1: z + zp });
+  }
+  return out;
+}
+
 /** Builds every storey of the analysed drawing set, stacked at its level. */
 export function buildBuilding(d: DxfDrawing, a: BuildingAnalysis, name: string, firstId = 1): BuildingResult {
   const S = a.scale;
@@ -677,23 +726,34 @@ export function buildBuilding(d: DxfDrawing, a: BuildingAnalysis, name: string, 
   }
   // beams from structural plans (二層結構平面圖 → under the 2F slab), lined up on the grid bubbles
   const drawn = new Set<string>();
+  const rcPanels: SlabPanel[] = [];
   for (const v of a.views.filter(v => v.kind === 'structure' && v.floors.length)) {
     const gs = planGeo(d, v);
     if (!gs.gx.length || !gs.gy.length) continue;
     const X = (x: number) => (x - gs.ox - minX) * S, Z = (y: number) => (maxY - (y - gs.oy)) * S;
-    const beams = readBeams(d, v, X, Z, S).filter(b => b.mark);
-    if (!beams.length) continue;
+    const lines = readBeams(d, v, X, Z, S), beams = lines.filter(b => b.mark);
+    const cols = readColumns(d, v, X, Z, S), panels = readPanels(d, v, X, Z, lines, W, D);
     for (const key of v.floors) {
       const i = a.storeys.findIndex(s => s.key === key);
       if (i < 0) continue;
       // the beams carry this floor: they hang under its slab, in the storey below (foundation beams under 1F)
       const host = i > 0 ? a.storeys[i - 1] : a.storeys[0], top = a.storeys[i].base;
-      if (i > 0) drawn.add(host.key);
+      if (i > 0 && beams.length) drawn.add(host.key);
       for (const b of beams) {
         const m = b.mark!, ground = i === 0, along = Math.abs(b.bx - b.ax) >= Math.abs(b.bz - b.az);
         objects.push({ id: id++, layer: 'slab', name: `${ground ? '地梁' : '梁'} ${m.code}（結構圖）`, floor: host.key, y: top - m.h, h: m.h, color: 0xcfc9bd,
-          x: (b.ax + b.bx) / 2, z: (b.az + b.bz) / 2, ...(along ? { w: b.len, d: m.w } : { w: m.w, d: b.len }) });
+          x: (b.ax + b.bx) / 2, z: (b.az + b.bz) / 2, ...(along ? { w: b.len, d: m.w } : { w: m.w, d: b.len }), rc: { kind: 'beam', mark: m.code, fl: key } });
       }
+      // columns of this storey: the architectural column there takes the mark and the structural size, else one is added
+      const st = a.storeys[i];
+      for (const c of cols) {
+        const arch = objects.find(o => isBox(o) && o.floor === key && o.layer === 'wall' && !o.rc && !o.rot && o.h >= 200 && Math.min(o.w, o.d) >= 25
+          && Math.abs(o.x - c.x) <= o.w / 2 + 5 && Math.abs(o.z - c.z) <= o.d / 2 + 5 && Math.max(o.w, o.d) <= Math.min(o.w, o.d) * 3) as BoxObject | undefined;
+        const tag = { kind: 'column' as const, mark: c.mark, fl: key, b: Math.min(c.w, c.d), h: Math.max(c.w, c.d) };
+        if (arch) arch.rc = tag;
+        else objects.push({ id: id++, layer: 'wall', name: `柱 ${c.mark}（結構圖）`, floor: key, x: c.x, z: c.z, w: c.w, d: c.d, h: st.h, y: st.base, color: 0xeeebe5, rc: tag });
+      }
+      for (const p of panels) rcPanels.push({ ...p, fl: key });
     }
   }
   // beams are rarely on architectural plans: estimate one along every grid line, under the slab of the storey above
@@ -716,9 +776,10 @@ export function buildBuilding(d: DxfDrawing, a: BuildingAnalysis, name: string, 
     for (const x of xs) if (x > -5 && x < W + 5) beam('z', x);
     for (const z of zs) if (z > -5 && z < D + 5) beam('x', z);
   }
+  const spec = readRebarSpec(d, a.storeys.map(s => s.key));
   return {
     objects,
-    cad: { name, W, D, segs: [], texts: [], doors: [], floors },
+    cad: { name, W, D, segs: [], texts: [], doors: [], floors, ...(spec ? { rc: { spec, panels: rcPanels } } : {}) },
     analysis: a,
     stats: { floors: floors.length, walls: nWalls, doors: nDoors, windows: nWins, railings: nRails },
   };

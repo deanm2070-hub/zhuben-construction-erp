@@ -180,7 +180,9 @@ function BuildingStep({ st, firstId, onBuilt, onLayers, onClose }: {
   const build = () => {
     const r = buildBuilding(dxf, { ...a, storeys }, name, firstId);
     const s = r.stats;
-    onBuilt({ objects: r.objects, cad: r.cad, summary: `已建立 ${s.floors} 層：${s.walls} 道牆、${s.doors} 樘門、${s.windows} 樘窗` + (s.railings ? `、${s.railings} 段欄杆` : '') });
+    const rc = r.cad.rc;
+    onBuilt({ objects: r.objects, cad: r.cad, summary: `已建立 ${s.floors} 層：${s.walls} 道牆、${s.doors} 樘門、${s.windows} 樘窗` + (s.railings ? `、${s.railings} 段欄杆` : '')
+      + (rc ? `；讀到${rc.spec.sheets.join('、')}，鋼筋依配筋圖計算` : '') });
   };
   return (
     <Modal title="整棟自動建模" desc={`來源：${name}。確認辨識結果後建立 3D。`} onClose={onClose} actions={<>
