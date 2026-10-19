@@ -6,6 +6,13 @@ import { useState } from 'react';
 import { readDwg } from '../lib/dwg';
 import { Modal } from './Modal';
 
+/** How to tick several files in the phone's own file picker (the page cannot change that screen). */
+const MULTI_HINT = /iPhone|iPad|iPod/.test(navigator.userAgent) || (navigator.platform === 'MacIntel' && navigator.maxTouchPoints > 1)
+  ? 'iPhone：點「選擇檔案」，再點右上角「選取」，就能一次勾多個檔，最後按「打開」。'
+  : /Android/.test(navigator.userAgent)
+    ? 'Android：在檔案上長按，就能一次勾多個檔，最後按「選取」。'
+    : '按住 Ctrl（Mac 按 ⌘）可以一次點選多個檔。'
+
 type Stage =
   | { s: 'pick'; files: File[] }
   | { s: 'reading'; name: string; ver: string }
@@ -101,6 +108,7 @@ export function CadImport({ firstId, onBuilt, onSource, onClose }: {
           onDrop={e => { e.preventDefault(); setDrag(false); add(e.dataTransfer.files); }}>
           <b>{st.files.length ? '＋ 再加入檔案' : '點這裡選擇檔案'}</b>
           <span>DWG 或 DXF，可以一次選多個，也可以分次加入（建築圖、結構圖）</span>
+          <small className="how">{MULTI_HINT}</small>
           <input id="cad-file" type="file" multiple hidden onChange={e => { add(e.target.files); e.target.value = ''; }} />
         </label>
         {st.files.length > 0 && <ul className="files">

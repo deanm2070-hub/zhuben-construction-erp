@@ -146,3 +146,4 @@ select,input[type=number],input[type=text],input[type=email],input[type=password
   position: fixed; left: 50%; bottom: calc(16px + env(safe-area-inset-bottom)); transform: translateX(-50%);
   z-index: 1000; padding: 12px 20px; border-radius: 999px; font-size: 15px; box-shadow: 0 4px 16px rgba(0,0,0,.2);
 }
+.drop .how { display: block; margin-top: 8px; color: #b45309; font-size: 14px; line-height: 1.5; }
