@@ -3,7 +3,7 @@ import { useEffect, useState } from 'react';
 import { AuthPage } from './components/AuthPage';
 import { Editor } from './components/Editor';
 import { ProjectsPage } from './components/ProjectsPage';
-import { supabase } from './lib/supabase';
+import { supabase, supabaseConfigError } from './lib/supabase';
 
 const readRoute = () => {
   const m = location.hash.match(/^#\/p\/([\w-]+)(\/import)?$/);
@@ -26,6 +26,15 @@ export function App() {
     return () => removeEventListener('hashchange', on);
   }, []);
 
+  if (supabaseConfigError) {
+    return (
+      <div className="page"><div className="wrap">
+        <h1>網站設定有誤</h1>
+        <p className="note">{supabaseConfigError}</p>
+        <p className="note">請到 Cloudflare 的 Build variables 檢查這兩個值，修正後重新部署。</p>
+      </div></div>
+    );
+  }
   if (supabase && session === undefined) return <div className="page"><div className="wrap"><p className="note">載入中…</p></div></div>;
   if (supabase && !session) return <AuthPage />;
   if (route) return <Editor key={route.id} projectId={route.id} importNow={route.importNow} onExit={() => { location.hash = ''; }} />;
