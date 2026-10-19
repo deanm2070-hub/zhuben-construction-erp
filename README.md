@@ -42,7 +42,9 @@ VITE_SUPABASE_ANON_KEY=...
 VITE_DWG_CONVERTER_URL=https://dwg.example.com
 ```
 
-`npm run build` 後將 `apps/web/dist` 部署到任一靜態主機（Vercel、Netlify、Cloudflare Pages 等），環境變數在建置時設定。
+`npm run build` 後將 `apps/web/dist` 部署到任一靜態主機，環境變數在建置時設定。
+
+**Cloudflare Workers**（已附 `wrangler.jsonc`）：Workers & Pages → Create → 連接此 repo，Build command `npm run build`、Deploy command `npx wrangler deploy`，並在 Advanced settings → Build variables 加入上面三個 `VITE_` 變數。
 
 ### 3. DWG 轉檔服務
 
