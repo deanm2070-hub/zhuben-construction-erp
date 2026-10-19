@@ -1,4 +1,4 @@
-import { computeTakeoff, DEFAULT_SETTINGS, type CadData, type FinishChoice, type TakeoffSettings } from '@cloud-modeler/core';
+import { computeBuildingTakeoff, computeTakeoff, DEFAULT_SETTINGS, type FinishChoice, type TakeoffSettings } from '@cloud-modeler/core';
 import { useCallback, useEffect, useRef, useState } from 'react';
 import { TOOL_HINT, Viewer, type DrawKind, type RenderMode, type SceneKey, type Tool } from '../engine/Viewer';
 import { download, loadImage, pdfFirstPage } from '../lib/files';
@@ -33,6 +33,7 @@ export function Editor({ projectId, importNow, onExit }: { projectId: string; im
   const [toast, setToast] = useState({ text: '', show: false });
   const [dialog, setDialog] = useState<'none' | 'cad' | 'takeoff'>(importNow ? 'cad' : 'none');
   const [underlay, setUnderlay] = useState(false);
+  const [floor, setFloor] = useState<string | null>(null);
   const [finishes, setFinishes] = useState<Record<string, Partial<FinishChoice>>>({});
   const [settings, setSettings] = useState<TakeoffSettings>(DEFAULT_SETTINGS);
   const [save, setSave] = useState<SaveState>('saved');
@@ -82,6 +83,7 @@ export function Editor({ projectId, importNow, onExit }: { projectId: string; im
       setFinishes(p.model.finishes || {});
       setSettings({ ...DEFAULT_SETTINGS, ...(p.model.settings || {}) });
       v.load(p.model.objects || [], p.model.cad || null);
+      setFloor(null);
       setTimeout(() => { loaded.current = true; }, 0);
     }).catch(e => setLoadErr(String(e.message || e)));
     return () => { alive = false; v.dispose(); viewer.current = null; };
@@ -119,6 +121,7 @@ export function Editor({ projectId, importNow, onExit }: { projectId: string; im
 
   const takeoff = () => {
     const vw = v();
+    if (vw.cad?.floors?.length) return computeBuildingTakeoff(vw.objects, vw.cad, finishes, settings);
     return computeTakeoff({
       objects: vw.objects, bounds: vw.planBounds, labels: vw.roomLabels(), rects: vw.roomRects,
       cadDoors: vw.cad?.doors, finishes, settings,
@@ -152,6 +155,13 @@ export function Editor({ projectId, importNow, onExit }: { projectId: string; im
         <div className="row">
           <span className="lbl">SCENES</span>
           {SCENES.map(([k, l]) => <button key={k} className={`chip ${scene === k ? 'on' : ''}`} onClick={() => { v().goScene(k); setScene(k); if (tool === 'walk') setTool('orbit'); }}>{l}</button>)}
+          {viewer.current && viewer.current.floors.length > 0 && <>
+            <span className="sep" />
+            <span className="lbl">樓層</span>
+            {[null, ...viewer.current.floors.map(f => f.key)].map(k => (
+              <button key={k || 'all'} className={`chip ${floor === k ? 'on' : ''}`} onClick={() => { v().setFloor(k); setFloor(k); v().goScene(scene === 'hall' ? 'hall' : scene); }}>{k || '整棟'}</button>
+            ))}
+          </>}
         </div>
       </div>
 
@@ -196,18 +206,18 @@ export function Editor({ projectId, importNow, onExit }: { projectId: string; im
         <CadImport firstId={viewer.current.nextId()} onClose={() => setDialog('none')}
           onSource={f => { store.uploadSource(projectId, f).catch(() => showToast('原始檔上傳失敗，模型仍會儲存')); }}
           onBuilt={r => {
-            v().replace(r.objects, r.cad as CadData);
+            v().replace(r.objects, r.cad);
             if (!name || name === '匯入圖面') { const n = r.cad.name.replace(/\.(dxf|dwg)$/i, ''); setName(n); store.save(projectId, { name: n }).catch(() => {}); }
             setDialog('none');
             setScene('sw');
-            const s = r.stats;
-            showToast(`已建立 ${s.walls} 道牆、${s.doors} 樘門、${s.windows} 樘窗、${s.furniture} 件家具／櫃` + (s.singleWalls ? `（${s.singleWalls} 條單線當作 10cm 牆）` : ''));
+            setFloor(null);
+            showToast(r.summary);
             setInfo(`匯入完成：${r.cad.name}｜範圍 ${Math.round(r.cad.W)} × ${Math.round(r.cad.D)} cm`);
           }} />
       )}
       {dialog === 'takeoff' && viewer.current && (
         <Takeoff takeoff={takeoff()} project={name || '未命名專案'} settings={settings}
-          subtitle={`${name}｜總面寬 ${Math.round(viewer.current.planBounds.W)} cm × 總進深 ${Math.round(viewer.current.planBounds.D)} cm`}
+          subtitle={`${name}｜${viewer.current.floors.length ? `${viewer.current.floors.length} 層｜` : ''}總面寬 ${Math.round(viewer.current.planBounds.W)} cm × 總進深 ${Math.round(viewer.current.planBounds.D)} cm`}
           onSettings={setSettings}
           onFinish={(room, patch) => setFinishes(f => ({ ...f, [room]: { ...(f[room] || {}), ...patch } }))}
           onClose={() => setDialog('none')} toast={showToast} />

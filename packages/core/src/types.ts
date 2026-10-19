@@ -17,6 +17,8 @@ export interface BoxObject {
   /** rotation around the vertical axis, radians */
   rot?: number;
   color: number;
+  /** storey key (1F, 2F … RF) for whole-building imports; y is then measured from 1F */
+  floor?: string;
 }
 
 export interface DoorObject {
@@ -33,6 +35,10 @@ export interface DoorObject {
   /** 0–3: hinge side × swing side */
   flip: number;
   color: number;
+  floor?: string;
+  /** sill level of the opening (absolute, default 0) and leaf height (default 210) */
+  y?: number;
+  h?: number;
 }
 
 export type ModelObject = BoxObject | DoorObject;
@@ -61,6 +67,19 @@ export interface CadData {
   segs: number[];
   texts: CadText[];
   doors: CadDoor[];
+  /** whole-building imports: one entry per storey, bottom to top */
+  floors?: CadFloor[];
+}
+
+export interface CadFloor {
+  key: string;
+  /** plan title the storey came from */
+  title: string;
+  /** floor level above 1F and storey height, cm */
+  y: number;
+  h: number;
+  segs: number[];
+  texts: CadText[];
 }
 
 export interface Bounds { W: number; D: number }
