@@ -2,6 +2,7 @@ import { sampleObjects } from '@cloud-modeler/core';
 import { useEffect, useState } from 'react';
 import { emptyModel, store, type ProjectMeta } from '../lib/store';
 import { supabase } from '../lib/supabase';
+import { VERSION } from '../lib/version';
 
 export function ProjectsPage({ email, onOpen }: { email: string | null; onOpen: (id: string, importNow?: boolean) => void }) {
   const [list, setList] = useState<ProjectMeta[] | null>(null);
@@ -27,7 +28,7 @@ export function ProjectsPage({ email, onOpen }: { email: string | null; onOpen: 
     <div className="page">
       <div className="wrap">
         <div className="head">
-          <h1>我的專案</h1>
+          <h1>我的專案 <small className="ver">{VERSION}</small></h1>
           <div className="kv">
             {email && <span className="note">{email}</span>}
             {supabase && <button className="chip ghost" onClick={() => supabase!.auth.signOut()}>登出</button>}

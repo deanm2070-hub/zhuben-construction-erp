@@ -17,6 +17,8 @@ export interface DxfDrawing {
   version: string;
   blockCount: number;
   inserts: number;
+  /** x ranges of the files a merged drawing was put together from */
+  parts?: { x0: number; x1: number; name?: string }[];
 }
 
 export const DWG_VERSIONS: Record<string, string> = {

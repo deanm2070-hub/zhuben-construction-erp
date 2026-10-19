@@ -1,28 +1,23 @@
 declare const __BUILD__: string;
 
 /**
- * Keeps an open page on the newest build: checks /version.json when the page comes back
- * into view (e.g. reopened from the home-screen shortcut) and every few minutes.
- * Coming back into view reloads at once when `quiet()` says nothing is open for editing;
- * otherwise `onNew` is told so the page can offer the update.
+ * Tells an open page (or home-screen shortcut) that a newer build is live: checks /version.json
+ * when the page comes back into view and every few minutes. The page never reloads by itself;
+ * `onNew` gets the new version name so the user can update when their work is done.
  */
-export function watchUpdates(onNew: () => void, quiet: () => boolean) {
+export function watchUpdates(onNew: (version: string) => void) {
   if (import.meta.env.DEV) return () => {};
-  let found = false;
-  const check = async (reload: boolean) => {
+  const check = async () => {
     try {
       const r = await fetch('/version.json', { cache: 'no-store' });
-      const { build } = await r.json();
-      if (build && build !== __BUILD__) {
-        if (reload && quiet()) location.reload();
-        else if (!found) { found = true; onNew(); }
-      }
+      const { build, version } = await r.json();
+      if (build && build !== __BUILD__) onNew(version || '');
     } catch { /* offline: try again later */ }
   };
-  const onVis = () => { if (document.visibilityState === 'visible') check(true); };
+  const onVis = () => { if (document.visibilityState === 'visible') check(); };
   document.addEventListener('visibilitychange', onVis);
   addEventListener('pageshow', onVis);
-  const t = setInterval(() => check(false), 5 * 60_000);
-  check(true);
+  const t = setInterval(check, 5 * 60_000);
+  check();
   return () => { document.removeEventListener('visibilitychange', onVis); removeEventListener('pageshow', onVis); clearInterval(t); };
 }

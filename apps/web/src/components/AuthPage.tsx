@@ -1,5 +1,6 @@
 import { useState } from 'react';
 import { supabase } from '../lib/supabase';
+import { RELEASES, VERSION } from '../lib/version';
 
 export function AuthPage() {
   const [email, setEmail] = useState('');
@@ -33,6 +34,10 @@ export function AuthPage() {
         </button>
         {msg.err && <p className="err">{msg.err}</p>}
         {msg.ok && <p className="note">{msg.ok}</p>}
+        <details className="release">
+          <summary>版本 {VERSION}（{RELEASES[0].date} 更新）</summary>
+          {RELEASES.slice(0, 3).map(r => <div key={r.v}><b>{r.v}</b> {r.date}<ul>{r.notes.map(n => <li key={n}>{n}</li>)}</ul></div>)}
+        </details>
       </form>
     </div>
   );

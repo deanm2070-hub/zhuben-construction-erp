@@ -38,7 +38,7 @@ export interface BuildingAnalysis {
 }
 
 const TITLE_RE = /(平面圖|立面圖|剖面圖|門窗表|門窗圖|門窗詳圖)$/;
-const SKIP_RE = /綠化|檢討|面積|計算|配置|位置|覆土|景觀|消防|排水|基地|地籍|樓梯|詳圖|大樣|結構|管線|水電|求積|透視/;
+const SKIP_RE = /綠化|檢討|面積|計算|配置|位置|覆土|景觀|消防|排水|基地|地籍|樓梯|詳圖|大樣|結構|管線|水電|求積|透視|[梁樑]|配筋|基礎|樓版|版筋|柱|框架|筏|椿|樁/;
 const CN: Record<string, number> = { 一: 1, 二: 2, 三: 3, 四: 4, 五: 5, 六: 6, 七: 7, 八: 8, 九: 9, 十: 10 };
 
 function cnNum(s: string): number {
@@ -83,6 +83,8 @@ const inBox = (b: SheetView['box'], x: number, y: number) => x >= b[0] && x <= b
 
 /** Finds view titles and the region each view occupies. */
 export function findViews(d: DxfDrawing): SheetView[] {
+  // each file of a merged set has its own title size and sheet spacing
+  if (d.parts && d.parts.length > 1) return d.parts.flatMap(p => findViews({ ...d, parts: undefined, texts: d.texts.filter(t => t.x >= p.x0 - 1 && t.x <= p.x1 + 1) }));
   const cand = d.texts.filter(t => TITLE_RE.test(t.s.replace(/\s/g, '')) && t.s.length <= 20);
   if (!cand.length) return [];
   const hMax = Math.max(...cand.map(t => t.h || 0));
@@ -162,7 +164,9 @@ export function readLevels(d: DxfDrawing, views: SheetView[], scale: number): Re
 
 export function analyzeBuilding(d: DxfDrawing, defaultH = WALL_H): BuildingAnalysis | null {
   const views = findViews(d);
-  const plans = views.filter(v => v.kind === 'plan' && v.floors.length);
+  // when two files both have a plan of a storey (architectural and structural), the one with the most wall lines wins
+  const walls = (v: SheetView) => d.segs.filter(s => isWallLayer(s.layer) && inBox(v.box, s.a[0], s.a[1]) && inBox(v.box, s.b[0], s.b[1])).length;
+  const plans = views.filter(v => v.kind === 'plan' && v.floors.length).map(v => ({ v, n: walls(v) })).sort((a, b) => b.n - a.n).map(p => p.v);
   if (!plans.length) return null;
   const scale = UNIT_SCALE[guessUnits(d)] || 1;
   const levels = readLevels(d, views, scale);
@@ -725,12 +729,11 @@ export function findOpenings(boxes: BoxObject[], openSegs: Seg2[], swings: Swing
  */
 export function mergeDrawings(ds: DxfDrawing[]): DxfDrawing {
   if (ds.length === 1) return ds[0];
-  const out: DxfDrawing = { segs: [], polys: [], texts: [], arcs: [], layers: new Map(), units: ds[0].units, version: ds[0].version, blockCount: 0, inserts: 0 };
+  // everything is put in centimetres; files without a units header get them guessed from their size
+  const out: DxfDrawing = { segs: [], polys: [], texts: [], arcs: [], layers: new Map(), units: 5, version: ds[0].version, blockCount: 0, inserts: 0, parts: [] };
   let at = 0;
-  const k0 = UNIT_SCALE[ds[0].units] || 0;
   for (const d0 of ds) {
-    // files drawn in other units are scaled to the first file's
-    const k = k0 && UNIT_SCALE[d0.units] ? UNIT_SCALE[d0.units] / k0 : 1;
+    const k = UNIT_SCALE[guessUnits(d0)] || 1;
     const sc = (p: Pt): Pt => [p[0] * k, p[1] * k];
     const d = k === 1 ? d0 : { ...d0, segs: d0.segs.map(s => ({ ...s, a: sc(s.a), b: sc(s.b) })), polys: d0.polys.map(p => ({ ...p, pts: p.pts.map(sc) })), texts: d0.texts.map(t => ({ ...t, x: t.x * k, y: t.y * k, ...(t.h ? { h: t.h * k } : {}) })), arcs: d0.arcs.map(c => ({ ...c, c: sc(c.c), r: c.r * k, ...(c.p0 ? { p0: sc(c.p0) } : {}), ...(c.p1 ? { p1: sc(c.p1) } : {}) })) };
     let minX = Infinity, maxX = -Infinity;
@@ -744,6 +747,7 @@ export function mergeDrawings(ds: DxfDrawing[]): DxfDrawing {
     out.arcs.push(...d.arcs.map(c => ({ ...c, c: mv(c.c), ...(c.p0 ? { p0: mv(c.p0) } : {}), ...(c.p1 ? { p1: mv(c.p1) } : {}) })));
     for (const [l, n] of d.layers) out.layers.set(l, (out.layers.get(l) || 0) + n);
     out.blockCount += d.blockCount; out.inserts += d.inserts;
+    out.parts!.push({ x0: at, x1: at + maxX - minX });
     at += maxX - minX + Math.max(1000, (maxX - minX) * 0.1);
   }
   return out;

@@ -151,4 +151,17 @@ describe('mergeDrawings', () => {
     expect(m.segs.map(s => s.a[0])).toEqual([0, 1100]);
     expect(m.layers.get('A')).toBe(2);
   });
+  it('keeps the architectural plans when a structural file comes first', () => {
+    const arch = drawingSet();
+    // structural sheets: big titles, beam layout plans of the same storeys, no walls
+    const st: DxfDrawing = { segs: [], polys: [], texts: [], arcs: [], layers: new Map(), units: 4, version: '', blockCount: 0, inserts: 0 };
+    for (const [i, t] of ['二層結構平面圖', '三層梁配筋平面圖', '基礎平面圖'].entries()) {
+      st.texts.push({ layer: 'TITLE', x: i * 40000, y: 0, s: t, h: 1500 });
+      st.segs.push({ layer: 'BEAM', a: [i * 40000 + 3000, 3000], b: [i * 40000 + 9000, 3000] });
+    }
+    const run = (d: DxfDrawing) => { const a = analyzeBuilding(d)!; return { analysis: a, objects: buildBuilding(d, a, 'x').objects }; };
+    const one = run(arch), both = run(mergeDrawings([st, arch]));
+    expect(both.analysis.storeys.map(s => s.key)).toEqual(one.analysis.storeys.map(s => s.key));
+    expect(both.objects.filter(o => o.layer === 'wall').length).toBe(one.objects.filter(o => o.layer === 'wall').length);
+  });
 });

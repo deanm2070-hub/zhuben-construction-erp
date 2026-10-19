@@ -14,7 +14,7 @@ const readRoute = () => {
 export function App() {
   const [session, setSession] = useState<Session | null | undefined>(supabase ? undefined : null);
   const [route, setRoute] = useState(readRoute);
-  const [update, setUpdate] = useState(false);
+  const [update, setUpdate] = useState<string | null>(null);
 
   useEffect(() => {
     if (!supabase) return;
@@ -28,10 +28,14 @@ export function App() {
     return () => removeEventListener('hashchange', on);
   }, []);
 
-  useEffect(() => watchUpdates(() => setUpdate(true), () => !readRoute()), []);
+  useEffect(() => watchUpdates(v => setUpdate(v)), []);
 
   const page = view();
-  return update ? <>{page}<button className="update-bar" onClick={() => location.reload()}>有新版本，點這裡更新</button></> : page;
+  return update !== null ? <>{page}<div className="update-bar">
+    <span>有新版本{update && ` ${update}`} 可以更新</span>
+    <button className="chip on" onClick={() => location.reload()}>更新</button>
+    <button className="chip ghost" onClick={() => setUpdate(null)}>稍後</button>
+  </div></> : page;
 
   function view() {
     if (supabaseConfigError) {
