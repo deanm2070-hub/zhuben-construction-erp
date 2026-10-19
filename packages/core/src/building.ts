@@ -36,6 +36,8 @@ export interface BuildingAnalysis {
   parapet: number;
   /** drawing units → cm */
   scale: number;
+  /** layers read as walls because their lines pair up like double-line walls (drawings whose layer names say nothing) */
+  wallLayers: string[];
 }
 
 const TITLE_RE = /(平面圖|立面圖|剖面圖|門窗表|門窗圖|門窗詳圖)$/;
@@ -88,8 +90,11 @@ export function findViews(d: DxfDrawing): SheetView[] {
   if (d.parts && d.parts.length > 1) return d.parts.flatMap(p => findViews({ ...d, parts: undefined, texts: d.texts.filter(t => t.x >= p.x0 - 1 && t.x <= p.x1 + 1) }));
   const cand = d.texts.filter(t => TITLE_RE.test(t.s.replace(/\s/g, '')) && t.s.length <= 20);
   if (!cand.length) return [];
-  const hMax = Math.max(...cand.map(t => t.h || 0));
-  const titles = cand.filter(t => !hMax || (t.h || 0) >= hMax * 0.7)
+  // titles come in several sizes (index sheet, sheet names, view labels): use the size that names the most views
+  const hs = [...new Set(cand.map(t => t.h || 0))];
+  const near = (h: number) => cand.filter(t => (t.h || 0) >= h * 0.7 && (t.h || 0) <= h / 0.7 || !h).length;
+  const hMax = hs.length > 1 ? hs.reduce((b, h) => near(h) > near(b) || (near(h) === near(b) && h > b) ? h : b, hs[0]) : hs[0];
+  const titles = cand.filter(t => !hMax || (t.h || 0) >= hMax * 0.7 && (t.h || 0) <= hMax / 0.7 || /門窗[表圖]$/.test(t.s.replace(/\s/g, '')))
     .filter((t, i, a) => a.findIndex(o => o.s === t.s && Math.hypot(o.x - t.x, o.y - t.y) < (hMax || 1)) === i);
   const gaps: number[] = [];
   for (const t of titles) {
@@ -171,11 +176,13 @@ const ROOF_UPSTAND = 30;
 
 export function analyzeBuilding(d: DxfDrawing, defaultH = WALL_H): BuildingAnalysis | null {
   const views = findViews(d);
+  const planViews = views.filter(v => v.kind === 'plan' && v.floors.length);
+  if (!planViews.length) return null;
+  const { scale, wallLayers } = learnWalls(d, planViews);
+  extraWall = new Set(wallLayers); scaleNow = scale;
   // when two files both have a plan of a storey (architectural and structural), the one with the most wall lines wins
   const walls = (v: SheetView) => d.segs.filter(s => isWallLayer(s.layer) && inBox(v.box, s.a[0], s.a[1]) && inBox(v.box, s.b[0], s.b[1])).length;
-  const plans = views.filter(v => v.kind === 'plan' && v.floors.length).map(v => ({ v, n: walls(v) })).sort((a, b) => b.n - a.n).map(p => p.v);
-  if (!plans.length) return null;
-  const scale = UNIT_SCALE[guessUnits(d)] || 1;
+  const plans = planViews.map(v => ({ v, n: walls(v) })).sort((a, b) => b.n - a.n).map(p => p.v);
   const levels = readLevels(d, views, scale);
   const schedule = parseSchedule(d);
   const pm = d.texts.map(t => /女兒牆[^0-9]{0,6}(\d{2,3})\s*(㎝|cm|公分)/i.exec(t.s)).find(Boolean);
@@ -191,10 +198,41 @@ export function analyzeBuilding(d: DxfDrawing, defaultH = WALL_H): BuildingAnaly
     const h = k === 'RF' ? ROOF_UPSTAND : !above && i === keys.length - 1 && k.startsWith('R') ? parapet : above ? above[1] - base : defaultH;
     storeys.push({ key: k, title: plans.find(p => p.floors.includes(k))!.title, base, h });
   }
-  return { views, plans, levels, storeys, schedule, parapet, scale };
+  return { views, plans, levels, storeys, schedule, parapet, scale, wallLayers };
 }
 
-const isWallLayer = (l: string) => guessLayerKind(l) === 'wall' || /^COL/i.test(l);
+let extraWall = new Set<string>(), scaleNow = 0;
+const isWallLayer = (l: string) => guessLayerKind(l) === 'wall' || /^COL/i.test(l) || extraWall.has(l);
+
+/**
+ * Drawing units and wall layers of a set whose headers or layer names are no help (a header saying mm over a drawing in cm,
+ * walls on layers called C2 or PEN15). When no plan has a wall layer by name, a layer counts as walls if its lines pair up
+ * into double-line walls; the unit is the one that makes the most such pairs 8–40 cm thick.
+ */
+function learnWalls(d: DxfDrawing, plans: SheetView[]): { scale: number; wallLayers: string[] } {
+  const header = UNIT_SCALE[guessUnits(d)] || 1;
+  const named = plans.some(v => d.segs.some(s => isWallLayer(s.layer) && inBox(v.box, s.a[0], s.a[1]) && inBox(v.box, s.b[0], s.b[1])));
+  if (named) return { scale: header, wallLayers: [] };
+  const byLayer = new Map<string, DxfSeg[]>();
+  for (const v of plans) for (const sg of d.segs) {
+    if (!inBox(v.box, sg.a[0], sg.a[1]) || !inBox(v.box, sg.b[0], sg.b[1]) || guessLayerKind(sg.layer) !== 'line' || /TEXT|AREA|PEN|DIM|圖框|TOIL|DOOR|DW|STAIR|SYM|AID|PAVE/i.test(sg.layer)) continue;
+    (byLayer.get(sg.layer) || byLayer.set(sg.layer, []).get(sg.layer)!).push(sg);
+  }
+  let best = { scale: header, layers: [] as string[], total: 0 };
+  for (const k of [header, 1, 0.1, 10]) {
+    const layers: string[] = [];
+    let total = 0;
+    for (const [l, ss] of byLayer) {
+      if (ss.length < 8) continue;
+      const w = pairWalls(ss.map(sg => ({ x1: sg.a[0] * k, z1: sg.a[1] * k, x2: sg.b[0] * k, z2: sg.b[1] * k }))).filter(x => !x.single && x.t >= 8 && x.t <= 40);
+      const len = w.reduce((n, x) => n + Math.hypot(x.bx - x.ax, x.bz - x.az), 0);
+      if (len >= 1000 && w.length >= 6) { layers.push(l); total += len; }
+    }
+    if (total > best.total * 1.2) best = { scale: k, layers, total };
+  }
+  return { scale: best.scale, wallLayers: best.layers };
+}
+
 const isOpenLayer = (l: string) => /OPEN|DOOR|WIN|門|窗/i.test(l) && !/編號|TAG|TEXT/i.test(l);
 
 interface PlanGeo { segs: DxfSeg[]; ox: number; oy: number; gx: number[]; gy: number[] }
@@ -236,7 +274,7 @@ export function buildingArea(segs: DxfSeg[], gap: number): { x0: number; y0: num
 
 function planGeo(d: DxfDrawing, v: SheetView): PlanGeo {
   let segs = d.segs.filter(s => inBox(v.box, s.a[0], s.a[1]) && inBox(v.box, s.b[0], s.b[1]));
-  const k = UNIT_SCALE[guessUnits(d)] || 1, area = buildingArea(segs, 400 / k), m = 200 / k;
+  const k = scaleNow || UNIT_SCALE[guessUnits(d)] || 1, area = buildingArea(segs, 400 / k), m = 200 / k;
   if (area) segs = segs.filter(s => [s.a, s.b].every(q => q[0] >= area.x0 - m && q[0] <= area.x1 + m && q[1] >= area.y0 - m && q[1] <= area.y1 + m));
   const grid = d.texts.filter(t => /GTAG|GRID|AXIS|軸/i.test(t.layer) && inBox(v.box, t.x, t.y));
   const nums = grid.filter(t => /^\d{1,2}$/.test(t.s)).sort((a, b) => +a.s - +b.s);
@@ -648,6 +686,7 @@ function readPanels(d: DxfDrawing, v: SheetView, X: (x: number) => number, Z: (y
 /** Builds every storey of the analysed drawing set, stacked at its level. */
 export function buildBuilding(d: DxfDrawing, a: BuildingAnalysis, name: string, firstId = 1): BuildingResult {
   const S = a.scale;
+  extraWall = new Set(a.wallLayers); scaleNow = S;
   const geos = new Map(a.plans.map(p => [p, planGeo(d, p)]));
   let minX = Infinity, maxY = -Infinity, maxX = -Infinity, minY = Infinity;
   for (const [, g] of geos) for (const s of g.segs) if (isWallLayer(s.layer)) for (const p of [s.a, s.b]) {
