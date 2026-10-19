@@ -1,20 +1,17 @@
-import { supabase } from './supabase';
+import { drawingFromDwg, type DwgDatabase, type DxfDrawing } from '@cloud-modeler/core';
 
-const base = (import.meta.env.VITE_DWG_CONVERTER_URL as string | undefined)?.replace(/\/$/, '');
-export const dwgConverterReady = !!base;
-
-/** Sends a DWG file to services/dwg-converter and returns the DXF text. */
-export async function convertDwg(file: File): Promise<ArrayBuffer> {
-  if (!base) throw new Error('尚未設定 DWG 轉檔服務');
-  const headers: Record<string, string> = {};
-  const token = supabase ? (await supabase.auth.getSession()).data.session?.access_token : undefined;
-  if (token) headers.Authorization = `Bearer ${token}`;
-  const body = new FormData();
-  body.append('file', file);
-  const res = await fetch(`${base}/convert`, { method: 'POST', body, headers });
-  if (!res.ok) {
-    const msg = await res.text().catch(() => '');
-    throw new Error(msg || `轉檔服務回應 ${res.status}`);
+/**
+ * Reads a DWG file in the browser with LibreDWG compiled to WebAssembly.
+ * The reader (about 10 MB) is only downloaded the first time a DWG is opened.
+ */
+export async function readDwg(buf: ArrayBuffer, version: string): Promise<DxfDrawing> {
+  const { LibreDwg, Dwg_File_Type } = await import('@mlightcad/libredwg-web');
+  const lib = await LibreDwg.create();
+  const dwg = lib.dwg_read_data(buf, Dwg_File_Type.DWG);
+  if (!dwg) throw new Error('無法讀取這個 DWG 檔');
+  try {
+    return drawingFromDwg(lib.convert(dwg) as unknown as DwgDatabase, version);
+  } finally {
+    lib.dwg_free(dwg);
   }
-  return res.arrayBuffer();
 }

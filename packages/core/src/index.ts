@@ -6,3 +6,5 @@ export * from './cadImport';
 export * from './sampleDxf';
 export * from './rooms';
 export * from './takeoff';
+export * from './dwgDb';
+export * from './building';

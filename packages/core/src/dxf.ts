@@ -2,8 +2,8 @@
 export type Pt = [number, number];
 export interface DxfSeg { layer: string; a: Pt; b: Pt }
 export interface DxfPoly { layer: string; pts: Pt[]; closed: boolean }
-export interface DxfText { layer: string; x: number; y: number; s: string }
-export interface DxfArc { layer: string; c: Pt; r: number; sweep: number }
+export interface DxfText { layer: string; x: number; y: number; s: string; /** text height */ h?: number; /** attribute tag (ATTRIB) */ tag?: string }
+export interface DxfArc { layer: string; c: Pt; r: number; sweep: number; /** start and end points */ p0?: Pt; p1?: Pt }
 export interface DxfDrawing {
   segs: DxfSeg[];
   polys: DxfPoly[];
@@ -131,12 +131,15 @@ export function parseDxf(text: string): DxfDrawing {
         const n = Math.max(6, Math.ceil((a1 - a0) / 10)), pts: Pt[] = [];
         for (let i = 0; i <= n; i++) { const a = (a0 + (a1 - a0) * i / n) * Math.PI / 180; pts.push(T(cx + r * Math.cos(a), cy + r * Math.sin(a))); }
         for (let i = 0; i + 1 < pts.length; i++) seg(layer, pts[i], pts[i + 1]);
-        if (t === 'ARC') out.arcs.push({ layer, c: T(cx, cy), r: r * Math.sqrt(Math.abs(xf.a * xf.d - xf.b * xf.c)), sweep: a1 - a0 });
+        if (t === 'ARC') out.arcs.push({ layer, c: T(cx, cy), r: r * Math.sqrt(Math.abs(xf.a * xf.d - xf.b * xf.c)), sweep: a1 - a0, p0: pts[0], p1: pts[pts.length - 1] });
         bump(layer);
       }
-      else if (t === 'TEXT' || t === 'MTEXT') {
+      else if (t === 'TEXT' || t === 'MTEXT' || t === 'ATTRIB') {
         const s = cleanText(all(en, 3).join('') + (g[1] || ''));
-        if (s) { const [x, y] = T(+g[10], +g[20]); out.texts.push({ layer, x, y, s }); bump(layer); }
+        if (s) {
+          const [x, y] = T(+g[10], +g[20]), h = (+g[40] || 0) * Math.hypot(xf.a, xf.b);
+          out.texts.push(t === 'ATTRIB' ? { layer, x, y, s, h, tag: g[2] } : { layer, x, y, s, h }); bump(layer);
+        }
       }
       else if (t === 'INSERT' && depth < 6) {
         const b = blocks[g[2]];

@@ -1,6 +1,6 @@
 import { computeRooms, type RoomLabel, type RoomStat } from './rooms';
 import { WALL_H } from './sample';
-import { isBox, isDoor, type BoxObject, type Bounds, type CadDoor, type FinishChoice, type ModelObject, type RoomRect, type TakeoffSettings } from './types';
+import { isBox, isDoor, type BoxObject, type Bounds, type CadData, type CadDoor, type FinishChoice, type ModelObject, type RoomRect, type TakeoffSettings } from './types';
 
 export const PING = 3.3058;
 export const FINISHES = {
@@ -48,6 +48,9 @@ export interface TakeoffInput {
 }
 
 const r2 = (v: number) => Math.round(v * 100) / 100;
+/** names given to openings matched to a door / window schedule, e.g. "D1 木門 90×210" */
+const SCHED = /^([A-Z]{1,3}\d{0,3}[A-Z]?) (\S+) ([\d.]+)×([\d.]+)$/;
+const schedKey = (name: string) => { const m = SCHED.exec(name); return m ? `${m[1]} ${m[2]} ${m[3]}*${m[4]}` : null; };
 const FACADES: Facade[] = ['北向', '東向', '南向', '西向'];
 
 export function computeTakeoff(inp: TakeoffInput): Takeoff {
@@ -55,7 +58,7 @@ export function computeTakeoff(inp: TakeoffInput): Takeoff {
   const cx = bounds.W / 2, cz = bounds.D / 2;
   const boxes = objects.filter(isBox);
   const walls = boxes.filter(o => o.layer === 'wall' && o.h > 0);
-  const isExt = (o: BoxObject) => /外牆|窗台|窗楣/.test(o.name) || Math.min(o.w, o.d) >= 18;
+  const isExt = (o: BoxObject) => /外牆|窗台|窗楣|女兒牆/.test(o.name) || Math.min(o.w, o.d) >= 18;
   const len = (o: BoxObject) => Math.max(o.w, o.d) / 100;
   const sum = <T>(a: T[], f: (o: T) => number) => a.reduce((s, o) => s + f(o), 0);
   const full = walls.filter(o => o.y === 0 && o.h >= 200);
@@ -65,9 +68,9 @@ export function computeTakeoff(inp: TakeoffInput): Takeoff {
     .map(r => ({ ...r, fl: S.floor, fin: { ...defaultFinish(r.name), ...(inp.finishes[r.name] || {}) } }));
   const floorArea = sum(rooms, r => r.area);
 
-  const doors = objects.filter(isDoor).map(o => ({ w: o.b - o.a, ext: /大門/.test(o.name) }))
-    .concat((inp.cadDoors || []).map(d => ({ w: d.w, ext: d.x < 30 || d.z < 30 || d.x > bounds.W - 30 || d.z > bounds.D - 30 })));
-  const wins = boxes.filter(o => o.layer === 'glass' && o.y > 0).map(o => ({ w: Math.max(o.w, o.d), h: o.h, o }));
+  const doors = objects.filter(isDoor).map(o => ({ w: o.b - o.a, h: o.h || 210, ext: /大門/.test(o.name), name: o.name }))
+    .concat((inp.cadDoors || []).map(d => ({ w: d.w, h: 210, name: '', ext: d.x < 30 || d.z < 30 || d.x > bounds.W - 30 || d.z > bounds.D - 30 })));
+  const wins = boxes.filter(o => o.layer === 'glass' && (o.y > 0 || SCHED.test(o.name))).map(o => ({ w: Math.max(o.w, o.d), h: o.h, o }));
   const winArea = sum(wins, w => w.w * w.h / 1e4);
 
   const groups = new Map<string, FinishGroup>();
@@ -130,15 +133,15 @@ export function computeTakeoff(inp: TakeoffInput): Takeoff {
   for (const g of G) if (/防水處理/.test(g.title)) item(strip(g.title), '㎡', g.total);
   sec('六、門窗工程');
   const dk: Record<string, number> = {};
-  for (const d of doors) { const k = `${Math.round(d.w)}*210`; dk[k] = (dk[k] || 0) + 1; }
-  for (const k of Object.keys(dk).sort()) item(`D 門 ${k}`, '樘', dk[k]);
+  for (const d of doors) { const k = schedKey(d.name) || `D 門 ${Math.round(d.w)}*${Math.round(d.h)}`; dk[k] = (dk[k] || 0) + 1; }
+  for (const k of Object.keys(dk).sort()) item(k, '樘', dk[k]);
   const wk: Record<string, number> = {};
-  for (const w of wins) { const k = `${Math.round(w.w)}*${Math.round(w.h)}`; wk[k] = (wk[k] || 0) + 1; }
-  for (const k of Object.keys(wk).sort()) item(`W 鋁窗 ${k}`, '樘', wk[k]);
+  for (const w of wins) { const k = schedKey(w.o.name) || `W 鋁窗 ${Math.round(w.w)}*${Math.round(w.h)}`; wk[k] = (wk[k] || 0) + 1; }
+  for (const k of Object.keys(wk).sort()) item(k, '樘', wk[k]);
   item('鋁窗玻璃', '㎡', winArea);
   const winPerim = sum(wins, w => 2 * (w.w + w.h) / 100);
-  item('外牆門窗防水工程', 'M', winPerim + sum(doors.filter(d => d.ext), d => (d.w + 420) / 100), '外牆開口周長');
-  item('門窗填縫', 'M', winPerim + sum(doors, d => (d.w + 420) / 100), '所有門窗周長');
+  item('外牆門窗防水工程', 'M', winPerim + sum(doors.filter(d => d.ext), d => (d.w + 2 * d.h) / 100), '外牆開口周長');
+  item('門窗填縫', 'M', winPerim + sum(doors, d => (d.w + 2 * d.h) / 100), '所有門窗周長');
   sec('九、衛浴設備');
   const bath = boxes.filter(o => o.layer === 'bath' && o.h > 10);
   const basins = bath.filter(o => /洗手|檯|台/.test(o.name)).length, wc = bath.filter(o => /馬桶/.test(o.name)).length;
@@ -148,4 +151,66 @@ export function computeTakeoff(inp: TakeoffInput): Takeoff {
   sec('其他（模型未含，請依圖說另計）');
   for (const t of ['鋼架工程', '水電工程', '弱電工程', '消防工程', '道路排水溝及圍牆工程', '雜項工程']) item(t, '式', '另計');
   return { budget: B, groups: G, rooms, floorArea, wallH: H };
+}
+
+/**
+ * Takeoff for a whole-building import: each storey is measured on its own (rooms,
+ * walls, openings, slab) and the results are added up. Room names get the storey
+ * key in front ("2F 客餐廳") so each floor's finishes can be set separately.
+ */
+export function computeBuildingTakeoff(objects: ModelObject[], cad: CadData, finishes: Record<string, Partial<FinishChoice>>, settings: TakeoffSettings): Takeoff {
+  const floors = cad.floors || [];
+  const parts = floors.map(f => computeTakeoff({
+    objects: objects.filter(o => o.floor === f.key).map(o => isBox(o) ? { ...o, y: o.y - f.y } : { ...o, y: (o.y || 0) - f.y }),
+    bounds: { W: cad.W, D: cad.D },
+    labels: f.texts.map(t => ({ n: `${f.key} ${t.s}`, x: t.x, z: t.z })),
+    finishes,
+    settings: { ...settings, floor: f.key },
+  }));
+  const budget: BudgetLine[] = [];
+  const at = new Map<string, BudgetLine>();
+  let sec = '';
+  for (const p of parts) for (const b of p.budget) {
+    if (b.sec) { sec = b.sec; if (!budget.some(x => x.sec === b.sec)) budget.push({ ...b }); continue; }
+    const k = `${sec}|${b.name}|${b.unit}`, cur = at.get(k);
+    if (!cur) {
+      const line = { ...b };
+      at.set(k, line);
+      // keep sections together: insert after the last line of the same section
+      let i = budget.findIndex(x => x.sec === sec) + 1;
+      while (i < budget.length && !budget[i].sec) i++;
+      budget.splice(i, 0, line);
+    } else if (typeof cur.q === 'number' && typeof b.q === 'number') { cur.q = r2(cur.q + b.q); cur.note = '各層合計'; }
+  }
+  // building-wide items are not per storey
+  const top = Math.max(0, ...floors.map(f => f.y + f.h));
+  const perim = 2 * (cad.W + cad.D) / 100;
+  for (const b of budget) {
+    if (b.name === '放樣') { b.q = r2(cad.W * cad.D / 1e4); b.note = `建築外框 ${Math.round(cad.W)}×${Math.round(cad.D)} cm`; }
+    if (b.name === '施工架') { b.q = r2(perim * (top + 100) / 100); b.note = `外周長 ${r2(perim)} m × (建物高 ${r2(top / 100)} m＋1 m)`; }
+  }
+  // door and window types first in their section, as a single storey lists them
+  const isType = (b: BudgetLine) => !!b.name && (/^(D 門|W 鋁窗) /.test(b.name) || /^[A-Z]{1,3}\d{0,3}[A-Z]? \S+ [\d.]+\*/.test(b.name));
+  for (let i = 0; i < budget.length;) {
+    let j = i + 1;
+    while (j < budget.length && !budget[j].sec) j++;
+    const body = budget.slice(i + 1, j);
+    budget.splice(i + 1, body.length, ...body.filter(isType).sort((a, b) => a.name!.localeCompare(b.name!)), ...body.filter(b => !isType(b)));
+    i = j;
+  }
+  let n = 0;
+  for (const b of budget) { if (b.sec) n = 0; else b.i = ++n; }
+  const groups = new Map<string, FinishGroup>();
+  for (const p of parts) for (const g of p.groups) {
+    const cur = groups.get(g.title);
+    if (!cur) groups.set(g.title, { ...g, rows: [...g.rows] });
+    else { cur.rows.push(...g.rows); cur.total = r2(cur.total + g.total); }
+  }
+  return {
+    budget,
+    groups: [...groups.values()],
+    rooms: parts.flatMap(p => p.rooms),
+    floorArea: parts.reduce((s, p) => s + p.floorArea, 0),
+    wallH: Math.max(WALL_H, ...parts.map(p => p.wallH)),
+  };
 }

@@ -55,6 +55,8 @@ const cssColor = (name: string) => new THREE.Color(getComputedStyle(document.doc
 export class Viewer {
   objects: ModelObject[] = [];
   cad: CadData | null = null;
+  /** whole-building imports: the storey shown on its own, null for the whole building */
+  floor: string | null = null;
   mode: RenderMode = 'mat';
   tool: Tool = 'orbit';
   magnet = true;
@@ -82,6 +84,8 @@ export class Viewer {
   private labels: Label[] = [];
   private history: { o: string; c: CadData | null }[] = [];
   private center = new THREE.Vector3(SAMPLE_W / 2, 0, SAMPLE_D / 2);
+  /** height of what is shown, so tall buildings fit the camera */
+  private height = WALL_H;
   private bounds = { W: SAMPLE_W, D: SAMPLE_D };
   private uid = 1;
   private fly: { from: { pos: THREE.Vector3; target: THREE.Vector3; fov: number }; to: { pos: THREE.Vector3; target: THREE.Vector3; fov: number }; t0: number } | null = null;
@@ -139,6 +143,7 @@ export class Viewer {
   load(objects: ModelObject[], cad: CadData | null) {
     this.objects = objects;
     this.cad = cad;
+    this.floor = null;
     this.uid = Math.max(0, ...objects.map(o => o.id)) + 1;
     this.selectedId = null;
     this.history = [];
@@ -152,6 +157,7 @@ export class Viewer {
     this.snapshot();
     this.objects = objects;
     this.cad = cad;
+    this.floor = null;
     this.uid = Math.max(0, ...objects.map(o => o.id)) + 1;
     this.selectedId = null;
     this.clearMeasure();
@@ -162,6 +168,17 @@ export class Viewer {
   }
   nextId() { return this.uid; }
   get roomRects(): RoomRect[] | undefined { return this.cad ? undefined : SAMPLE_ROOMS; }
+  get floors() { return this.cad?.floors || []; }
+  /** Shows one storey of a whole-building import (null: all). */
+  setFloor(key: string | null) {
+    this.floor = key;
+    this.selectedId = null;
+    this.applyCadView();
+    this.rebuild();
+    if (this.sectionOn) this.setSection(true, this.sectionH);
+  }
+  private get floorBase() { return this.floors.find(f => f.key === this.floor)?.y || 0; }
+  private shown(o: ModelObject) { return !this.floor || !o.floor || o.floor === this.floor; }
   get planBounds() { return { ...this.bounds }; }
   roomLabels() {
     if (this.cad) return this.cad.texts.map(t => ({ n: t.s, x: t.x, z: t.z }));
@@ -201,7 +218,7 @@ export class Viewer {
   setSection(on: boolean, h = this.sectionH) {
     this.sectionOn = on;
     this.sectionH = h;
-    this.renderer.clippingPlanes = on ? [new THREE.Plane(new THREE.Vector3(0, -1, 0), h)] : [];
+    this.renderer.clippingPlanes = on ? [new THREE.Plane(new THREE.Vector3(0, -1, 0), h + this.floorBase)] : [];
   }
   setTool(t: Tool) {
     if (this.tool === 'walk' && t !== 'walk') this.exitWalk();
@@ -263,11 +280,12 @@ export class Viewer {
     const hx = o.axis === 'x' ? (hingeEnd ? o.b : o.a) : o.at, hz = o.axis === 'x' ? o.at : (hingeEnd ? o.b : o.a);
     const open = side * (hingeEnd ? -1 : 1) * Math.PI * 0.38;
     const g = new THREE.Group();
-    g.position.set(hx, 0, hz);
+    g.position.set(hx, o.y || 0, hz);
+    const leafH = o.h || 210;
     const leaf = new THREE.Group();
     leaf.rotation.y = base + open;
-    const panel = this.boxMesh(len - 4, 210, /大門/.test(o.name) ? 6 : 4, o);
-    panel.position.set(len / 2, 105, 0);
+    const panel = this.boxMesh(len - 4, leafH, /大門/.test(o.name) ? 6 : 4, o);
+    panel.position.set(len / 2, leafH / 2, 0);
     panel.userData.id = o.id;
     leaf.add(panel);
     g.add(leaf);
@@ -278,6 +296,8 @@ export class Viewer {
     arc.computeLineDistances();
     arc.raycast = () => {};
     g.add(arc);
+    // whole-building imports carry their own lintels
+    if (o.floor) return g;
     const header = this.boxMesh(o.axis === 'x' ? len : 12, WALL_H - 210, o.axis === 'x' ? 12 : len, { ...o, layer: 'wall', color: 0xeeebe5 } as unknown as ModelObject);
     header.position.set(o.axis === 'x' ? (hingeEnd ? -len / 2 : len / 2) : 0, 210 + (WALL_H - 210) / 2, o.axis === 'x' ? 0 : (hingeEnd ? -len / 2 : len / 2));
     header.raycast = () => {};
@@ -297,7 +317,7 @@ export class Viewer {
       this.objGroup.remove(c);
       c.traverse(n => { const m = n as THREE.Mesh; m.geometry?.dispose(); (m.material as THREE.Material | undefined)?.dispose?.(); });
     }
-    for (const o of this.objects) this.objGroup.add(this.buildObj(o));
+    for (const o of this.objects) if (this.shown(o)) this.objGroup.add(this.buildObj(o));
     const floorTint = (f: THREE.Mesh, base: number) => {
       const mat = f.material as THREE.MeshStandardMaterial;
       mat.color.setHex(this.mode === 'white' ? 0xf4f4f2 : this.mode === 'layer' ? 0xe9ecf0 : base);
@@ -333,24 +353,30 @@ export class Viewer {
     this.cadFloor = null;
     const cad = this.cad;
     this.bounds = cad ? { W: cad.W, D: cad.D } : { W: SAMPLE_W, D: SAMPLE_D };
-    this.center.set(this.bounds.W / 2, 0, this.bounds.D / 2);
+    const fl = cad?.floors?.find(f => f.key === this.floor);
+    const top = cad?.floors?.length ? Math.max(...cad.floors.map(f => f.y + f.h)) : 0;
+    const base = fl ? fl.y : 0;
+    this.center.set(this.bounds.W / 2, fl ? fl.y : top / 3, this.bounds.D / 2);
+    this.height = fl ? fl.h : top || WALL_H;
     if (cad) {
       this.cadFloor = new THREE.Mesh(new THREE.PlaneGeometry(cad.W, cad.D), new THREE.MeshStandardMaterial({ color: 0xe2cfae, roughness: 0.9 }));
       this.cadFloor.rotation.x = -Math.PI / 2;
-      this.cadFloor.position.set(cad.W / 2, 0, cad.D / 2);
+      this.cadFloor.position.set(cad.W / 2, base, cad.D / 2);
       this.cadFloor.receiveShadow = true;
       this.cadGroup.add(this.cadFloor);
-      if (cad.segs.length) {
-        const arr = new Float32Array(cad.segs.length / 2 * 3);
-        for (let i = 0, j = 0; i < cad.segs.length; i += 2, j += 3) { arr[j] = cad.segs[i]; arr[j + 1] = 1.5; arr[j + 2] = cad.segs[i + 1]; }
+      // a whole building shows each storey's linework and room names only when that storey is picked
+      const segs = cad.floors?.length ? fl?.segs || [] : cad.segs, texts = cad.floors?.length ? fl?.texts || [] : cad.texts;
+      if (segs.length) {
+        const arr = new Float32Array(segs.length / 2 * 3);
+        for (let i = 0, j = 0; i < segs.length; i += 2, j += 3) { arr[j] = segs[i]; arr[j + 1] = base + 1.5; arr[j + 2] = segs[i + 1]; }
         const g = new THREE.BufferGeometry();
         g.setAttribute('position', new THREE.BufferAttribute(arr, 3));
         const l = new THREE.LineSegments(g, new THREE.LineBasicMaterial({ color: 0x8a5a2b }));
         l.raycast = () => {};
         this.cadGroup.add(l);
       }
-      for (const t of cad.texts) this.addLabel(`<b>${esc(t.s)}</b>`, new THREE.Vector3(t.x, 20, t.z), 'tag').cad = true;
-      this.addLabel(`◂ 總面寬 ${Math.round(cad.W)} cm ▸`, new THREE.Vector3(cad.W / 2, WALL_H + 10, -40), 'dim').cad = true;
+      for (const t of texts) this.addLabel(`<b>${esc(t.s)}</b>`, new THREE.Vector3(t.x, base + 20, t.z), 'tag').cad = true;
+      this.addLabel(`◂ 總面寬 ${Math.round(cad.W)} cm ▸`, new THREE.Vector3(cad.W / 2, (fl ? base + fl.h : top || WALL_H) + 10, -40), 'dim').cad = true;
     }
     this.makeGrid();
     this.fitSun();
@@ -364,7 +390,7 @@ export class Viewer {
     this.scene.background = cssColor('--canvas');
   }
   private fitSun() {
-    const s = Math.max(this.bounds.W, this.bounds.D) / 1180, c = this.center;
+    const s = Math.max(this.bounds.W, this.bounds.D, this.height * 1.4) / 1180, c = this.center;
     this.sun.position.set(c.x - 900 * s, 1600 * s, c.z + 700 * s);
     this.sun.target.position.copy(c);
     Object.assign(this.sun.shadow.camera, { left: -1000 * s, right: 1000 * s, top: 1000 * s, bottom: -1000 * s, near: 100, far: 4000 * s });
@@ -412,11 +438,11 @@ export class Viewer {
 
   /* ---------- camera ---------- */
   private sceneDef(k: SceneKey): { pos: number[]; target?: number[]; fov: number } {
-    const s = Math.max(this.bounds.W, this.bounds.D) / 1180, c = this.center;
+    const s = Math.max(this.bounds.W, this.bounds.D, this.height * 1.4) / 1180, c = this.center;
     if (k === 'sw') return { pos: [c.x - 1050 * s, 1250 * s, c.z + 1250 * s], fov: 40 };
     if (k === 'ne') return { pos: [c.x + 1050 * s, 1250 * s, c.z - 1250 * s], fov: 40 };
     if (k === 'top') return { pos: [c.x, 9500 * s, c.z + 1], fov: 8.5 };
-    if (this.cad) return { pos: [c.x, 170, c.z + this.bounds.D * 0.42], target: [c.x, 120, c.z - this.bounds.D * 0.1], fov: 60 };
+    if (this.cad) { const b = this.floorBase; return { pos: [c.x, 170 + b, c.z + this.bounds.D * 0.42], target: [c.x, 120 + b, c.z - this.bounds.D * 0.1], fov: 60 }; }
     return { pos: [560, 300, 860], target: [540, 140, 250], fov: 55 };
   }
   goScene(k: SceneKey, instant = false) {
@@ -446,7 +472,7 @@ export class Viewer {
   private enterWalk() {
     this.walk.on = true;
     this.walk.saved = { pos: this.camera.position.clone(), target: this.controls.target.clone(), fov: this.camera.fov };
-    this.camera.position.set(this.cad ? this.center.x : 560, 160, this.cad ? this.bounds.D - 80 : 860);
+    this.camera.position.set(this.cad ? this.center.x : 560, 160 + this.floorBase, this.cad ? this.bounds.D - 80 : 860);
     this.walk.yaw = 0;
     this.walk.pitch = -0.05;
     this.camera.fov = 70;
