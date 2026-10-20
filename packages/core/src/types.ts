@@ -23,6 +23,8 @@ export interface BoxObject {
   wc?: number;
   /** set from line colours: same colour as the exterior wall → concrete (rc), another colour → light partition */
   wall?: 'rc' | 'light';
+  /** stair steps: the underside slopes (waist slab) from `lo` at the low end to `hi` at the high end along `axis`, absolute heights, cm */
+  soffit?: { axis: 'x' | 'z'; lo: number; hi: number };
   /** stair steps and stair handrail pieces: riser height, cm */
   rise?: number;
   /** on the first step of each stair: the whole stair for the takeoff (risers as labelled 上16) */

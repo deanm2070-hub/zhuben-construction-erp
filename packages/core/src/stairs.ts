@@ -14,7 +14,7 @@ export interface StairFlight {
   at: number[];
 }
 
-export interface StairStep { x0: number; x1: number; z0: number; z1: number; top: number }
+export interface StairStep { x0: number; x1: number; z0: number; z1: number; top: number; soffit?: { axis: 'x' | 'z'; lo: number; hi: number } }
 export interface StairPlan {
   steps: StairStep[];
   landings: StairStep[];
@@ -84,6 +84,11 @@ export function planStairs(flights: StairFlight[], H: number, start: { x: number
   const rect = (f: StairFlight, a: number, b: number, lo = f.lo, hi = f.hi) => f.axis === 'z'
     ? { x0: lo, x1: hi, z0: Math.min(a, b), z1: Math.max(a, b) }
     : { x0: Math.min(a, b), x1: Math.max(a, b), z0: lo, z1: hi };
+  // waist slab: the underside runs parallel to the nosings, 17 cm (slab thickness along the vertical) below them, never under the floor
+  const sof = (f: StairFlight, ua: number, ub: number, va: number, vb: number) => {
+    const a = Math.max(0, va - 17), b = Math.max(0, vb - 17);
+    return { axis: f.axis, lo: ua < ub ? a : b, hi: ua < ub ? b : a };
+  };
   const railAt = (f: StairFlight, across: number, a: number, b: number, top: number) => f.axis === 'z'
     ? { x0: across, x1: across, z0: a, z1: b, top }
     : { x0: a, x1: b, z0: across, z1: across, top };
@@ -102,7 +107,7 @@ export function planStairs(flights: StairFlight[], H: number, start: { x: number
       const risers = n, r = H / risers;
       const up = start.some(p => near(A, p) && Math.abs((A.axis === 'z' ? p.z : p.x) - last) < Math.abs((A.axis === 'z' ? p.z : p.x) - first)) ? -1 : 1;
       const at = up > 0 ? A.at : [...A.at].reverse();
-      for (let j = 1; j < n; j++) steps.push({ ...rect(A, at[j - 1], at[j]), top: j * r });
+      for (let j = 1; j < n; j++) steps.push({ ...rect(A, at[j - 1], at[j]), top: j * r, soffit: sof(A, at[j - 1], at[j], (j - 1) * r, j * r) });
       for (let j = 1; j < n; j++) rails.push(railAt(A, A.hi, at[j - 1], at[j], j * r));
       holes.push(rect(A, at[0], at[n - 1]));
       plans.push({ steps, landings, rails, holes, risers, width: A.hi - A.lo, run: (A.at[n - 1] - A.at[0]) / (n - 1) });
@@ -117,8 +122,8 @@ export function planStairs(flights: StairFlight[], H: number, start: { x: number
     const dir: 1 | -1 = Math.abs(sAlong - first) <= Math.abs(sAlong - last) ? 1 : -1;
     const at = dir > 0 ? A.at : [...A.at].reverse();
     const half = H / 2, risers = n, r = half / risers;
-    for (let j = 1; j < n; j++) steps.push({ ...rect(up, at[j - 1], at[j]), top: j * r });
-    for (let j = 1; j < n; j++) steps.push({ ...rect(down, at[n - j], at[n - j - 1]), top: half + j * r });
+    for (let j = 1; j < n; j++) steps.push({ ...rect(up, at[j - 1], at[j]), top: j * r, soffit: sof(up, at[j - 1], at[j], (j - 1) * r, j * r) });
+    for (let j = 1; j < n; j++) steps.push({ ...rect(down, at[n - j], at[n - j - 1]), top: half + j * r, soffit: sof(down, at[n - j], at[n - j - 1], half + (j - 1) * r, half + j * r) });
     // half landing across both flights, out to the end of the stair linework
     const lo = Math.min(A.lo, B.lo), hi = Math.max(A.hi, B.hi), end = extent(A, dir);
     const far = Math.abs(end - at[n - 1]) > 20 ? end : at[n - 1] + dir * (up.hi - up.lo);

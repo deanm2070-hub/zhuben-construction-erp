@@ -386,6 +386,23 @@ export class Viewer {
     if (isDoor(o)) return /捲門/.test(o.name) ? this.buildShutter(o) : this.buildDoor(o);
     const framed = this.buildFramed(o);
     if (framed) return framed;
+    if (o.soffit) {
+      // stair step with the sloping underside of the waist slab: side profile extruded across the flight
+      const so = o.soffit, len = so.axis === 'x' ? o.w : o.d, wid = so.axis === 'x' ? o.d : o.w, top = o.y + o.h;
+      const sh = new THREE.Shape([new THREE.Vector2(-len / 2, so.lo), new THREE.Vector2(len / 2, so.hi), new THREE.Vector2(len / 2, top), new THREE.Vector2(-len / 2, top)]);
+      const g = new THREE.ExtrudeGeometry(sh, { depth: wid, bevelEnabled: false });
+      g.translate(0, 0, -wid / 2);
+      if (so.axis === 'z') g.rotateY(-Math.PI / 2);
+      const m = new THREE.Mesh(g, this.matFor(o));
+      m.castShadow = this.mode === 'mat' || this.mode === 'white' || this.mode === 'layer';
+      m.receiveShadow = true;
+      const e = new THREE.LineSegments(new THREE.EdgesGeometry(g, 20), this.edgeMat());
+      e.raycast = () => {};
+      m.add(e);
+      m.position.set(o.x, 0, o.z);
+      m.userData.id = o.id;
+      return m;
+    }
     const m = this.boxMesh(o.w, o.h, o.d, o);
     m.position.set(o.x, o.y + o.h / 2, o.z);
     m.rotation.y = o.rot || 0;
