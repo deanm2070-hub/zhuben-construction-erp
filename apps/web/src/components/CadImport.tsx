@@ -253,6 +253,19 @@ function BuildingStep({ st, firstId, onBuilt, onLayers, onClose }: {
           <thead><tr><th>樓層</th><th className="num">牆</th><th className="num">門</th><th className="num">窗</th><th className="num">樓板</th></tr></thead>
           <tbody>{rep.perFloor.map(f => <tr key={f.key}><td>{f.key}</td><td className="num">{f.walls}</td><td className="num">{f.doors}</td><td className="num">{f.windows}</td><td className="num">{f.slabs}</td></tr>)}</tbody>
         </table></div>
+        <h4 style={{ margin: '12px 0 4px' }}>圖面拆解（每張圖我認成什麼）</h4>
+        <div className="tbl"><table>
+          <thead><tr><th>圖名</th><th>種類</th><th>用在</th></tr></thead>
+          <tbody>{a.views.map((v, i) => { const [kind, use] = ({ plan: ['平面圖', '各層牆、柱、門窗、樓板'], structure: ['結構平面圖', '梁、柱、板編號與配筋'], elevation: ['立面圖', '樓層高程、樓高'], section: ['剖面圖', '樓層高程、樓梯、女兒牆'], schedule: ['門窗表／詳圖', '門窗尺寸、窗台高、數量'] } as Record<string, string[]>)[v.kind]; return <tr key={i}><td>{v.title}</td><td>{kind}</td><td>{v.floors.length ? v.floors.join('、') + ' ' : ''}{use}</td></tr>; })}</tbody>
+        </table></div>
+        {rep.tally.length > 0 && <>
+          <h4 style={{ margin: '12px 0 4px' }}>門窗數量對帳（門窗表的數量 vs 3D 建出的數量）</h4>
+          <div className="tbl"><table>
+            <thead><tr><th>編號</th><th>名稱</th><th className="num">門窗表</th><th className="num">建出</th><th>結果</th></tr></thead>
+            <tbody>{rep.tally.map(t => <tr key={t.code}><td>{t.code}</td><td>{t.name}</td><td className="num">{t.qty ?? '—'}</td><td className="num">{t.built}</td>
+              <td className={t.qty !== undefined && t.qty !== t.built ? 'warn' : ''}>{t.qty === undefined ? '表上沒寫數量' : t.qty === t.built ? '相符' : t.built < t.qty ? `少 ${t.qty - t.built}，可能沒開洞` : `多 ${t.built - t.qty}，可能重複或表上漏算`}</td></tr>)}</tbody>
+          </table></div>
+        </>}
       </>}
       <p className="note">牆依各層平面圖的牆、柱圖層建立，各層用軸線對齊。門窗開口依平面上的編號套用門窗表的高度與窗台高，沒有編號的開口用預設尺寸（門 210、窗台 90＋窗高 150）。</p>
     </Modal>

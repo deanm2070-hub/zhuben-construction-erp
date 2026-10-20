@@ -24,7 +24,7 @@ export interface SheetView {
   /** storey keys a plan stands for, e.g. ['3F', '4F'] */
   floors: string[];
 }
-export interface ScheduleItem { code: string; w: number; h: number; name: string; sill: number; kind: 'door' | 'window'; type: OpeningType; /** a corner window: the width of each leg */ legs?: number[] }
+export interface ScheduleItem { code: string; w: number; h: number; name: string; sill: number; kind: 'door' | 'window'; type: OpeningType; /** a corner window: the width of each leg */ legs?: number[]; /** 數量 column of the schedule */ qty?: number }
 export interface Storey { key: string; title: string; base: number; h: number }
 export interface BuildingAnalysis {
   views: SheetView[];
@@ -178,6 +178,16 @@ export function parseSchedule(d: DxfDrawing): ScheduleItem[] {
       if (st) sill = Math.round(st.v);
     }
     items.push({ code: cd, w: legs ? legs[0] + legs[1] : +size.m![1], h: +size.m![2], name: openingName(cd, label), sill, kind, type, ...(legs ? { legs } : {}) });
+  }
+  // the 數量 row of a table layout: each number belongs to the code of its column
+  for (const q of d.texts.filter(t => /^數量$/.test(t.s.trim()))) {
+    const h = q.h || 20;
+    const row = d.texts.filter(t => /^\d{1,3}$/.test(t.s.trim()) && Math.abs(t.y - q.y) < h * 1.2 && t.x > q.x);
+    for (const n of row) {
+      const code = items.map(i => ({ i, c: d.texts.find(t => t.s.trim() === i.code && t.y > q.y && t.y - q.y < h * 90 && Math.abs(t.x - n.x) < h * 14) })).filter(o => o.c)
+        .sort((a, b) => Math.abs(a.c!.y - b.c!.y) > h * 2 ? a.c!.y - b.c!.y : Math.abs(a.c!.x - n.x) - Math.abs(b.c!.x - n.x))[0];
+      if (code && code.i.qty === undefined) code.i.qty = +n.s;
+    }
   }
   return items;
 }
@@ -787,6 +797,8 @@ export interface BuildReport {
   slantWalls: number;
   unmatchedTags: { floor: string; code: string }[];
   perFloor: { key: string; walls: number; doors: number; windows: number; slabs: number }[];
+  /** door / window schedule against what was built */
+  tally: { code: string; name: string; qty?: number; built: number }[];
 }
 
 export interface BuildingResult {
@@ -1427,6 +1439,10 @@ export function buildBuilding(d: DxfDrawing, a: BuildingAnalysis, name: string, 
     projectionLabels, stairs: stairList,
     slantWalls: objects.filter(o => isBox(o) && o.layer === 'wall' && o.rot && Math.max(o.w, o.d) >= 300).length,
     unmatchedTags,
+    tally: a.schedule.map(i => {
+      const n = objects.filter(o => (o.layer === 'door' || o.layer === 'glass') && o.name.split(' ')[0] === i.code).length;
+      return { code: i.code, name: i.name, ...(i.qty !== undefined ? { qty: i.qty } : {}), built: i.legs ? Math.ceil(n / 2) : n };
+    }),
     perFloor: a.storeys.map(st => {
       const of = objects.filter(o => o.floor === st.key);
       return { key: st.key, walls: of.filter(o => isBox(o) && o.layer === 'wall').length, doors: of.filter(o => !isBox(o)).length, windows: of.filter(o => isBox(o) && o.layer === 'glass').length, slabs: of.filter(o => isBox(o) && o.layer === 'slab' && /板|地坪/.test(o.name) && !/梁/.test(o.name)).length };
