@@ -796,6 +796,7 @@ export function buildBuilding(d: DxfDrawing, a: BuildingAnalysis, name: string, 
   // 女兒牆高度 written anywhere (plans, elevations, sections)
   const parapetNote = d.texts.some(t => /女兒牆/.test(HEIGHT_NOTE.exec(t.s)?.[1] || '')) ? a.parapet : null;
   const slabsOf = new Map<string, { x0: number; x1: number; z0: number; z1: number }[]>();
+  const holesOf = new Map<string, { x0: number; x1: number; z0: number; z1: number }[]>();
   const terraces = new Map<string, { x: number; z: number; s: string }[]>();
   const beamLines: { st: Storey; xs: number[]; zs: number[] }[] = [];
 
@@ -871,6 +872,7 @@ export function buildBuilding(d: DxfDrawing, a: BuildingAnalysis, name: string, 
     }
     if (!parapet) beamLines.push({ st, xs: g.gx.map(X), zs: g.gy.map(Z) });
     const holes = below;
+    holesOf.set(st.key, holes);
     slabsOf.set(st.key, []);
     terraces.set(st.key, texts.filter(t => /露台|平台/.test(t.s) && !/屋突屋頂平台|上方/.test(t.s) || /屋突屋頂平台/.test(t.s)));
     below = stairs.flatMap(sp => sp.holes);
@@ -988,7 +990,18 @@ export function buildBuilding(d: DxfDrawing, a: BuildingAnalysis, name: string, 
     if (below.length && area(roof) < area(below) * 0.85) {
       for (let i = objects.length - 1; i >= 0; i--) { const o = objects[i]; if (isBox(o) && o.floor === 'RF' && o.layer === 'slab') objects.splice(i, 1); }
       slabsOf.set('RF', []);
-      for (const r of below) {
+      // the stair up to the roof leaves its opening
+      const cut = (r: { x0: number; x1: number; z0: number; z1: number }) => (holesOf.get('RF') || []).reduce((rs, h) => rs.flatMap(q => {
+        if (h.x1 <= q.x0 || h.x0 >= q.x1 || h.z1 <= q.z0 || h.z0 >= q.z1) return [q];
+        const out = [];
+        if (h.x0 > q.x0) out.push({ ...q, x1: h.x0 });
+        if (h.x1 < q.x1) out.push({ ...q, x0: h.x1 });
+        const a = Math.max(q.x0, h.x0), b = Math.min(q.x1, h.x1);
+        if (h.z0 > q.z0) out.push({ x0: a, x1: b, z0: q.z0, z1: h.z0 });
+        if (h.z1 < q.z1) out.push({ x0: a, x1: b, z0: h.z1, z1: q.z1 });
+        return out;
+      }), [r]);
+      for (const r of below.flatMap(cut)) {
         objects.push({ id: id++, layer: 'slab', name: '屋頂板（CAD）', floor: 'RF', x: (r.x0 + r.x1) / 2, z: (r.z0 + r.z1) / 2, w: r.x1 - r.x0, d: r.z1 - r.z0, h: SLAB, y: top.base - SLAB, color: 0xd6d1c7 });
         slabsOf.get('RF')!.push(r);
       }
