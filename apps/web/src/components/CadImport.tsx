@@ -240,6 +240,7 @@ function BuildingStep({ st, firstId, onBuilt, onLayers, onClose }: {
         ))}</tbody>
       </table></div>}
       {rep && <>
+        {a.warnings.map((w, i) => <p key={'w' + i} className="warn" style={{ margin: '8px 0' }}>⚠ {w}</p>)}
         <h4 style={{ margin: '12px 0 4px' }}>辨識確認（我猜的，不對請在這裡改）</h4>
         <div className="tbl"><table><tbody>
           {rep.wallColours.length >= 2 && <tr><td>外牆線顏色</td><td>
@@ -257,6 +258,7 @@ function BuildingStep({ st, firstId, onBuilt, onLayers, onClose }: {
           <thead><tr><th>樓層</th><th className="num">牆</th><th className="num">門</th><th className="num">窗</th><th className="num">樓板</th></tr></thead>
           <tbody>{rep.perFloor.map(f => <tr key={f.key}><td>{f.key}</td><td className="num">{f.walls}</td><td className="num">{f.doors}</td><td className="num">{f.windows}</td><td className="num">{f.slabs}</td></tr>)}</tbody>
         </table></div>
+        {a.warnings.map((w, i) => <p key={i} className="warn" style={{ margin: '8px 0' }}>⚠ {w}</p>)}
         <h4 style={{ margin: '12px 0 4px' }}>圖面拆解（每張圖我認成什麼）</h4>
         <div className="tbl"><table>
           <thead><tr><th>圖名</th><th>種類</th><th>用在</th></tr></thead>

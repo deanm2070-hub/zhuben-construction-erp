@@ -40,6 +40,8 @@ export interface BuildingAnalysis {
   wallLayers: string[];
   /** layers whose repeated small squares are columns (named by colour or pen rather than COL) */
   colLayers: string[];
+  /** things the drawing set is missing that make the 3D come out empty */
+  warnings: string[];
 }
 
 const TITLE_RE = /(平面圖|立面圖|剖面圖|門窗表|門窗圖|門窗詳圖)$/;
@@ -252,7 +254,13 @@ export function analyzeBuilding(d: DxfDrawing, defaultH = WALL_H): BuildingAnaly
     const h = k === 'RF' ? ROOF_UPSTAND : !above && i === keys.length - 1 && k.startsWith('R') ? parapet : above ? above[1] - base : defaultH;
     storeys.push({ key: k, title: plans.find(p => p.floors.includes(k))!.title, base, h });
   }
-  return { views, plans, levels, storeys, schedule, parapet, scale, wallLayers, colLayers };
+  // a set whose plans carry hardly any wall lines (area-review sheets, site plans) cannot be built into walls
+  const warnings: string[] = [];
+  const wallSet = new Set(wallLayers);
+  let wallSegs = 0;
+  for (const g of d.segs) if (wallSet.has(g.layer) || guessLayerKind(g.layer) === 'wall') wallSegs++;
+  if (plans.length && wallSegs < 300) warnings.push(`整份圖只讀到 ${wallSegs} 條牆線，這比較像「面積檢討圖」或示意圖，不是畫有牆、門窗的施工平面圖，所以 3D 會幾乎是空的。請改匯入含牆線與門窗的各層平面圖（常見檔名如「各層平面圖」「平面配置圖」的施工圖版本），或直接把這份圖的樓地板面積當作對帳用。`);
+  return { views, plans, levels, storeys, schedule, parapet, scale, wallLayers, colLayers, warnings };
 }
 
 /**
