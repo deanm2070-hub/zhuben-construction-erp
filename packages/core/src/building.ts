@@ -374,13 +374,22 @@ function cutTagged(walls: BoxObject[], tag: { code: string; x: number; z: number
     const mx = (s.x1 + s.x2) / 2, mz = (s.z1 + s.z2) / 2, d = Math.hypot(mx - tag.x, mz - tag.z);
     if (L < width * 0.4 || d > 150 || (best && d >= best.d)) continue;
     const u = axis === 'x' ? mx : mz, v = axis === 'x' ? mz : mx;
-    const wall = walls.find(o => runsAlong(o, axis) && Math.abs(spanOf(o, axis).c - v) <= spanOf(o, axis).half + 3 && u > spanOf(o, axis).lo + width / 2 - 5 && u < spanOf(o, axis).hi - width / 2 + 5);
+    const wall = walls.find(o => runsAlong(o, axis) && Math.abs(spanOf(o, axis).c - v) <= spanOf(o, axis).half + 15 && u > spanOf(o, axis).lo + width * 0.3 && u < spanOf(o, axis).hi - width * 0.3);
     if (wall) best = { axis, wall, u, d };
+  }
+  if (!best) {
+    // no frame lines match a wall: cut the nearest wall run at the tag, at the schedule width
+    let nd = 110;
+    for (const o of walls) for (const axis of ['x', 'z'] as const) {
+      if (!runsAlong(o, axis)) continue;
+      const sp = spanOf(o, axis), u = axis === 'x' ? tag.x : tag.z, v = axis === 'x' ? tag.z : tag.x, dd = Math.abs(sp.c - v);
+      if (dd < nd && u > sp.lo + width * 0.3 && u < sp.hi - width * 0.3) { nd = dd; best = { axis, wall: o, u, d: dd }; }
+    }
   }
   if (!best) return null;
   const { axis, wall, u } = best, sp = spanOf(wall, axis);
   const a = Math.max(sp.lo, u - width / 2), b = Math.min(sp.hi, u + width / 2);
-  if (b - a < width * 0.8) return null;
+  if (b - a < width * 0.5) return null;
   // split the wall around the opening
   if (sp.hi - b > 1) walls.push({ ...wall, ...(axis === 'x' ? { x: (b + sp.hi) / 2, w: sp.hi - b } : { z: (b + sp.hi) / 2, d: sp.hi - b }) });
   if (a - sp.lo > 1) setSpan(wall, axis, sp.lo, a); else setSpan(wall, axis, 0, 0);
@@ -748,7 +757,7 @@ function readColumns(d: DxfDrawing, v: SheetView, X: (x: number) => number, Z: (
   return out;
 }
 
-const SLAB_MARK = /^F?C?S\d{1,2}$/;
+const SLAB_MARK = /^(?:F?C?S\d{1,2}|BS\d{1,2}|Sw)$/;
 /** Slab panels of one structural plan: from each slab mark (S1, CS1, FS1 …) out to the beam centre lines round it. */
 function readPanels(d: DxfDrawing, v: SheetView, X: (x: number) => number, Z: (y: number) => number, lines: ReturnType<typeof readBeams>, W: number, D: number) {
   const out: { mark: string; x0: number; x1: number; z0: number; z1: number }[] = [];
@@ -981,6 +990,27 @@ export function buildBuilding(d: DxfDrawing, a: BuildingAnalysis, name: string, 
     };
     for (const x of xs) if (x > -5 && x < W + 5) beam('z', x);
     for (const z of zs) if (z > -5 && z < D + 5) beam('x', z);
+  }
+  // slab panels read from the structural plans fill the floor where no walls enclose it
+  for (const p of rcPanels) {
+    const st = a.storeys.find(q => q.key === p.fl);
+    if (!st || st.key === '1F') continue;
+    let rs = [{ x0: Math.max(0, p.x0), x1: Math.min(W, p.x1), z0: Math.max(0, p.z0), z1: Math.min(D, p.z1) }].filter(r => r.x1 - r.x0 > 20 && r.z1 - r.z0 > 20);
+    for (const h of [...(slabsOf.get(st.key) || []), ...(holesOf.get(st.key) || [])]) rs = rs.flatMap(q => {
+      if (h.x1 <= q.x0 + 1 || h.x0 >= q.x1 - 1 || h.z1 <= q.z0 + 1 || h.z0 >= q.z1 - 1) return [q];
+      const o = [];
+      if (h.x0 > q.x0) o.push({ ...q, x1: h.x0 });
+      if (h.x1 < q.x1) o.push({ ...q, x0: h.x1 });
+      const x0 = Math.max(q.x0, h.x0), x1 = Math.min(q.x1, h.x1);
+      if (h.z0 > q.z0) o.push({ x0, x1, z0: q.z0, z1: h.z0 });
+      if (h.z1 < q.z1) o.push({ x0, x1, z0: h.z1, z1: q.z1 });
+      return o;
+    });
+    for (const r of rs) {
+      if (r.x1 - r.x0 < 20 || r.z1 - r.z0 < 20) continue;
+      objects.push({ id: id++, layer: 'slab', name: st.key === 'RF' ? '屋頂板（結構圖）' : '樓板（結構圖）', floor: st.key, x: (r.x0 + r.x1) / 2, z: (r.z0 + r.z1) / 2, w: r.x1 - r.x0, d: r.z1 - r.z0, h: SLAB, y: st.base - SLAB, color: 0xd6d1c7 });
+      slabsOf.get(st.key)!.push(r);
+    }
   }
   // wall lines: the colour of the exterior wall decides. Walls drawn in it are concrete, walls in another colour are light partitions.
   const wallBoxes = objects.filter((o): o is BoxObject => isBox(o) && o.layer === 'wall' && o.wc !== undefined && !o.rc && /^(外牆|隔間牆)（CAD）/.test(o.name) && !(Math.max(o.w, o.d) < 120 && Math.min(o.w, o.d) >= 25));
