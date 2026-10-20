@@ -1,6 +1,6 @@
 import { computeBuildingTakeoff, computeTakeoff, DEFAULT_SETTINGS, type FinishChoice, type TakeoffSettings } from '@cloud-modeler/core';
 import { useCallback, useEffect, useRef, useState } from 'react';
-import { TOOL_HINT, Viewer, type DrawKind, type RenderMode, type SceneKey, type Tool } from '../engine/Viewer';
+import { DRAW_KINDS, TOOL_HINT, Viewer, type DrawKind, type RenderMode, type SceneKey, type Tool } from '../engine/Viewer';
 import { download, loadImage, pdfFirstPage } from '../lib/files';
 import { store } from '../lib/store';
 import { CadImport } from './CadImport';
@@ -27,6 +27,7 @@ export function Editor({ projectId, importNow, onExit }: { projectId: string; im
   const [labels, setLabels] = useState(true);
   const [section, setSection] = useState({ on: false, h: 140 });
   const [drawKind, setDrawKind] = useState<DrawKind>('wall');
+  const [drawThick, setDrawThick] = useState(''), [drawH, setDrawH] = useState('');
   const [paint, setPaint] = useState(0x2f6fd6);
   const [info, setInfo] = useState(TOOL_HINT.orbit);
   const [delta, setDelta] = useState('ΔX 0 · ΔZ 0 cm');
@@ -177,8 +178,12 @@ export function Editor({ projectId, importNow, onExit }: { projectId: string; im
           onHome={() => { chooseTool('orbit'); v().goScene('sw'); setScene('sw'); }} />
         {(tool === 'draw' || tool === 'paint' || tool === 'measure' || section.on) && (
           <div className="sub"><div className="subInner">
-            {tool === 'draw' && <><span className="t">畫什麼</span>{([['wall', '隔間牆 12cm'], ['tall', '高櫃 240cm'], ['low', '矮櫃 90cm']] as const).map(([k, l]) =>
-              <button key={k} className={`chip ${drawKind === k ? 'on' : ''}`} onClick={() => { v().drawKind = k; setDrawKind(k); }}>{l}</button>)}</>}
+            {tool === 'draw' && <><span className="t">畫什麼</span>{(Object.keys(DRAW_KINDS) as DrawKind[]).map(k =>
+              <button key={k} className={`chip ${drawKind === k ? 'on' : ''}`} onClick={() => { v().drawKind = k; v().drawThick = 0; v().drawH = 0; setDrawKind(k); setDrawThick(''); setDrawH(''); }}>{DRAW_KINDS[k].label}</button>)}
+              {DRAW_KINDS[drawKind].thick > 0 && <label className="t">厚度 <input id="draw-thick" type="number" inputMode="numeric" min={3} max={100} placeholder={String(DRAW_KINDS[drawKind].thick)} value={drawThick} style={{ width: 56 }}
+                onChange={e => { setDrawThick(e.target.value); v().drawThick = +e.target.value > 0 ? +e.target.value : 0; }} /> cm</label>}
+              {drawKind !== 'slab' && <label className="t">高度 <input id="draw-h" type="number" inputMode="numeric" min={10} max={1000} placeholder={String(DRAW_KINDS[drawKind].h)} value={drawH} style={{ width: 60 }}
+                onChange={e => { setDrawH(e.target.value); v().drawH = +e.target.value > 0 ? +e.target.value : 0; }} /> cm</label>}</>}
             {tool === 'paint' && <><span className="t">顏色</span>{PALETTE.map(c =>
               <button key={c} className={`sw ${paint === c ? 'on' : ''}`} style={{ background: hex(c) }} aria-label={`顏色 ${hex(c)}`} onClick={() => { v().paintColor = c; setPaint(c); }} />)}</>}
             {tool === 'measure' && <><span className="t">捲尺</span><button className="chip" onClick={() => { v().clearMeasure(); setInfo('量測已清除'); }}>清除量測</button></>}

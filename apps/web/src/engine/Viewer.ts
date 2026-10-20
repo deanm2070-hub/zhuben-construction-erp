@@ -8,7 +8,17 @@ import { OrbitControls } from 'three/examples/jsm/controls/OrbitControls.js';
 export type RenderMode = 'mat' | 'layer' | 'white' | 'xray' | 'wire';
 export type Tool = 'orbit' | 'pan' | 'select' | 'measure' | 'push' | 'move' | 'draw' | 'paint' | 'flip' | 'del' | 'walk';
 export type SceneKey = 'sw' | 'ne' | 'top' | 'hall';
-export type DrawKind = 'wall' | 'tall' | 'low';
+export type DrawKind = 'wall' | 'rc' | 'rail' | 'column' | 'slab' | 'tall' | 'low';
+/** what each drawing tool makes: thickness of a line-drawn part (0: drawn as a rectangle), default height, cm */
+export const DRAW_KINDS: Record<DrawKind, { label: string; thick: number; h: number; layer: BoxObject['layer']; color: number }> = {
+  wall: { label: '隔間牆', thick: 12, h: 240, layer: 'wall', color: 0xeeebe5 },
+  rc: { label: 'RC牆', thick: 18, h: 320, layer: 'wall', color: 0xd9d6cf },
+  rail: { label: '欄杆', thick: 10, h: 110, layer: 'rail', color: 0x6b7280 },
+  column: { label: '柱', thick: 0, h: 320, layer: 'wall', color: 0xeeebe5 },
+  slab: { label: '樓板', thick: 0, h: 15, layer: 'slab', color: 0xd6d1c7 },
+  tall: { label: '高櫃', thick: 0, h: 240, layer: 'cabinet', color: 0xc98a4b },
+  low: { label: '矮櫃', thick: 0, h: 90, layer: 'cabinet', color: 0xc98a4b },
+};
 
 export interface ViewerEvents {
   info(text: string): void;
@@ -38,7 +48,7 @@ export const TOOL_HINT: Record<Tool, string> = {
   measure: '捲尺：依序點兩個點量距離。開啟磁吸時會吸附到構件角點。',
   push: '推拉：按住構件上下拖曳，改變高度。',
   move: '移動：按住構件拖曳。磁吸開啟時會貼齊相鄰構件邊緣。',
-  draw: '畫牆/櫃：在地面拖曳。畫牆時依拖曳方向自動決定走向。',
+  draw: '繪圖：選工具列的種類（牆、RC牆、欄杆、柱、樓板、櫃），在地面拖曳。牆與欄杆依拖曳方向決定走向，可改厚度與高度。',
   paint: '油漆桶：選一個顏色，再點構件上色。',
   flip: '改門向：點門片，依序切換四種開門方向。',
   del: '刪除：點構件刪除，可用復原找回。',
@@ -67,6 +77,9 @@ export class Viewer {
   sectionOn = false;
   sectionH = 140;
   drawKind: DrawKind = 'wall';
+  /** thickness and height typed in the toolbar, cm (0: the tool's own) */
+  drawThick = 0;
+  drawH = 0;
   paintColor = 0x2f6fd6;
   selectedId: number | null = null;
 
@@ -761,12 +774,16 @@ export class Viewer {
   private drawBox(a: { x: number; z: number }, b: { x: number; z: number }): Omit<BoxObject, 'id'> | null {
     const dx = b.x - a.x, dz = b.z - a.z;
     if (Math.abs(dx) < 10 && Math.abs(dz) < 10) return null;
-    if (this.drawKind === 'wall') {
-      if (Math.abs(dx) >= Math.abs(dz)) return { x: (a.x + b.x) / 2, z: a.z, w: Math.abs(dx), d: 12, h: WALL_H, y: 0, name: '新增隔間牆', layer: 'wall', color: 0xeeebe5 };
-      return { x: a.x, z: (a.z + b.z) / 2, w: 12, d: Math.abs(dz), h: WALL_H, y: 0, name: '新增隔間牆', layer: 'wall', color: 0xeeebe5 };
+    const k = DRAW_KINDS[this.drawKind], h = this.drawH || k.h, t = this.drawThick || k.thick;
+    // a part drawn on one storey of a whole-building import sits on that storey's floor
+    const on = this.floor ? { floor: this.floor, y: this.floorBase } : { y: 0 };
+    const base = { h: k.layer === 'slab' ? k.h : h, name: `新增${k.label}`, layer: k.layer, color: k.color, ...on };
+    if (k.layer === 'slab') base.y = (on.y || 0) - k.h;
+    if (t) {
+      if (Math.abs(dx) >= Math.abs(dz)) return { x: (a.x + b.x) / 2, z: a.z, w: Math.abs(dx), d: t, ...base };
+      return { x: a.x, z: (a.z + b.z) / 2, w: t, d: Math.abs(dz), ...base };
     }
-    const tall = this.drawKind === 'tall';
-    return { x: (a.x + b.x) / 2, z: (a.z + b.z) / 2, w: Math.max(10, Math.abs(dx)), d: Math.max(10, Math.abs(dz)), h: tall ? 240 : 90, y: 0, name: tall ? '新增高櫃' : '新增矮櫃', layer: 'cabinet', color: 0xc98a4b };
+    return { x: (a.x + b.x) / 2, z: (a.z + b.z) / 2, w: Math.max(10, Math.abs(dx)), d: Math.max(10, Math.abs(dz)), ...base };
   }
   private onUp(e: PointerEvent) {
     this.pointers.delete(e.pointerId);
