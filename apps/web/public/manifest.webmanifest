@@ -1,13 +1,13 @@
 {
   "id": "/",
-  "name": "3DAI算圖",
-  "short_name": "3DAI算圖",
+  "name": "築量雲",
+  "short_name": "築量雲",
   "description": "雲端 3D 建模與 DWG 匯入、工程數量計算",
   "start_url": "/",
   "scope": "/",
   "display": "standalone",
   "background_color": "#ffffff",
-  "theme_color": "#2563eb",
+  "theme_color": "#3b6b7a",
   "lang": "zh-Hant",
   "categories": ["productivity", "business"],
   "icons": [

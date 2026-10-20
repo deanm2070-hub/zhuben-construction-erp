@@ -29,7 +29,7 @@ export function ProjectsPage({ email, onOpen }: { email: string | null; onOpen: 
     <div className="page">
       <div className="wrap">
         <div className="head">
-          <h1>我的專案 <small className="ver">{VERSION}</small></h1>
+          <h1><img src="/logo.png" alt="" width={32} height={32} style={{ verticalAlign: 'middle', marginRight: 8 }} />我的專案 <small className="ver">{VERSION}</small></h1>
           <div className="kv">
             <InstallButton />
             {email && <span className="note">{email}</span>}
