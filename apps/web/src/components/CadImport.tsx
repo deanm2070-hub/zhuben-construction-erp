@@ -84,7 +84,11 @@ export function CadImport({ firstId, onBuilt, onSource, onClose }: {
       if (!d) return;
       ds.push(d);
     }
-    route(mergeDrawings(ds), files.map(f => f.name).join('、'));
+    // merging and recognising a big set is heavy: show that stage, give the page a moment to paint it, and report a failure instead of freezing on the last file
+    setSt({ s: 'reading', name: `已讀完 ${files.length} 個檔，正在合併並辨識樓層、牆、門窗…`, ver: '請稍候，大型圖面可能需要十幾秒' });
+    await new Promise(r => setTimeout(r, 50));
+    try { route(mergeDrawings(ds), files.map(f => f.name).join('、')); }
+    catch (e) { setSt({ s: 'error', msg: `辨識圖面時出錯：${(e as Error).message}。可以先只匯入各層平面圖，或把這份圖傳給我檢查。` }); }
   };
 
   const close = <button className="chip" onClick={onClose}>取消</button>;
