@@ -176,6 +176,8 @@ function BuildingStep({ st, firstId, onBuilt, onLayers, onClose }: {
 }) {
   const { a, dxf, name } = st;
   const [hs, setHs] = useState(a.storeys.map(s => s.h));
+  // what is being typed, so a half-typed number is not snapped back while editing
+  const [draft, setDraft] = useState<Record<string, string>>({});
   const storeys = a.storeys.map((s, i) => ({ ...s, h: hs[i], base: a.storeys[0].base + hs.slice(0, i).reduce((x, y) => x + y, 0) }));
   const views = a.views.filter(v => v.kind !== 'plan').map(v => v.title);
   // what you confirm here is remembered for this drawing set
@@ -216,8 +218,9 @@ function BuildingStep({ st, firstId, onBuilt, onLayers, onClose }: {
         <thead><tr><th>樓層</th><th>平面圖</th><th className="num">樓板高程</th><th className="num">樓高 cm</th></tr></thead>
         <tbody>{storeys.map((s, i) => (
           <tr key={s.key}><td>{s.key}</td><td>{s.title}</td><td className="num">{s.base}</td><td className="num">
-            <input id={`storey-h-${s.key}`} type="number" min={50} max={1000} step={5} value={s.h} style={{ width: 72 }}
-              onChange={e => setHs(h => h.map((v, j) => j === i ? Math.max(50, +e.target.value || v) : v))} />
+            <input id={`storey-h-${s.key}`} type="number" inputMode="numeric" min={0} max={2000} step={5} value={draft[i] ?? s.h} style={{ width: 72 }}
+              onChange={e => { const t = e.target.value; setDraft(d => ({ ...d, [i]: t })); if (+t > 0) setHs(h => h.map((v, j) => j === i ? +t : v)); }}
+              onBlur={() => setDraft(d => { const n = { ...d }; delete n[i]; return n; })} />
             {s.key === 'RF' && ' 女兒牆'}
           </td></tr>
         ))}</tbody>
@@ -226,8 +229,9 @@ function BuildingStep({ st, firstId, onBuilt, onLayers, onClose }: {
         <thead><tr><th>門窗編號</th><th>名稱</th><th className="num">寬 × 高</th><th className="num">窗台高 cm（可改）</th></tr></thead>
         <tbody>{a.schedule.map(i => (
           <tr key={i.code}><td>{i.code}</td><td>{i.name}</td><td className="num">{i.legs ? `${i.legs.join(' + ')}（轉角）` : i.w} × {i.h}</td><td className="num">
-            {i.kind === 'door' ? i.sill : <input id={`sill-${i.code}`} type="number" min={0} max={300} step={5} value={opts.sills?.[i.code] ?? i.sill} style={{ width: 64 }}
-              onChange={e => { const v = Math.max(0, +e.target.value || 0); change({ ...opts, sills: { ...opts.sills, [i.code]: v } }); }} />}
+            {i.kind === 'door' ? i.sill : <input id={`sill-${i.code}`} type="number" min={0} max={300} step={5} value={draft[i.code] ?? opts.sills?.[i.code] ?? i.sill} style={{ width: 64 }}
+              onChange={e => { const t = e.target.value; setDraft(d => ({ ...d, [i.code]: t })); if (t !== '' && +t >= 0) change({ ...opts, sills: { ...opts.sills, [i.code]: +t } }); }}
+              onBlur={() => setDraft(d => { const n = { ...d }; delete n[i.code]; return n; })} />}
           </td></tr>
         ))}</tbody>
       </table></div>}
