@@ -967,7 +967,8 @@ export function buildBuilding(d: DxfDrawing, a: BuildingAnalysis, name: string, 
     const seen: { c: string; x: number; y: number }[] = [];
     for (const t of d.texts) {
       const c = t.s.trim();
-      if (!codes.has(c) || !inBox(p.box, t.x, t.y) || seen.some(o => o.c === c && Math.hypot(o.x - t.x, o.y - t.y) < 1)) continue;
+      const g = geos.get(p)!, tx = (t.x - g.ox - minX) * S, tz = (maxY - (t.y - g.oy)) * S;
+      if (!codes.has(c) || !inBox(p.box, t.x, t.y) || tx < -100 || tz < -100 || tx > W + 100 || tz > D + 100 || seen.some(o => o.c === c && Math.hypot(o.x - t.x, o.y - t.y) < 1)) continue;
       seen.push({ c, x: t.x, y: t.y });
       taggedN.set(c, (taggedN.get(c) || 0) + 1);
       builtCount.set(c, (builtCount.get(c) || 0) + (codes.get(c)!.legs ? codes.get(c)!.legs!.length : 1));
@@ -1023,6 +1024,8 @@ export function buildBuilding(d: DxfDrawing, a: BuildingAnalysis, name: string, 
       const c = t.s.trim();
       if (!codes.has(c) || !inBox(plan.box, t.x, t.y)) continue;
       const x = X(t.x), z = Z(t.y);
+      // a code written in a note beside the building (a legal-review line) is not a tag on a door or window
+      if (x < -100 || z < -100 || x > W + 100 || z > D + 100) continue;
       if (!tags.some(o => o.code === c && Math.hypot(o.x - x, o.z - z) < 5)) tags.push({ code: c, x, z });
     }
     const texts = d.texts.filter(t => inBox(plan.box, t.x, t.y) && /^TEXT$|ROOM|室名|空間/i.test(t.layer) && /[一-鿿]/.test(t.s) && t.s.length <= 12 && !/[0-9]{2,}|㎡|坪|高度|詳|說明|同|$^/.test(t.s))
