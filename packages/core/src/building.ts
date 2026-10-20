@@ -281,8 +281,8 @@ function growPlans(d: DxfDrawing, plans: SheetView[]) {
 /** A square column outline: 25–100 cm on a side, at most 2:1. */
 const squareCol = (pts: Pt[], k: number) => {
   if (pts.length < 4 || pts.length > 5) return null;
-  const xs = pts.map(q => q[0] * k), ys = pts.map(q => q[1] * k), w = Math.max(...xs) - Math.min(...xs), h = Math.max(...ys) - Math.min(...ys);
-  return w >= 25 && h >= 25 && w <= 100 && h <= 100 && Math.max(w, h) <= Math.min(w, h) * 2 ? { w, h, x: (Math.max(...xs) + Math.min(...xs)) / 2 / k, y: (Math.max(...ys) + Math.min(...ys)) / 2 / k } : null;
+  const xs = pts.map(q => q[0] * k), ys = pts.map(q => q[1] * k), w = maxOf(xs) - minOf(xs), h = maxOf(ys) - minOf(ys);
+  return w >= 25 && h >= 25 && w <= 100 && h <= 100 && Math.max(w, h) <= Math.min(w, h) * 2 ? { w, h, x: (maxOf(xs) + minOf(xs)) / 2 / k, y: (maxOf(ys) + minOf(ys)) / 2 / k } : null;
 };
 /** Layers drawing at least four equal small squares in the plans: those squares are columns. */
 function learnColumns(d: DxfDrawing, plans: SheetView[], k: number): string[] {
@@ -365,7 +365,7 @@ export function buildingArea(segs: DxfSeg[], gap: number): { x0: number; y0: num
   const all = [...groups.values()].sort((p, q) => q.n - p.n), main = all[0];
   const keep = all.filter(g => g === main || g.n >= main.n * 0.2
     || (g.x0 <= main.x1 + gap && g.x1 >= main.x0 - gap && g.y0 <= main.y1 + gap && g.y1 >= main.y0 - gap));
-  const area = { x0: Math.min(...keep.map(g => g.x0)), y0: Math.min(...keep.map(g => g.y0)), x1: Math.max(...keep.map(g => g.x1)), y1: Math.max(...keep.map(g => g.y1)), dropped: ws.length - keep.reduce((n, g) => n + g.n, 0) };
+  const area = { x0: minOf(keep.map(g => g.x0)), y0: minOf(keep.map(g => g.y0)), x1: maxOf(keep.map(g => g.x1)), y1: maxOf(keep.map(g => g.y1)), dropped: ws.length - keep.reduce((n, g) => n + g.n, 0) };
   return area.dropped ? area : null;
 }
 
@@ -379,7 +379,7 @@ function planGeo(d: DxfDrawing, v: SheetView): PlanGeo {
   const gx = [...new Set(nums.map(t => Math.round(t.x)))], gy = [...new Set(lets.map(t => Math.round(t.y)))];
   if (nums.length && lets.length) return { segs, ox: nums[0].x, oy: lets[0].y, gx, gy };
   const ws = segs.filter(s => isWallLayer(s.layer));
-  return { segs, ox: Math.min(...ws.flatMap(s => [s.a[0], s.b[0]])), oy: Math.max(...ws.flatMap(s => [s.a[1], s.b[1]])), gx, gy };
+  return { segs, ox: minOf(ws.flatMap(s => [s.a[0], s.b[0]])), oy: maxOf(ws.flatMap(s => [s.a[1], s.b[1]])), gx, gy };
 }
 
 /** Slab thickness used for the 3D floor plates, cm. */
@@ -477,7 +477,7 @@ function cutTagged(walls: BoxObject[], tag: { code: string; x: number; z: number
     let lo = first.lo, hi = first.hi, grew = true;
     const par: typeof openSegs = [];
     while (grew) { grew = false; for (const q of near) if (!par.includes(q.s) && q.lo <= hi + 1 && q.hi >= lo - 1) { par.push(q.s); lo = Math.min(lo, q.lo); hi = Math.max(hi, q.hi); grew = true; } }
-    const vs = par.map(s => axis === 'x' ? s.z1 : s.x1), c = (Math.min(...vs) + Math.max(...vs)) / 2, t = Math.max(10, Math.max(...vs) - Math.min(...vs));
+    const vs = par.map(s => axis === 'x' ? s.z1 : s.x1), c = (minOf(vs) + maxOf(vs)) / 2, t = Math.max(10, maxOf(vs) - minOf(vs));
     // the frame stops short of the jambs: run the opening to a wall or column face close by
     for (const o of walls) {
       const sp = spanOf(o, axis);
@@ -572,6 +572,10 @@ function raster(walls: BoxObject[], W: number, D: number, M = 80) {
  * about a metre are bridged), the walls themselves included, minus shafts and light wells
  * named 天井 / 挑空 / 管道 and the `holes` cut for stairs coming up from below.
  */
+/** min / max of a long list (Math.min(...list) overflows the call stack on a big drawing) */
+function minOf(a: number[]) { let v = Infinity; for (const x of a) if (x < v) v = x; return v; }
+function maxOf(a: number[]) { let v = -Infinity; for (const x of a) if (x > v) v = x; return v; }
+
 /** the drawing's own 「*NF樓地板面積計算」 sum (…=228.32㎡) against the slab area the model built */
 function areaChecks(d: DxfDrawing, keys: string[], objects: ModelObject[]) {
   const heads = d.texts.map(t => ({ f: /^\*?\s*([1-9]\d?)\s*F\s*樓地板面積/.exec(t.s.trim())?.[1], x: t.x, y: t.y })).filter(h => h.f);
@@ -580,7 +584,7 @@ function areaChecks(d: DxfDrawing, keys: string[], objects: ModelObject[]) {
   for (const h of heads) {
     const key = h.f + 'F';
     if (!keys.includes(key) || out.some(o => o.floor === key)) continue;
-    const stop = Math.max(...heads2.filter(t => Math.abs(t.x - h.x) < 800 && t.y < h.y).map(t => t.y), h.y - 1500);
+    const stop = maxOf([...heads2.filter(t => Math.abs(t.x - h.x) < 800 && t.y < h.y).map(t => t.y), h.y - 1500]);
     const r = d.texts.map(t => ({ v: /=\s*([\d.]+)\s*㎡/.exec(t.s), x: t.x, y: t.y })).filter(t => t.v && Math.abs(t.x - h.x) < 800 && t.y < h.y && t.y > stop).sort((p, q) => q.y - p.y)[0];
     if (!r) continue;
     const built = objects.reduce((n, o) => n + (o.floor === key && isBox(o) && o.layer === 'slab' && /（CAD）/.test(o.name) ? o.w * o.d : 0), 0) / 1e4;
@@ -798,7 +802,7 @@ function stairsOf(segs: { x1: number; z1: number; x2: number; z2: number }[], no
   return planStairs(flights, H, start, extent).map(sp => {
     // the 上 label of this stair gives its riser count
     const xs = sp.holes.flatMap(h => [h.x0, h.x1]), zs = sp.holes.flatMap(h => [h.z0, h.z1]);
-    const lab = start.find(n => n.x > Math.min(...xs) - 60 && n.x < Math.max(...xs) + 60 && n.z > Math.min(...zs) - 60 && n.z < Math.max(...zs) + 60);
+    const lab = start.find(n => n.x > minOf(xs) - 60 && n.x < maxOf(xs) + 60 && n.z > minOf(zs) - 60 && n.z < maxOf(zs) + 60);
     const N = lab ? +(/\d+/.exec(lab.s)?.[0] || 0) : 0;
     return { ...sp, labelled: N >= 4 && N <= 40 ? N : 0 };
   });
@@ -909,7 +913,7 @@ function readColumns(d: DxfDrawing, v: SheetView, X: (x: number) => number, Z: (
   for (const p of d.polys) {
     if (!COL_LAYER.test(p.layer) || p.pts.length < 4 || !p.pts.every(q => inBox(v.box, q[0], q[1]))) continue;
     const xs = p.pts.map(q => X(q[0])), zs = p.pts.map(q => Z(q[1]));
-    const x0 = Math.min(...xs), x1 = Math.max(...xs), z0 = Math.min(...zs), z1 = Math.max(...zs), w = x1 - x0, dd = z1 - z0;
+    const x0 = minOf(xs), x1 = maxOf(xs), z0 = minOf(zs), z1 = maxOf(zs), w = x1 - x0, dd = z1 - z0;
     if (w < 20 || dd < 20 || w > 200 || dd > 200) continue;
     const x = (x0 + x1) / 2, z = (z0 + z1) / 2;
     if (out.some(c => Math.abs(c.x - x) < 5 && Math.abs(c.z - z) < 5)) continue;
@@ -1003,7 +1007,7 @@ export function buildBuilding(d: DxfDrawing, a: BuildingAnalysis, name: string, 
   a.storeys.forEach((st, i) => {
     const nx = a.storeys[i + 1], q = stairPre.get(st.key), p = nx && stairPre.get(nx.key), qi = stairIn.get(st.key), pi = nx && stairIn.get(nx.key);
     if (!nx || !q?.length || p?.length !== 1 || qi!.labelled || pi!.labelled || p[0].risers <= q[0].risers) return;
-    const box = (sp: StairPlan) => ({ x0: Math.min(...sp.holes.map(h => h.x0)), x1: Math.max(...sp.holes.map(h => h.x1)), z0: Math.min(...sp.holes.map(h => h.z0)), z1: Math.max(...sp.holes.map(h => h.z1)) });
+    const box = (sp: StairPlan) => ({ x0: minOf(sp.holes.map(h => h.x0)), x1: maxOf(sp.holes.map(h => h.x1)), z0: minOf(sp.holes.map(h => h.z0)), z1: maxOf(sp.holes.map(h => h.z1)) });
     const A = box(q[0]), B = box(p[0]);
     if (Math.min(A.x1, B.x1) - Math.max(A.x0, B.x0) < 30 || Math.min(A.z1, B.z1) - Math.max(A.z0, B.z0) < 30) return;
     stairPre.set(st.key, stairsOf(pi!.segs, [], st.h));
@@ -1069,7 +1073,7 @@ export function buildBuilding(d: DxfDrawing, a: BuildingAnalysis, name: string, 
       if (hit) {
         const rest = walls.filter(o => o.wc !== hit!.wc);
         if (rest.length) {
-          const hx0 = Math.min(...rest.map(o => o.x - o.w / 2)), hx1 = Math.max(...rest.map(o => o.x + o.w / 2)), hz0 = Math.min(...rest.map(o => o.z - o.d / 2)), hz1 = Math.max(...rest.map(o => o.z + o.d / 2));
+          const hx0 = minOf(rest.map(o => o.x - o.w / 2)), hx1 = maxOf(rest.map(o => o.x + o.w / 2)), hz0 = minOf(rest.map(o => o.z - o.d / 2)), hz1 = maxOf(rest.map(o => o.z + o.d / 2));
           for (let i = walls.length - 1; i >= 0; i--) {
             const o = walls[i];
             if (o.wc === hit.wc && (o.x < hx0 - 10 || o.x > hx1 + 10 || o.z < hz0 - 10 || o.z > hz1 + 10) && !(Math.max(o.w, o.d) < 120 && Math.min(o.w, o.d) >= 25)) walls.splice(i, 1);
@@ -1134,7 +1138,7 @@ export function buildBuilding(d: DxfDrawing, a: BuildingAnalysis, name: string, 
           let lo = seed.lo, hi = seed.hi, grew = true;
           const run = new Set([seed]);
           while (grew) { grew = false; for (const q of near) if (!run.has(q) && q.lo <= hi + 1 && q.hi >= lo - 1 && Math.abs(q.v - seed.v) < 25) { run.add(q); lo = Math.min(lo, q.lo); hi = Math.max(hi, q.hi); grew = true; } }
-          const vs = [...run].map(q => q.v), c = (Math.min(...vs) + Math.max(...vs)) / 2, t = Math.max(10, Math.max(...vs) - Math.min(...vs));
+          const vs = [...run].map(q => q.v), c = (minOf(vs) + maxOf(vs)) / 2, t = Math.max(10, maxOf(vs) - minOf(vs));
           const leg: Opening = { axis: la, cx: la === 'x' ? (lo + hi) / 2 : c, cz: la === 'x' ? c : (lo + hi) / 2, a: lo, b: hi, len: hi - lo, t, arc: false, tag: op.tag };
           if (leg.len >= 40 && !openings.some(q => q.axis === la && Math.abs((la === 'x' ? q.cz - leg.cz : q.cx - leg.cx)) < 30 && q.a < hi - 5 && q.b > lo + 5)) openings.push(leg);
         }
@@ -1427,7 +1431,7 @@ export function buildBuilding(d: DxfDrawing, a: BuildingAnalysis, name: string, 
     for (let z = zlo; z < zhi - 1; z += 30) {
       const zb = Math.min(z + 30, zhi), zm = (z + zb) / 2, lx = lineX(zm);
       const under = slabs.filter(o => zm >= o.z - o.d / 2 && zm <= o.z + o.d / 2);
-      const edge = sl.side === 'w' ? Math.min(...under.map(o => o.x - o.w / 2)) : Math.max(...under.map(o => o.x + o.w / 2));
+      const edge = sl.side === 'w' ? minOf(under.map(o => o.x - o.w / 2)) : maxOf(under.map(o => o.x + o.w / 2));
       if (!isFinite(edge)) continue;
       const gap = sl.side === 'w' ? edge - lx : lx - edge;
       if (gap < 5 || gap > 150) continue;
@@ -1443,7 +1447,7 @@ export function buildBuilding(d: DxfDrawing, a: BuildingAnalysis, name: string, 
   if (new Set(wallBoxes.map(o => o.wc)).size >= 2) {
     const lenOf = (o: BoxObject) => Math.max(o.w, o.d), votes = new Map<number, number>();
     const xs = wallBoxes.flatMap(o => [o.x - o.w / 2, o.x + o.w / 2]), zs = wallBoxes.flatMap(o => [o.z - o.d / 2, o.z + o.d / 2]);
-    const x0 = Math.min(...xs), x1 = Math.max(...xs), z0 = Math.min(...zs), z1 = Math.max(...zs);
+    const x0 = minOf(xs), x1 = maxOf(xs), z0 = minOf(zs), z1 = maxOf(zs);
     const onRim = (o: BoxObject) => o.w >= o.d ? Math.min(Math.abs(o.z - z0), Math.abs(o.z - z1)) < 40 : Math.min(Math.abs(o.x - x0), Math.abs(o.x - x1)) < 40;
     for (const o of wallBoxes) if (onRim(o)) votes.set(o.wc!, (votes.get(o.wc!) || 0) + lenOf(o));
     extColor = opts.extColor === -1 ? undefined : opts.extColor ?? [...votes].sort((p, q) => q[1] - p[1])[0]?.[0];
@@ -1621,8 +1625,8 @@ export function findOpenings(boxes: BoxObject[], openSegs: Seg2[], swings: Swing
         && Math.abs((axis === 'x' ? q.z1 : q.x1) - at0) < 30
         && Math.min(axis === 'x' ? q.x1 : q.z1, axis === 'x' ? q.x2 : q.z2) < hi.u && Math.max(axis === 'x' ? q.x1 : q.z1, axis === 'x' ? q.x2 : q.z2) > lo.u)
         .map(q => axis === 'x' ? q.z1 : q.x1);
-      at = (Math.min(...par) + Math.max(...par)) / 2;
-      t = Math.min(30, Math.max(10, Math.max(...par) - Math.min(...par) + 4));
+      at = (minOf(par) + maxOf(par)) / 2;
+      t = Math.min(30, Math.max(10, maxOf(par) - minOf(par) + 4));
     }
     // the frame usually runs under the wall ends that pairWalls lengthened; take its full width
     let a = lo.u, b = hi.u;
@@ -1677,11 +1681,11 @@ export function mergeDrawings(ds: DxfDrawing[]): DxfDrawing {
     for (const t of d.texts) { minX = Math.min(minX, t.x); maxX = Math.max(maxX, t.x); }
     if (!isFinite(minX)) continue;
     const dx = at - minX, mv = (p: Pt): Pt => [p[0] + dx, p[1]];
-    out.segs.push(...d.segs.map(s => ({ ...s, a: mv(s.a), b: mv(s.b) })));
-    out.polys.push(...d.polys.map(p => ({ ...p, pts: p.pts.map(mv) })));
-    out.texts.push(...d.texts.map(t => ({ ...t, x: t.x + dx })));
-    out.arcs.push(...d.arcs.map(c => ({ ...c, c: mv(c.c), ...(c.p0 ? { p0: mv(c.p0) } : {}), ...(c.p1 ? { p1: mv(c.p1) } : {}) })));
-    out.dims!.push(...(d.dims || []).map(m => ({ ...m, a: mv(m.a), b: mv(m.b) })));
+    for (const v of d.segs.map(s => ({ ...s, a: mv(s.a), b: mv(s.b) }))) out.segs.push(v);
+    for (const v of d.polys.map(p => ({ ...p, pts: p.pts.map(mv) }))) out.polys.push(v);
+    for (const v of d.texts.map(t => ({ ...t, x: t.x + dx }))) out.texts.push(v);
+    for (const v of d.arcs.map(c => ({ ...c, c: mv(c.c), ...(c.p0 ? { p0: mv(c.p0) } : {}), ...(c.p1 ? { p1: mv(c.p1) } : {}) }))) out.arcs.push(v);
+    for (const v of (d.dims || []).map(m => ({ ...m, a: mv(m.a), b: mv(m.b) }))) out.dims!.push(v);
     for (const [l, n] of d.layers) out.layers.set(l, (out.layers.get(l) || 0) + n);
     out.blockCount += d.blockCount; out.inserts += d.inserts;
     out.parts!.push({ x0: at, x1: at + maxX - minX });
