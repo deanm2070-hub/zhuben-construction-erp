@@ -24,7 +24,7 @@ export interface SheetView {
   /** storey keys a plan stands for, e.g. ['3F', '4F'] */
   floors: string[];
 }
-export interface ScheduleItem { code: string; w: number; h: number; name: string; sill: number; kind: 'door' | 'window'; type: OpeningType; /** a corner window: the width of each leg */ legs?: number[]; /** 數量 column of the schedule */ qty?: number }
+export interface ScheduleItem { code: string; w: number; h: number; name: string; sill: number; kind: 'door' | 'window'; type: OpeningType; /** a corner window: the width of each leg */ legs?: number[]; /** 數量 column of the schedule */ qty?: number; /** storey named in the 位置 row (一樓廁所 → 1F) */ where?: string; /** openings given this code by width, not by a tag on the plan */ guessed?: number }
 export interface Storey { key: string; title: string; base: number; h: number }
 export interface BuildingAnalysis {
   views: SheetView[];
@@ -188,6 +188,16 @@ export function parseSchedule(d: DxfDrawing): ScheduleItem[] {
         .sort((a, b) => Math.abs(a.c!.y - b.c!.y) > h * 2 ? a.c!.y - b.c!.y : Math.abs(a.c!.x - n.x) - Math.abs(b.c!.x - n.x))[0];
       if (code && code.i.qty === undefined) code.i.qty = +n.s;
     }
+  }
+  // the 位置 row names where a window is (一樓廁所): its storey
+  const NUM = '一二三四五六七八九';
+  for (const i of items) {
+    const c = d.texts.find(t => t.s.trim() === i.code && /^(?:DW|SD|AW|W|D|AD|F)\d/.test(t.s.trim()));
+    if (!c) continue;
+    const h = c.h || 20;
+    const loc = d.texts.filter(t => t.y < c.y && c.y - t.y < h * 90 && Math.abs(t.x - c.x) < h * 12 && /[一二三四五六七八九]樓/.test(t.s)).sort((a, b) => b.y - a.y)[0];
+    const m = loc && /([一二三四五六七八九])樓/.exec(loc.s);
+    if (m) i.where = `${NUM.indexOf(m[1]) + 1}F`;
   }
   return items;
 }
@@ -798,7 +808,7 @@ export interface BuildReport {
   unmatchedTags: { floor: string; code: string }[];
   perFloor: { key: string; walls: number; doors: number; windows: number; slabs: number }[];
   /** door / window schedule against what was built */
-  tally: { code: string; name: string; qty?: number; built: number }[];
+  tally: { code: string; name: string; qty?: number; built: number; guessed?: number }[];
 }
 
 export interface BuildingResult {
@@ -932,6 +942,9 @@ export function buildBuilding(d: DxfDrawing, a: BuildingAnalysis, name: string, 
   }
   const W = (maxX - minX) * S, D = (maxY - minY) * S;
   const codes = new Map(a.schedule.map(i => [i.code, i]));
+  // tags written on the plans per code (a corner window counts once per leg); openings without a tag are given the codes still short of this
+  const builtCount = new Map<string, number>(), guessedN = new Map<string, number>();
+  for (const p of a.plans) for (const t of d.texts) { const c = t.s.trim(); if (codes.has(c) && inBox(p.box, t.x, t.y)) builtCount.set(c, (builtCount.get(c) || 0) + (codes.get(c)!.legs ? codes.get(c)!.legs!.length : 1)); }
   let id = firstId;
   const objects: ModelObject[] = [];
   const floors: CadFloor[] = [];
@@ -1043,6 +1056,8 @@ export function buildBuilding(d: DxfDrawing, a: BuildingAnalysis, name: string, 
     const openings = parapet ? [] : findOpenings(walls, openSegs, swings);
     // each opening takes the nearest tag; tags left over point at openings drawn without a wall gap
     const dist = (t: { x: number; z: number }, op: Opening) => Math.hypot(t.x - op.cx, t.z - op.cz);
+    // openings with no tag on the plan take a schedule code that is still short of its quantity, by width (and by the storey the schedule names)
+    const stillShort = (it: ScheduleItem) => it.qty !== undefined && (builtCount.get(it.code) || 0) < it.qty * (it.legs ? it.legs.length : 1);
     const owner = new Map<Opening, (typeof tags)[number]>();
     for (const op of openings) { const t = tags.filter(t => dist(t, op) < 200).sort((p, q) => dist(p, op) - dist(q, op))[0]; if (t) { owner.set(op, t); op.tag = t.code; } }
     // a tag names one opening: a door tag goes to the opening with a swing, else the nearest; a door tag's other
@@ -1091,6 +1106,25 @@ export function buildBuilding(d: DxfDrawing, a: BuildingAnalysis, name: string, 
           const vs = [...run].map(q => q.v), c = (Math.min(...vs) + Math.max(...vs)) / 2, t = Math.max(10, Math.max(...vs) - Math.min(...vs));
           const leg: Opening = { axis: la, cx: la === 'x' ? (lo + hi) / 2 : c, cz: la === 'x' ? c : (lo + hi) / 2, a: lo, b: hi, len: hi - lo, t, arc: false, tag: op.tag };
           if (leg.len >= 40 && !openings.some(q => q.axis === la && Math.abs((la === 'x' ? q.cz - leg.cz : q.cx - leg.cx)) < 30 && q.a < hi - 5 && q.b > lo + 5)) openings.push(leg);
+        }
+      }
+      // a window with no tag takes the nearest-width window code the schedule still counts short of (named storey first)
+      {
+        const pairs: { op: Opening; it: ScheduleItem; score: number }[] = [];
+        for (const op of openings) {
+          if (op.tag || op.arc) continue;
+          for (const it of a.schedule) {
+            if (it.kind !== 'window' || it.legs || it.qty === undefined) continue;
+            const diff = Math.abs(op.len - it.w);
+            if (diff > Math.max(25, it.w * 0.4)) continue;
+            pairs.push({ op, it, score: diff + (it.where && it.where !== st.key ? 1000 : 0) });
+          }
+        }
+        pairs.sort((p, q) => p.score - q.score);
+        for (const { op, it } of pairs) {
+          if (op.tag || !stillShort(it)) continue;
+          op.tag = it.code; guessedN.set(it.code, (guessedN.get(it.code) || 0) + 1);
+          builtCount.set(it.code, (builtCount.get(it.code) || 0) + 1);
         }
       }
       // a wall drawn straight through an opening is cut out of it
@@ -1441,7 +1475,7 @@ export function buildBuilding(d: DxfDrawing, a: BuildingAnalysis, name: string, 
     unmatchedTags,
     tally: a.schedule.map(i => {
       const n = objects.filter(o => (o.layer === 'door' || o.layer === 'glass') && o.name.split(' ')[0] === i.code).length;
-      return { code: i.code, name: i.name, ...(i.qty !== undefined ? { qty: i.qty } : {}), built: i.legs ? Math.ceil(n / 2) : n };
+      return { code: i.code, name: i.name, ...(i.qty !== undefined ? { qty: i.qty } : {}), built: i.legs ? Math.ceil(n / 2) : n, ...(guessedN.get(i.code) ? { guessed: guessedN.get(i.code) } : {}) };
     }),
     perFloor: a.storeys.map(st => {
       const of = objects.filter(o => o.floor === st.key);
