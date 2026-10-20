@@ -1209,7 +1209,8 @@ function dropLouvers(boxes: BoxObject[]): BoxObject[] {
   return boxes.filter(o => {
     // a few degrees off square is a cross line paired with its neighbour, not a wall
     const off = Math.abs(((o.rot || 0) % (Math.PI / 2) + Math.PI / 2) % (Math.PI / 2));
-    if (Math.min(off, Math.PI / 2 - off) > 0.01 && Math.min(off, Math.PI / 2 - off) < 0.25) return false;
+    // (a long slanted wall, like one following a site boundary, is real)
+    if (Math.min(off, Math.PI / 2 - off) > 0.01 && Math.min(off, Math.PI / 2 - off) < 0.25 && Math.max(o.w, o.d) < 300) return false;
     if (Math.max(o.w, o.d) > 300 || Math.min(o.w, o.d) >= 35) return true;
     const twins = boxes.filter(q => q !== o && Math.abs((q.rot || 0) - (o.rot || 0)) < 0.02 && Math.abs(q.w - o.w) < 3 && Math.abs(q.d - o.d) < 3 && Math.hypot(q.x - o.x, q.z - o.z) < 150);
     return twins.length < 3;
