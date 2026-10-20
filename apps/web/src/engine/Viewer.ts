@@ -621,6 +621,19 @@ export class Viewer {
     on(v, 'pointermove', e => this.onMove(e));
     on(v, 'pointerup', e => this.onUp(e));
     on(v, 'pointercancel', e => { this.pointers.delete(e.pointerId); if (this.drag) this.cancelDrag(); });
+    // a release that never reached the view (finger lifted outside, window lost focus, browser took the gesture) must not leave the camera locked
+    const unlock = () => {
+      this.pointers.clear();
+      if (this.drag) this.cancelDrag();
+      this.controls.enabled = this.tool !== 'walk';
+    };
+    on(window, 'pointerup', e => { this.pointers.delete(e.pointerId); if (!this.pointers.size && this.drag) unlock(); });
+    on(window, 'pointercancel', e => { this.pointers.delete(e.pointerId); if (!this.pointers.size) unlock(); });
+    on(window, 'blur', unlock);
+    const hidden = () => { if (document.hidden) unlock(); };
+    document.addEventListener('visibilitychange', hidden);
+    this.disposers.push(() => document.removeEventListener('visibilitychange', hidden));
+    on(cv, 'lostpointercapture', () => { if (!this.pointers.size && this.drag) unlock(); });
     const keyMap: Record<string, string> = { KeyW: 'f', ArrowUp: 'f', KeyS: 'b', ArrowDown: 'b', KeyA: 'l', ArrowLeft: 'l', KeyD: 'r', ArrowRight: 'r' };
     on(window, 'keydown', e => {
       const t = e.target as HTMLElement;
@@ -643,6 +656,12 @@ export class Viewer {
   }
   private onDown(e: PointerEvent) {
     if (e.target !== this.renderer.domElement) return;
+    // a new first touch / click means no other pointer is down: forget any whose release was lost, so the view never stays locked
+    if (e.isPrimary) {
+      this.pointers.clear();
+      if (this.drag) this.cancelDrag();
+      this.controls.enabled = this.tool !== 'walk';
+    }
     this.pointers.add(e.pointerId);
     this.downAt = { x: e.clientX, y: e.clientY, t: performance.now() };
     if (this.pointers.size > 1) { if (this.drag) this.cancelDrag(); return; }
@@ -860,6 +879,11 @@ export class Viewer {
 
   /* ---------- loop ---------- */
   private frame(now: number) {
+    // an error in one frame must not stop the loop: that would freeze the view until a reload
+    try { this.drawFrame(now); } catch (err) { console.error(err); }
+    this.raf = requestAnimationFrame(t => this.frame(t));
+  }
+  private drawFrame(now: number) {
     const dt = Math.min(0.05, (now - this.last) / 1000);
     this.last = now;
     const f = this.fly;
@@ -889,7 +913,6 @@ export class Viewer {
       this.placeLabels();
       this.drawn = now;
     }
-    this.raf = requestAnimationFrame(t => this.frame(t));
   }
 }
 
