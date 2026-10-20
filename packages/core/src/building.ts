@@ -866,6 +866,23 @@ export function buildBuilding(d: DxfDrawing, a: BuildingAnalysis, name: string, 
         if (across < 40 || across > 300 || along < lo - 450 || along > hi + 450) continue;
         if (!near || across < near.d) near = { c: horiz ? q.z1 : q.x1, horiz, d: across };
       }
+      // the line the label points at: its colour is the projection colour, and walls of that colour out beyond the rest are projection too
+      let hit: BoxObject | null = null, hd = 300;
+      for (const o of walls) {
+        if (o.wc === undefined || (Math.max(o.w, o.d) < 120 && Math.min(o.w, o.d) >= 25)) continue;
+        const dd = Math.hypot(Math.max(Math.abs(tx - o.x) - o.w / 2, 0), Math.max(Math.abs(tz - o.z) - o.d / 2, 0));
+        if (dd < hd) { hd = dd; hit = o; }
+      }
+      if (hit) {
+        const rest = walls.filter(o => o.wc !== hit!.wc);
+        if (rest.length) {
+          const hx0 = Math.min(...rest.map(o => o.x - o.w / 2)), hx1 = Math.max(...rest.map(o => o.x + o.w / 2)), hz0 = Math.min(...rest.map(o => o.z - o.d / 2)), hz1 = Math.max(...rest.map(o => o.z + o.d / 2));
+          for (let i = walls.length - 1; i >= 0; i--) {
+            const o = walls[i];
+            if (o.wc === hit.wc && (o.x < hx0 - 10 || o.x > hx1 + 10 || o.z < hz0 - 10 || o.z > hz1 + 10) && !(Math.max(o.w, o.d) < 120 && Math.min(o.w, o.d) >= 25)) walls.splice(i, 1);
+          }
+        }
+      }
       if (!near) continue;
       const sign = (near.horiz ? tz : tx) > near.c ? 1 : -1;
       for (let i = walls.length - 1; i >= 0; i--) {
