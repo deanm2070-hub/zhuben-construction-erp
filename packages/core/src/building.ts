@@ -421,6 +421,7 @@ function fillGaps(walls: BoxObject[], openings: Opening[]) {
 
 /** 10 cm occupancy grid of a storey's wall boxes, with a margin around the plan. */
 function raster(walls: BoxObject[], W: number, D: number, M = 80) {
+  if (!Number.isFinite(W) || !Number.isFinite(D)) W = D = 0;
   const C = 10, nx = Math.ceil((W + 2 * M) / C), nz = Math.ceil((D + 2 * M) / C), N = nx * nz;
   const wall = new Uint8Array(N);
   for (const o of walls) {

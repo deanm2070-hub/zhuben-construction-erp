@@ -185,13 +185,18 @@ function BuildingStep({ st, firstId, onBuilt, onLayers, onClose }: {
   const preview = useMemo(() => { try { return buildBuilding(dxf, { ...a, storeys }, name, firstId, opts); } catch { return null; } }, [dxf, a, hs, opts]); // eslint-disable-line react-hooks/exhaustive-deps
   const rep = preview?.report;
   const projTexts = dxf.texts.filter(t => /投影線/.test(t.s)).length;
+  const [err, setErr] = useState('');
   const build = () => {
-    const r = buildBuilding(dxf, { ...a, storeys }, name, firstId, opts);
-    const s = r.stats;
-    const rc = r.cad.rc;
-    onBuilt({ objects: r.objects, cad: r.cad, summary: `已建立 ${s.floors} 層：${s.walls} 道牆、${s.doors} 樘門、${s.windows} 樘窗` + (s.railings ? `、${s.railings} 段欄杆` : '')
-      + (rc ? `；讀到${rc.spec.sheets.join('、')}，鋼筋依配筋圖計算` : '')
-      + (s.extColor !== undefined ? `；外牆線顏色為${ACI[s.extColor] || `色號 ${s.extColor}`}，同色內牆算 RC 牆，其他顏色算輕隔間牆` : '') });
+    setErr('');
+    let r: ReturnType<typeof buildBuilding>;
+    try { r = buildBuilding(dxf, { ...a, storeys }, name, firstId, opts); } catch (e) { setErr(`建模失敗：${(e as Error).message}。可改用「圖層對應」，或把這段訊息回報給我。`); return; }
+    try {
+      const s = r.stats;
+      const rc = r.cad.rc;
+      onBuilt({ objects: r.objects, cad: r.cad, summary: `已建立 ${s.floors} 層：${s.walls} 道牆、${s.doors} 樘門、${s.windows} 樘窗` + (s.railings ? `、${s.railings} 段欄杆` : '')
+        + (rc ? `；讀到${rc.spec.sheets.join('、')}，鋼筋依配筋圖計算` : '')
+        + (s.extColor !== undefined ? `；外牆線顏色為${ACI[s.extColor] || `色號 ${s.extColor}`}，同色內牆算 RC 牆，其他顏色算輕隔間牆` : '') });
+    } catch (e) { setErr(`3D 顯示失敗：${(e as Error).message}。請把這段訊息回報給我。`); }
   };
   return (
     <Modal title="整棟自動建模" desc={`來源：${name}。確認辨識結果後建立 3D。`} onClose={onClose} actions={<>
@@ -205,6 +210,7 @@ function BuildingStep({ st, firstId, onBuilt, onLayers, onClose }: {
         <span className="badge">門窗表 {a.schedule.length} 種</span>
         {views.length > 0 && <span className="badge" title={views.join('、')}>另有 {views.length} 張立面／剖面／門窗圖</span>}
       </div>
+      {err && <p className="warn" role="alert">{err}</p>}
       {!Object.keys(a.levels).length && <p className="warn">沒有在立面或剖面圖找到樓層高程（1F、2F…），樓高先用預設值，可在下表修改。</p>}
       <div className="tbl"><table>
         <thead><tr><th>樓層</th><th>平面圖</th><th className="num">樓板高程</th><th className="num">樓高 cm</th></tr></thead>
