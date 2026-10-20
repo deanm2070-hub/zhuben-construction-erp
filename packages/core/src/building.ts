@@ -264,7 +264,7 @@ function learnColumns(d: DxfDrawing, plans: SheetView[], k: number): string[] {
   return [...new Set([...seen].filter(([, n]) => n >= 4).map(([key]) => key.split('|')[0]))];
 }
 
-let extraWall = new Set<string>(), scaleNow = 0;
+let extraWall = new Set<string>(), scaleNow = 0, optNow: BuildOptions = {};
 const isWallLayer = (l: string) => guessLayerKind(l) === 'wall' || /^COL/i.test(l) || extraWall.has(l);
 
 /**
@@ -668,10 +668,31 @@ function stairsOf(segs: { x1: number; z1: number; x2: number; z2: number }[], no
   });
 }
 
+/** Choices the user made on the review page; each defaults to what the drawing suggests. */
+export interface BuildOptions {
+  /** colour index of the exterior wall lines; -1 = do not tell concrete from light walls by colour */
+  extColor?: number;
+  /** keep lines marked 投影線 as walls instead of treating them as the projection of the storey above */
+  noProjection?: boolean;
+  /** drop slanted lines as cross lines even when long */
+  noSlants?: boolean;
+}
+
+/** What was read, for the review page. */
+export interface BuildReport {
+  wallColours: { color: number; length: number }[];
+  projectionLabels: number;
+  stairs: { from: string; to: string; risers: number }[];
+  slantWalls: number;
+  unmatchedTags: { floor: string; code: string }[];
+  perFloor: { key: string; walls: number; doors: number; windows: number; slabs: number }[];
+}
+
 export interface BuildingResult {
   objects: ModelObject[];
   cad: CadData;
   analysis: BuildingAnalysis;
+  report: BuildReport;
   stats: { floors: number; walls: number; doors: number; windows: number; railings: number; heads: number; /** colour index read as the exterior wall line, when the plans use more than one wall colour */ extColor?: number };
 }
 
@@ -786,9 +807,11 @@ function readPanels(d: DxfDrawing, v: SheetView, X: (x: number) => number, Z: (y
 }
 
 /** Builds every storey of the analysed drawing set, stacked at its level. */
-export function buildBuilding(d: DxfDrawing, a: BuildingAnalysis, name: string, firstId = 1): BuildingResult {
+export function buildBuilding(d: DxfDrawing, a: BuildingAnalysis, name: string, firstId = 1, opts: BuildOptions = {}): BuildingResult {
   const S = a.scale;
-  extraWall = new Set(a.wallLayers); scaleNow = S;
+  extraWall = new Set(a.wallLayers); scaleNow = S; optNow = opts;
+  const unmatchedTags: BuildReport['unmatchedTags'] = [], stairList: BuildReport['stairs'] = [];
+  let projectionLabels = 0;
   const geos = new Map(a.plans.map(p => [p, planGeo(d, p)]));
   let minX = Infinity, maxY = -Infinity, maxX = -Infinity, minY = Infinity;
   for (const [, g] of geos) for (const s of g.segs) if (isWallLayer(s.layer)) for (const p of [s.a, s.b]) {
@@ -866,7 +889,8 @@ export function buildBuilding(d: DxfDrawing, a: BuildingAnalysis, name: string, 
     }
     // a line marked 投影線 is the outline of the storey above projecting out (a balcony), not a wall: drop what lies beyond the facade it hangs off
     for (const t of d.texts) {
-      if (!/投影線/.test(t.s) || !inBox(plan.box, t.x, t.y)) continue;
+      if (opts.noProjection || !/投影線/.test(t.s) || !inBox(plan.box, t.x, t.y)) continue;
+      projectionLabels++;
       const tx = X(t.x), tz = Z(t.y);
       let near: { c: number; horiz: boolean; d: number } | null = null;
       for (const q of openSegs) {
@@ -908,7 +932,7 @@ export function buildBuilding(d: DxfDrawing, a: BuildingAnalysis, name: string, 
     for (const op of openings) op.tag = tags.filter(t => dist(t, op) < 200).sort((p, q) => dist(p, op) - dist(q, op))[0]?.code;
     if (!parapet) {
       const used = new Set(tags.filter(t => openings.some(op => dist(t, op) < 200 && op.tag === t.code)));
-      for (const t of tags) if (!used.has(t)) { const op = cutTagged(walls, t, codes.get(t.code)!.w, openSegs); if (op) openings.push(op); }
+      for (const t of tags) if (!used.has(t)) { const op = cutTagged(walls, t, codes.get(t.code)!.w, openSegs); if (op) openings.push(op); else if (!openings.some(op => op.tag === t.code && dist(t, op) < 400)) unmatchedTags.push({ floor: st.key, code: t.code }); }
       // a wall drawn straight through an opening is cut out of it
       for (const op of openings) for (let i = walls.length - 1; i >= 0; i--) {
         const o = walls[i];
@@ -952,6 +976,7 @@ export function buildBuilding(d: DxfDrawing, a: BuildingAnalysis, name: string, 
     const stairSegs = g.segs.filter(s => STAIR_LAYER.test(s.layer)).map(s => ({ x1: X(s.a[0]), z1: Z(s.a[1]), x2: X(s.b[0]), z2: Z(s.b[1]) }));
     const stairs = parapet ? [] : stairPre.get(st.key) ?? stairsOf(stairSegs, notes, H);
     for (const sp of stairs) {
+      stairList.push({ from: st.key, to: a.storeys[a.storeys.indexOf(st) + 1]?.key || '', risers: sp.labelled || sp.risers });
       const r = H / sp.risers;
       // quantities follow the riser count written on the plan (上16); the drawing may leave treads out
       const N = sp.labelled || sp.risers, flights = sp.landings.length ? 2 : 1;
@@ -1145,7 +1170,7 @@ export function buildBuilding(d: DxfDrawing, a: BuildingAnalysis, name: string, 
     const x0 = Math.min(...xs), x1 = Math.max(...xs), z0 = Math.min(...zs), z1 = Math.max(...zs);
     const onRim = (o: BoxObject) => o.w >= o.d ? Math.min(Math.abs(o.z - z0), Math.abs(o.z - z1)) < 40 : Math.min(Math.abs(o.x - x0), Math.abs(o.x - x1)) < 40;
     for (const o of wallBoxes) if (onRim(o)) votes.set(o.wc!, (votes.get(o.wc!) || 0) + lenOf(o));
-    extColor = [...votes].sort((p, q) => q[1] - p[1])[0]?.[0];
+    extColor = opts.extColor === -1 ? undefined : opts.extColor ?? [...votes].sort((p, q) => q[1] - p[1])[0]?.[0];
     // a wall on the outline is an exterior wall whatever colour it is drawn in
     if (extColor !== undefined) for (const o of wallBoxes) {
       o.wall = o.wc === extColor || onRim(o) ? 'rc' : 'light';
@@ -1196,8 +1221,21 @@ export function buildBuilding(d: DxfDrawing, a: BuildingAnalysis, name: string, 
     }
   });
   const spec = readRebarSpec(d, a.storeys.map(s => s.key));
+  const colourLen = new Map<number, number>();
+  for (const o of wallBoxes) colourLen.set(o.wc!, (colourLen.get(o.wc!) || 0) + Math.max(o.w, o.d));
+  const report: BuildReport = {
+    wallColours: [...colourLen].map(([color, length]) => ({ color, length: Math.round(length) })).sort((p, q) => q.length - p.length),
+    projectionLabels, stairs: stairList,
+    slantWalls: objects.filter(o => isBox(o) && o.layer === 'wall' && o.rot && Math.max(o.w, o.d) >= 300).length,
+    unmatchedTags,
+    perFloor: a.storeys.map(st => {
+      const of = objects.filter(o => o.floor === st.key);
+      return { key: st.key, walls: of.filter(o => isBox(o) && o.layer === 'wall').length, doors: of.filter(o => !isBox(o)).length, windows: of.filter(o => isBox(o) && o.layer === 'glass').length, slabs: of.filter(o => isBox(o) && o.layer === 'slab' && /板|地坪/.test(o.name) && !/梁/.test(o.name)).length };
+    }),
+  };
   return {
     objects,
+    report,
     cad: { name, W, D, segs: [], texts: [], doors: [], floors, ...(spec ? { rc: { spec, panels: rcPanels } } : {}) },
     analysis: a,
     stats: { floors: floors.length, walls: nWalls, doors: nDoors, windows: nWins, railings: nRails, heads: cutHeads, ...(extColor !== undefined ? { extColor } : {}) },
@@ -1210,7 +1248,7 @@ function dropLouvers(boxes: BoxObject[]): BoxObject[] {
     // a few degrees off square is a cross line paired with its neighbour, not a wall
     const off = Math.abs(((o.rot || 0) % (Math.PI / 2) + Math.PI / 2) % (Math.PI / 2));
     // (a long slanted wall, like one following a site boundary, is real)
-    if (Math.min(off, Math.PI / 2 - off) > 0.01 && Math.min(off, Math.PI / 2 - off) < 0.25 && Math.max(o.w, o.d) < 300) return false;
+    if (Math.min(off, Math.PI / 2 - off) > 0.01 && Math.min(off, Math.PI / 2 - off) < 0.25 && (optNow.noSlants || Math.max(o.w, o.d) < 300)) return false;
     if (Math.max(o.w, o.d) > 300 || Math.min(o.w, o.d) >= 35) return true;
     const twins = boxes.filter(q => q !== o && Math.abs((q.rot || 0) - (o.rot || 0)) < 0.02 && Math.abs(q.w - o.w) < 3 && Math.abs(q.d - o.d) < 3 && Math.hypot(q.x - o.x, q.z - o.z) < 150);
     return twins.length < 3;

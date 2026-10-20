@@ -1,8 +1,8 @@
 import {
   analyzeBuilding, buildBuilding, buildFromDxf, decodeDxf, mergeDrawings, DWG_VERSIONS, dwgSignature, guessLayerKind, guessUnits, parseDxf, sampleDxf,
-  UNIT_NAME, UNIT_SCALE, WALL_H, type BuildingAnalysis, type CadData, type DxfDrawing, type LayerKind, type ModelObject,
+  UNIT_NAME, UNIT_SCALE, WALL_H, type BuildingAnalysis, type BuildOptions, type CadData, type DxfDrawing, type LayerKind, type ModelObject,
 } from '@cloud-modeler/core';
-import { useState } from 'react';
+import { useMemo, useState } from 'react';
 import { readDwg } from '../lib/dwg';
 import { Modal } from './Modal';
 
@@ -178,8 +178,15 @@ function BuildingStep({ st, firstId, onBuilt, onLayers, onClose }: {
   const [hs, setHs] = useState(a.storeys.map(s => s.h));
   const storeys = a.storeys.map((s, i) => ({ ...s, h: hs[i], base: a.storeys[0].base + hs.slice(0, i).reduce((x, y) => x + y, 0) }));
   const views = a.views.filter(v => v.kind !== 'plan').map(v => v.title);
+  // what you confirm here is remembered for this drawing set
+  const key = `cad-rules:${name}`;
+  const [opts, setOpts] = useState<BuildOptions>(() => { try { return JSON.parse(localStorage.getItem(key) || '{}'); } catch { return {}; } });
+  const change = (o: BuildOptions) => { setOpts(o); try { localStorage.setItem(key, JSON.stringify(o)); } catch { /* private window */ } };
+  const preview = useMemo(() => { try { return buildBuilding(dxf, { ...a, storeys }, name, firstId, opts); } catch { return null; } }, [dxf, a, hs, opts]); // eslint-disable-line react-hooks/exhaustive-deps
+  const rep = preview?.report;
+  const projTexts = dxf.texts.filter(t => /投影線/.test(t.s)).length;
   const build = () => {
-    const r = buildBuilding(dxf, { ...a, storeys }, name, firstId);
+    const r = buildBuilding(dxf, { ...a, storeys }, name, firstId, opts);
     const s = r.stats;
     const rc = r.cad.rc;
     onBuilt({ objects: r.objects, cad: r.cad, summary: `已建立 ${s.floors} 層：${s.walls} 道牆、${s.doors} 樘門、${s.windows} 樘窗` + (s.railings ? `、${s.railings} 段欄杆` : '')
@@ -215,6 +222,25 @@ function BuildingStep({ st, firstId, onBuilt, onLayers, onClose }: {
           <tr key={i.code}><td>{i.code}</td><td>{i.name}</td><td className="num">{i.w} × {i.h}</td><td className="num">{i.sill}</td></tr>
         ))}</tbody>
       </table></div>}
+      {rep && <>
+        <h4 style={{ margin: '12px 0 4px' }}>辨識確認（我猜的，不對請在這裡改）</h4>
+        <div className="tbl"><table><tbody>
+          {rep.wallColours.length >= 2 && <tr><td>外牆線顏色</td><td>
+            <select id="rule-ext" value={opts.extColor ?? ''} onChange={e => change({ ...opts, extColor: e.target.value === '' ? undefined : +e.target.value })}>
+              <option value="">自動判斷{preview!.stats.extColor !== undefined ? `（${ACI[preview!.stats.extColor] || `色號 ${preview!.stats.extColor}`}）` : ''}</option>
+              {rep.wallColours.map(c => <option key={c.color} value={c.color}>{ACI[c.color] || `色號 ${c.color}`}（牆線 {Math.round(c.length / 100)} m）</option>)}
+              <option value={-1}>不依顏色分，全依牆厚</option>
+            </select><div className="note">同色內牆算 RC 牆，不同色算輕隔間牆；外輪廓上的牆一律算外牆。</div></td></tr>}
+          {projTexts > 0 && <tr><td>陽台投影線</td><td><label><input id="rule-proj" type="checkbox" checked={!opts.noProjection} onChange={e => change({ ...opts, noProjection: !e.target.checked })} /> 圖上標「投影線」的線是上層外挑的投影，不建牆（找到 {projTexts} 處標示）</label></td></tr>}
+          {(rep.slantWalls > 0 || opts.noSlants) && <tr><td>斜牆</td><td><label><input id="rule-slant" type="checkbox" checked={!opts.noSlants} onChange={e => change({ ...opts, noSlants: !e.target.checked })} /> 保留 3 公尺以上的斜牆（目前 {rep.slantWalls} 道）</label></td></tr>}
+          <tr><td>樓梯</td><td>{rep.stairs.length ? rep.stairs.map(t => `${t.from}→${t.to || '屋頂'}，${t.risers} 階`).join('；') : '沒有辨識到樓梯'}</td></tr>
+          {rep.unmatchedTags.length > 0 && <tr><td>可能沒開洞的門窗</td><td className="warn">{[...new Set(rep.unmatchedTags.map(t => `${t.floor} ${t.code}`))].join('、')}（平面圖上有編號，找不到對應開口，請建好後檢查）</td></tr>}
+        </tbody></table></div>
+        <div className="tbl"><table>
+          <thead><tr><th>樓層</th><th className="num">牆</th><th className="num">門</th><th className="num">窗</th><th className="num">樓板</th></tr></thead>
+          <tbody>{rep.perFloor.map(f => <tr key={f.key}><td>{f.key}</td><td className="num">{f.walls}</td><td className="num">{f.doors}</td><td className="num">{f.windows}</td><td className="num">{f.slabs}</td></tr>)}</tbody>
+        </table></div>
+      </>}
       <p className="note">牆依各層平面圖的牆、柱圖層建立，各層用軸線對齊。門窗開口依平面上的編號套用門窗表的高度與窗台高，沒有編號的開口用預設尺寸（門 210、窗台 90＋窗高 150）。</p>
     </Modal>
   );
