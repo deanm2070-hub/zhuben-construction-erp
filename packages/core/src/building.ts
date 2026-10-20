@@ -24,7 +24,7 @@ export interface SheetView {
   /** storey keys a plan stands for, e.g. ['3F', '4F'] */
   floors: string[];
 }
-export interface ScheduleItem { code: string; w: number; h: number; name: string; sill: number; kind: 'door' | 'window'; type: OpeningType }
+export interface ScheduleItem { code: string; w: number; h: number; name: string; sill: number; kind: 'door' | 'window'; type: OpeningType; /** a corner window: the width of each leg */ legs?: number[] }
 export interface Storey { key: string; title: string; base: number; h: number }
 export interface BuildingAnalysis {
   views: SheetView[];
@@ -154,7 +154,8 @@ export function parseSchedule(d: DxfDrawing): ScheduleItem[] {
     items.push({ code: cd, w: +m[1], h: +m[2], name, sill, kind, type });
   }
   // table layout: codes across the header row, each column giving "W x H", then the name, below it
-  const PURE = /^(\d+(?:\.\d+)?)\s*[xX×*]\s*(\d+(?:\.\d+)?)$/;
+  // a corner window is written as one size per leg: 210x200+196.5x200
+  const PURE = /^(\d+(?:\.\d+)?)\s*[xX×*]\s*(\d+(?:\.\d+)?)(?:\s*\+\s*(\d+(?:\.\d+)?)\s*[xX×*]\s*\d+(?:\.\d+)?)?$/;
   for (const c of d.texts) {
     const cd = c.s.trim();
     if (!/^(?:DW|SD|AW|W|D|AD|F)\d{1,3}[A-Z]?$/.test(cd) || items.some(i => i.code === cd)) continue;
@@ -164,7 +165,8 @@ export function parseSchedule(d: DxfDrawing): ScheduleItem[] {
     if (!size) continue;
     const label = d.texts.filter(t => Math.abs(t.x - size.t.x) < h * 2 && t.y < size.t.y && size.t.y - t.y < h * 8 && /[門窗]/.test(t.s) && !/[:：]/.test(t.s)).sort((a, b) => b.y - a.y)[0]?.s.trim() || '';
     const type = openingType(cd, label), kind = isDoorType(type) ? 'door' : 'window';
-    items.push({ code: cd, w: +size.m![1], h: +size.m![2], name: openingName(cd, label), sill: kind === 'door' || type === 'french' ? 0 : 90, kind, type });
+    const legs = size.m![3] ? [+size.m![1], +size.m![3]] : undefined;
+    items.push({ code: cd, w: legs ? legs[0] + legs[1] : +size.m![1], h: +size.m![2], name: openingName(cd, label), sill: kind === 'door' || type === 'french' ? 0 : 90, kind, type, ...(legs ? { legs } : {}) });
   }
   return items;
 }
@@ -365,9 +367,10 @@ const setSpan = (o: BoxObject, axis: 'x' | 'z', lo: number, hi: number) => {
  * A tag with no opening next to it: the window or door is drawn across a continuous wall.
  * Find its frame lines near the tag and cut an opening of the schedule width into that wall.
  */
-function cutTagged(walls: BoxObject[], tag: { code: string; x: number; z: number }, width: number, openSegs: { x1: number; z1: number; x2: number; z2: number }[]): Opening | null {
+const DOOR_CODE = /^(?:D|SD|AD)\d/;
+function cutTagged(walls: BoxObject[], tag: { code: string; x: number; z: number }, width: number, openSegs: { x1: number; z1: number; x2: number; z2: number }[], planSegs: { x1: number; z1: number; x2: number; z2: number }[] = [], leafFirst = false): Opening | null {
   let best: { axis: 'x' | 'z'; wall: BoxObject; u: number; d: number } | null = null;
-  for (const s of openSegs) {
+  if (!leafFirst) for (const s of openSegs) {
     const axis = Math.abs(s.z1 - s.z2) < 0.5 ? 'x' : Math.abs(s.x1 - s.x2) < 0.5 ? 'z' : null;
     if (!axis) continue;
     const L = Math.abs(axis === 'x' ? s.x2 - s.x1 : s.z2 - s.z1);
@@ -377,7 +380,7 @@ function cutTagged(walls: BoxObject[], tag: { code: string; x: number; z: number
     const wall = walls.find(o => runsAlong(o, axis) && Math.abs(spanOf(o, axis).c - v) <= spanOf(o, axis).half + 15 && u > spanOf(o, axis).lo + width * 0.3 && u < spanOf(o, axis).hi - width * 0.3);
     if (wall) best = { axis, wall, u, d };
   }
-  if (!best) {
+  if (!best && !leafFirst) {
     // no frame lines match a wall: cut the nearest wall run at the tag, at the schedule width
     let nd = 110;
     for (const o of walls) for (const axis of ['x', 'z'] as const) {
@@ -385,6 +388,67 @@ function cutTagged(walls: BoxObject[], tag: { code: string; x: number; z: number
       const sp = spanOf(o, axis), u = axis === 'x' ? tag.x : tag.z, v = axis === 'x' ? tag.z : tag.x, dd = Math.abs(sp.c - v);
       if (dd < nd && u > sp.lo + width * 0.3 && u < sp.hi - width * 0.3) { nd = dd; best = { axis, wall: o, u, d: dd }; }
     }
+  }
+  if (!best && (DOOR_CODE.test(tag.code) || /^DW\d/.test(tag.code))) {
+    // a door drawn open: its leaf is a line of about the door width standing square off the wall at the hinge,
+    // with the tag inside the swing; the opening runs from the hinge along the wall towards the tag
+    let door: Opening | null = null, dd = 150;
+    for (const s of planSegs) {
+      const la = Math.abs(s.z1 - s.z2) < 0.5 ? 'x' : Math.abs(s.x1 - s.x2) < 0.5 ? 'z' : null, L = Math.hypot(s.x2 - s.x1, s.z2 - s.z1);
+      if (!la || L < width * 0.8 || L > width * 1.25) continue;
+      const md = Math.hypot((s.x1 + s.x2) / 2 - tag.x, (s.z1 + s.z2) / 2 - tag.z);
+      if (md > dd) continue;
+      const wa = la === 'x' ? 'z' : 'x';
+      for (const [P, Q] of [[[s.x1, s.z1], [s.x2, s.z2]], [[s.x2, s.z2], [s.x1, s.z1]]]) {
+        const pu = wa === 'x' ? P[0] : P[1], pv = wa === 'x' ? P[1] : P[0], qv = wa === 'x' ? Q[1] : Q[0], tu = wa === 'x' ? tag.x : tag.z, tv = wa === 'x' ? tag.z : tag.x;
+        const w = walls.filter(o => runsAlong(o, wa) && Math.abs(spanOf(o, wa).c - pv) <= spanOf(o, wa).half + 8 && spanOf(o, wa).lo < pu + width * 2 && spanOf(o, wa).hi > pu - width * 2)
+          .sort((p, q) => Math.abs(spanOf(p, wa).c - pv) - Math.abs(spanOf(q, wa).c - pv))[0];
+        if (!w) continue;
+        const sp = spanOf(w, wa), at = sp.c;
+        if (Math.abs(qv - at) < width * 0.7 || Math.hypot(tu - pu, tv - at) > width * 2.5) continue;
+        const dir = tu > pu ? 1 : -1, a = Math.min(pu, pu + dir * width), b = Math.max(pu, pu + dir * width);
+        door = { axis: wa, cx: wa === 'x' ? (a + b) / 2 : at, cz: wa === 'x' ? at : (a + b) / 2, a, b, len: b - a, t: sp.half * 2, arc: true, tag: tag.code };
+        dd = md;
+      }
+    }
+    if (door) return door;
+  }
+  if (!best) {
+    // a gap of about the schedule width between two wall ends on one line
+    let gap: Opening | null = null, gd = 150;
+    for (const o of walls) for (const axis of ['x', 'z'] as const) {
+      if (!runsAlong(o, axis)) continue;
+      const p = spanOf(o, axis);
+      for (const q of walls) {
+        if (q === o || q.rot) continue;
+        const r = spanOf(q, axis), g = r.lo - p.hi;
+        if (g < width * 0.65 || g > width * 1.4 || Math.abs(r.c - p.c) > Math.max(p.half, r.half) + 2) continue;
+        const cx = axis === 'x' ? (p.hi + r.lo) / 2 : p.c, cz = axis === 'x' ? p.c : (p.hi + r.lo) / 2, dd = Math.hypot(cx - tag.x, cz - tag.z);
+        if (dd < gd) { gd = dd; gap = { axis, cx, cz, a: p.hi, b: r.lo, len: g, t: p.half * 2, arc: false, tag: tag.code }; }
+      }
+    }
+    if (gap) return gap;
+  }
+  if (!best && !DOOR_CODE.test(tag.code)) {
+    // no wall there at all (it was a projection line, or never drawn): the window frame lines alone give the opening
+    let ref: { axis: 'x' | 'z'; v: number; d: number } | null = null;
+    for (const s of openSegs) {
+      const axis = Math.abs(s.z1 - s.z2) < 0.5 ? 'x' : Math.abs(s.x1 - s.x2) < 0.5 ? 'z' : null;
+      if (!axis || Math.abs(axis === 'x' ? s.x2 - s.x1 : s.z2 - s.z1) < width * 0.4) continue;
+      const d = Math.hypot((s.x1 + s.x2) / 2 - tag.x, (s.z1 + s.z2) / 2 - tag.z);
+      if (d <= 150 && (!ref || d < ref.d)) ref = { axis, v: axis === 'x' ? s.z1 : s.x1, d };
+    }
+    if (!ref) return null;
+    const { axis, v } = ref, near = openSegs.filter(s => axis === 'x' ? Math.abs(s.z1 - s.z2) < 0.5 && Math.abs(s.z1 - v) < 25 : Math.abs(s.x1 - s.x2) < 0.5 && Math.abs(s.x1 - v) < 25)
+      .map(s => ({ s, lo: axis === 'x' ? Math.min(s.x1, s.x2) : Math.min(s.z1, s.z2), hi: axis === 'x' ? Math.max(s.x1, s.x2) : Math.max(s.z1, s.z2) }));
+    // the frame is the run of parallel lines touching the one nearest the tag (the next window's frame starts after a jamb gap)
+    const first = near.reduce((p, q) => Math.abs((q.lo + q.hi) / 2 - (axis === 'x' ? tag.x : tag.z)) < Math.abs((p.lo + p.hi) / 2 - (axis === 'x' ? tag.x : tag.z)) && q.hi - q.lo >= width * 0.4 ? q : p);
+    let lo = first.lo, hi = first.hi, grew = true;
+    const par: typeof openSegs = [];
+    while (grew) { grew = false; for (const q of near) if (!par.includes(q.s) && q.lo <= hi + 1 && q.hi >= lo - 1) { par.push(q.s); lo = Math.min(lo, q.lo); hi = Math.max(hi, q.hi); grew = true; } }
+    const vs = par.map(s => axis === 'x' ? s.z1 : s.x1), c = (Math.min(...vs) + Math.max(...vs)) / 2, t = Math.max(10, Math.max(...vs) - Math.min(...vs));
+    if (hi - lo < width * 0.5 || hi - lo > width * 1.5) return null;
+    return { axis, cx: axis === 'x' ? (lo + hi) / 2 : c, cz: axis === 'x' ? c : (lo + hi) / 2, a: lo, b: hi, len: hi - lo, t, arc: false, tag: tag.code };
   }
   if (!best) return null;
   const { axis, wall, u } = best, sp = spanOf(wall, axis);
@@ -677,6 +741,8 @@ export interface BuildOptions {
   noProjection?: boolean;
   /** drop slanted lines as cross lines even when long */
   noSlants?: boolean;
+  /** sill height per door / window code, cm, where the schedule does not give it */
+  sills?: Record<string, number>;
 }
 
 /** What was read, for the review page. */
@@ -862,6 +928,7 @@ export function buildBuilding(d: DxfDrawing, a: BuildingAnalysis, name: string, 
     const H = st.h, parapet = st.key === 'RF';
     const lines = pairWalls(g.segs.filter(s => isWallLayer(s.layer)).map(s => ({ x1: X(s.a[0]), z1: Z(s.a[1]), x2: X(s.b[0]), z2: Z(s.b[1]), c: /^(?:0?S-)?(?:COL|COLUMN|COLS|柱)/i.test(s.layer) ? undefined : s.color })));
     const openSegs = g.segs.filter(s => isOpenLayer(s.layer)).map(s => ({ x1: X(s.a[0]), z1: Z(s.a[1]), x2: X(s.b[0]), z2: Z(s.b[1]) }));
+    const planSegs = g.segs.filter(s => !/GRID|AXIS|DIM|軸|尺寸/i.test(s.layer)).map(s => ({ x1: X(s.a[0]), z1: Z(s.a[1]), x2: X(s.b[0]), z2: Z(s.b[1]) }));
     const swings = d.arcs.filter(c => isOpenLayer(c.layer) && inBox(plan.box, c.c[0], c.c[1]) && c.sweep > 70 && c.sweep < 110 && c.r * S >= 50 && c.r * S <= 200 && c.p0 && c.p1)
       .map(c => ({ x: X(c.c[0]), z: Z(c.c[1]), r: c.r * S, ends: [[X(c.p0![0]), Z(c.p0![1])], [X(c.p1![0]), Z(c.p1![1])]] as [number, number][] }));
     const tags: { code: string; x: number; z: number }[] = [];
@@ -930,16 +997,65 @@ export function buildBuilding(d: DxfDrawing, a: BuildingAnalysis, name: string, 
     const openings = parapet ? [] : findOpenings(walls, openSegs, swings);
     // each opening takes the nearest tag; tags left over point at openings drawn without a wall gap
     const dist = (t: { x: number; z: number }, op: Opening) => Math.hypot(t.x - op.cx, t.z - op.cz);
-    for (const op of openings) op.tag = tags.filter(t => dist(t, op) < 200).sort((p, q) => dist(p, op) - dist(q, op))[0]?.code;
+    const owner = new Map<Opening, (typeof tags)[number]>();
+    for (const op of openings) { const t = tags.filter(t => dist(t, op) < 200).sort((p, q) => dist(p, op) - dist(q, op))[0]; if (t) { owner.set(op, t); op.tag = t.code; } }
+    // a tag names one opening: a door tag goes to the opening with a swing, else the nearest; a door tag's other
+    // claimant without a swing is not an opening at all (a shaft or a door leaf drawn beside it), so its wall is closed again
+    for (const t of tags) {
+      const mine = openings.filter(op => owner.get(op) === t);
+      if (mine.length < 2) continue;
+      const door = DOOR_CODE.test(t.code);
+      mine.sort((p, q) => (door ? +q.arc - +p.arc : 0) || dist(t, p) - dist(t, q));
+      for (const op of mine.slice(1)) {
+        op.tag = undefined;
+        if (!door || op.arc) continue;
+        const at = op.axis === 'x' ? op.cz : op.cx;
+        const nb = walls.find(o => runsAlong(o, op.axis) && Math.abs(spanOf(o, op.axis).c - at) < 25 && (Math.abs(spanOf(o, op.axis).hi - op.a) < 30 || Math.abs(spanOf(o, op.axis).lo - op.b) < 30));
+        if (nb) { const w = { ...nb }; setSpan(w, op.axis, op.a, op.b); walls.push(w); }
+        openings.splice(openings.indexOf(op), 1);
+      }
+    }
     if (!parapet) {
       const used = new Set(tags.filter(t => openings.some(op => dist(t, op) < 200 && op.tag === t.code)));
-      for (const t of tags) if (!used.has(t)) { const op = cutTagged(walls, t, codes.get(t.code)!.w, openSegs); if (op) openings.push(op); else if (!openings.some(op => op.tag === t.code && dist(t, op) < 400)) unmatchedTags.push({ floor: st.key, code: t.code }); }
+      for (const t of tags) if (!used.has(t)) { const clash = (op: Opening | null) => !!op && openings.some(q => q.axis === op.axis && Math.abs((q.axis === 'x' ? q.cz - op.cz : q.cx - op.cx)) < 30 && q.a < op.b - 5 && q.b > op.a + 5);
+        const it = codes.get(t.code)!;
+        let op: Opening | null = null;
+        // a corner window is found by one leg; the other is picked up at its corner below
+        for (const w of it.legs || [it.w]) {
+          op = cutTagged(walls, t, w, openSegs, planSegs);
+          // lines that already belong to another opening: look for the door leaf instead
+          if (clash(op)) op = cutTagged(walls, t, w, openSegs, planSegs, true);
+          if (op && !clash(op)) break;
+        }
+        if (clash(op)) op = null;
+        if (op) openings.push(op); else if (!openings.some(op => op.tag === t.code && dist(t, op) < 400)) unmatchedTags.push({ floor: st.key, code: t.code }); }
+      // a corner window turns at one end of the opening it was matched to: the other leg's frame runs off that corner
+      for (const op of [...openings]) {
+        if (!(op.tag && codes.get(op.tag)?.legs)) continue;
+        const at = op.axis === 'x' ? op.cz : op.cx, la = op.axis === 'x' ? 'z' : 'x';
+        for (const end of [op.a, op.b]) {
+          const near = openSegs.filter(q => la === 'x' ? Math.abs(q.z1 - q.z2) < 0.5 : Math.abs(q.x1 - q.x2) < 0.5)
+            .map(q => ({ v: la === 'x' ? q.z1 : q.x1, lo: la === 'x' ? Math.min(q.x1, q.x2) : Math.min(q.z1, q.z2), hi: la === 'x' ? Math.max(q.x1, q.x2) : Math.max(q.z1, q.z2) }))
+            .filter(q => Math.abs(q.v - end) <= 40);
+          const seed = near.filter(q => q.hi - q.lo >= 40 && (Math.abs(q.lo - at) <= 40 || Math.abs(q.hi - at) <= 40))[0];
+          if (!seed) continue;
+          let lo = seed.lo, hi = seed.hi, grew = true;
+          const run = new Set([seed]);
+          while (grew) { grew = false; for (const q of near) if (!run.has(q) && q.lo <= hi + 1 && q.hi >= lo - 1 && Math.abs(q.v - seed.v) < 25) { run.add(q); lo = Math.min(lo, q.lo); hi = Math.max(hi, q.hi); grew = true; } }
+          const vs = [...run].map(q => q.v), c = (Math.min(...vs) + Math.max(...vs)) / 2, t = Math.max(10, Math.max(...vs) - Math.min(...vs));
+          const leg: Opening = { axis: la, cx: la === 'x' ? (lo + hi) / 2 : c, cz: la === 'x' ? c : (lo + hi) / 2, a: lo, b: hi, len: hi - lo, t, arc: false, tag: op.tag };
+          if (leg.len >= 40 && !openings.some(q => q.axis === la && Math.abs((la === 'x' ? q.cz - leg.cz : q.cx - leg.cx)) < 30 && q.a < hi - 5 && q.b > lo + 5)) openings.push(leg);
+        }
+      }
       // a wall drawn straight through an opening is cut out of it
       for (const op of openings) for (let i = walls.length - 1; i >= 0; i--) {
         const o = walls[i];
+        if (o.name === '柱' || o.rc) continue;
+        const sp = spanOf(o, op.axis), oc = op.axis === 'x' ? op.cz : op.cx;
+        // stray bits inside the opening (a sill or threshold line, the frame of a bay window) are not walls
+        if (!o.rot && Math.abs(sp.c - oc) <= sp.half + op.t / 2 + 2 && sp.lo >= op.a - 3 && sp.hi <= op.b + 3 && sp.half <= 40) { walls.splice(i, 1); continue; }
         if (!runsAlong(o, op.axis) || Math.max(o.w, o.d) < 60) continue;
-        const sp = spanOf(o, op.axis);
-        if (Math.abs(sp.c - (op.axis === 'x' ? op.cz : op.cx)) > sp.half + 1 || sp.lo >= op.b - 5 || sp.hi <= op.a + 5) continue;
+        if (Math.abs(sp.c - oc) > sp.half + 1 || sp.lo >= op.b - 5 || sp.hi <= op.a + 5) continue;
         if (sp.lo >= op.a - 1 && sp.hi <= op.b + 1) { walls.splice(i, 1); continue; }
         if (sp.hi > op.b + 1) walls.push({ ...o, ...(op.axis === 'x' ? { x: (op.b + sp.hi) / 2, w: sp.hi - op.b } : { z: (op.b + sp.hi) / 2, d: sp.hi - op.b }) });
         if (sp.lo < op.a - 1) setSpan(o, op.axis, sp.lo, op.a); else walls.splice(i, 1);
@@ -999,7 +1115,7 @@ export function buildBuilding(d: DxfDrawing, a: BuildingAnalysis, name: string, 
     for (const op of openings) {
       const it = op.tag ? codes.get(op.tag)! : null;
       const door = it ? it.kind === 'door' : op.arc;
-      const sill = it ? it.sill : door ? 0 : 90;
+      const sill = it ? optNow.sills?.[it.code] ?? it.sill : door ? 0 : 90;
       const oh = Math.min(H - sill, it ? it.h : door ? 210 : 150);
       const label = it ? `${it.code} ${it.name} ${it.w}×${it.h}` : door ? `門 ${Math.round(op.len)}×210` : `窗 ${Math.round(op.len)}×150`;
       const along = op.axis === 'x';

@@ -223,9 +223,12 @@ function BuildingStep({ st, firstId, onBuilt, onLayers, onClose }: {
         ))}</tbody>
       </table></div>
       {a.schedule.length > 0 && <div className="tbl"><table>
-        <thead><tr><th>門窗編號</th><th>名稱</th><th className="num">寬 × 高</th><th className="num">窗台高</th></tr></thead>
+        <thead><tr><th>門窗編號</th><th>名稱</th><th className="num">寬 × 高</th><th className="num">窗台高 cm（可改）</th></tr></thead>
         <tbody>{a.schedule.map(i => (
-          <tr key={i.code}><td>{i.code}</td><td>{i.name}</td><td className="num">{i.w} × {i.h}</td><td className="num">{i.sill}</td></tr>
+          <tr key={i.code}><td>{i.code}</td><td>{i.name}</td><td className="num">{i.legs ? `${i.legs.join(' + ')}（轉角）` : i.w} × {i.h}</td><td className="num">
+            {i.kind === 'door' ? i.sill : <input id={`sill-${i.code}`} type="number" min={0} max={300} step={5} value={opts.sills?.[i.code] ?? i.sill} style={{ width: 64 }}
+              onChange={e => { const v = Math.max(0, +e.target.value || 0); change({ ...opts, sills: { ...opts.sills, [i.code]: v } }); }} />}
+          </td></tr>
         ))}</tbody>
       </table></div>}
       {rep && <>
