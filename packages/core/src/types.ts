@@ -19,6 +19,10 @@ export interface BoxObject {
   color: number;
   /** storey key (1F, 2F … RF) for whole-building imports; y is then measured from 1F */
   floor?: string;
+  /** AutoCAD colour index of the lines a wall was drawn with */
+  wc?: number;
+  /** set from line colours: same colour as the exterior wall → concrete (rc), another colour → light partition */
+  wall?: 'rc' | 'light';
   /** stair steps and stair handrail pieces: riser height, cm */
   rise?: number;
   /** on the first step of each stair: the whole stair for the takeoff (risers as labelled 上16) */

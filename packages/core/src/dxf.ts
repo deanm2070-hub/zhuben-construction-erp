@@ -1,6 +1,7 @@
 /** Minimal ASCII DXF reader: lines, polylines, arcs, circles, text and block inserts. */
 export type Pt = [number, number];
-export interface DxfSeg { layer: string; a: Pt; b: Pt }
+/** `color` is the AutoCAD colour index when the file gives one (1 red, 2 yellow, 3 green, 4 cyan, 5 blue, 6 magenta, 7 white) */
+export interface DxfSeg { layer: string; a: Pt; b: Pt; color?: number }
 export interface DxfPoly { layer: string; pts: Pt[]; closed: boolean }
 export interface DxfText { layer: string; x: number; y: number; s: string; /** text height */ h?: number; /** attribute tag (ATTRIB) */ tag?: string }
 export interface DxfArc { layer: string; c: Pt; r: number; sweep: number; /** start and end points */ p0?: Pt; p1?: Pt }

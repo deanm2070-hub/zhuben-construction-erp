@@ -663,7 +663,7 @@ export interface BuildingResult {
   objects: ModelObject[];
   cad: CadData;
   analysis: BuildingAnalysis;
-  stats: { floors: number; walls: number; doors: number; windows: number; railings: number; heads: number };
+  stats: { floors: number; walls: number; doors: number; windows: number; railings: number; heads: number; /** colour index read as the exterior wall line, when the plans use more than one wall colour */ extColor?: number };
 }
 
 const BEAM_LAYER = /^BM|BEAM|梁/i;
@@ -804,7 +804,7 @@ export function buildBuilding(d: DxfDrawing, a: BuildingAnalysis, name: string, 
     const plan = a.plans.find(p => p.floors.includes(st.key))!, g = geos.get(plan)!;
     const X = (x: number) => (x - g.ox - minX) * S, Z = (y: number) => (maxY - (y - g.oy)) * S;
     const H = st.h, parapet = st.key === 'RF';
-    const lines = pairWalls(g.segs.filter(s => isWallLayer(s.layer)).map(s => ({ x1: X(s.a[0]), z1: Z(s.a[1]), x2: X(s.b[0]), z2: Z(s.b[1]) })));
+    const lines = pairWalls(g.segs.filter(s => isWallLayer(s.layer)).map(s => ({ x1: X(s.a[0]), z1: Z(s.a[1]), x2: X(s.b[0]), z2: Z(s.b[1]), c: /^(?:0?S-)?(?:COL|COLUMN|COLS|柱)/i.test(s.layer) ? undefined : s.color })));
     const openSegs = g.segs.filter(s => isOpenLayer(s.layer)).map(s => ({ x1: X(s.a[0]), z1: Z(s.a[1]), x2: X(s.b[0]), z2: Z(s.b[1]) }));
     const swings = d.arcs.filter(c => isOpenLayer(c.layer) && inBox(plan.box, c.c[0], c.c[1]) && c.sweep > 70 && c.sweep < 110 && c.r * S >= 50 && c.r * S <= 200 && c.p0 && c.p1)
       .map(c => ({ x: X(c.c[0]), z: Z(c.c[1]), r: c.r * S, ends: [[X(c.p0![0]), Z(c.p0![1])], [X(c.p1![0]), Z(c.p1![1])]] as [number, number][] }));
@@ -982,6 +982,22 @@ export function buildBuilding(d: DxfDrawing, a: BuildingAnalysis, name: string, 
     for (const x of xs) if (x > -5 && x < W + 5) beam('z', x);
     for (const z of zs) if (z > -5 && z < D + 5) beam('x', z);
   }
+  // wall lines: the colour of the exterior wall decides. Walls drawn in it are concrete, walls in another colour are light partitions.
+  const wallBoxes = objects.filter((o): o is BoxObject => isBox(o) && o.layer === 'wall' && o.wc !== undefined && !o.rc && /^(外牆|隔間牆)（CAD）/.test(o.name) && !(Math.max(o.w, o.d) < 120 && Math.min(o.w, o.d) >= 25));
+  let extColor: number | undefined;
+  if (new Set(wallBoxes.map(o => o.wc)).size >= 2) {
+    const lenOf = (o: BoxObject) => Math.max(o.w, o.d), votes = new Map<number, number>();
+    const xs = wallBoxes.flatMap(o => [o.x - o.w / 2, o.x + o.w / 2]), zs = wallBoxes.flatMap(o => [o.z - o.d / 2, o.z + o.d / 2]);
+    const x0 = Math.min(...xs), x1 = Math.max(...xs), z0 = Math.min(...zs), z1 = Math.max(...zs);
+    const onRim = (o: BoxObject) => o.w >= o.d ? Math.min(Math.abs(o.z - z0), Math.abs(o.z - z1)) < 40 : Math.min(Math.abs(o.x - x0), Math.abs(o.x - x1)) < 40;
+    for (const o of wallBoxes) if (onRim(o)) votes.set(o.wc!, (votes.get(o.wc!) || 0) + lenOf(o));
+    extColor = [...votes].sort((p, q) => q[1] - p[1])[0]?.[0];
+    // a wall on the outline is an exterior wall whatever colour it is drawn in
+    if (extColor !== undefined) for (const o of wallBoxes) {
+      o.wall = o.wc === extColor || onRim(o) ? 'rc' : 'light';
+      o.name = o.wall === 'light' ? '輕隔間牆（CAD）' : Math.min(o.w, o.d) >= 18 ? '外牆（CAD）' : 'RC牆（CAD）';
+    }
+  }
   // the roof slab covers the storey below it: a roof plan that shows only the parapet leaves holes, so use that storey's slabs
   const top = a.storeys[a.storeys.length - 1], under = a.storeys[a.storeys.length - 2];
   if (top && under && top.key === 'RF' && !under.key.startsWith('R')) {
@@ -1030,7 +1046,7 @@ export function buildBuilding(d: DxfDrawing, a: BuildingAnalysis, name: string, 
     objects,
     cad: { name, W, D, segs: [], texts: [], doors: [], floors, ...(spec ? { rc: { spec, panels: rcPanels } } : {}) },
     analysis: a,
-    stats: { floors: floors.length, walls: nWalls, doors: nDoors, windows: nWins, railings: nRails, heads: cutHeads },
+    stats: { floors: floors.length, walls: nWalls, doors: nDoors, windows: nWins, railings: nRails, heads: cutHeads, ...(extColor !== undefined ? { extColor } : {}) },
   };
 }
 

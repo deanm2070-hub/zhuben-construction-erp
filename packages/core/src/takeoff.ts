@@ -79,7 +79,8 @@ export function computeTakeoff(inp: TakeoffInput): Takeoff {
   const cx = bounds.W / 2, cz = bounds.D / 2;
   const boxes = objects.filter(isBox);
   const walls = boxes.filter(o => o.layer === 'wall' && o.h > 0);
-  const isExt = (o: BoxObject) => /外牆|窗台|窗楣|女兒牆/.test(o.name) || Math.min(o.w, o.d) >= 18;
+  // concrete walls: by line colour when the plans give one (same colour as the exterior wall), else by name and thickness
+  const isExt = (o: BoxObject) => o.wall ? o.wall === 'rc' : /外牆|窗台|窗楣|女兒牆/.test(o.name) || Math.min(o.w, o.d) >= 18;
   const len = (o: BoxObject) => Math.max(o.w, o.d) / 100;
   const sum = <T>(a: T[], f: (o: T) => number) => a.reduce((s, o) => s + f(o), 0);
   const full = walls.filter(o => o.y === 0 && o.h >= 200);
@@ -87,7 +88,9 @@ export function computeTakeoff(inp: TakeoffInput): Takeoff {
   // columns from the structural plans carry their mark and size; the drawn ones are guessed by shape
   const tagged = walls.filter(o => o.rc?.kind === 'column');
   const cols = tagged.length ? tagged : walls.filter(isColumn);
-  const ext = walls.filter(o => isExt(o) && !o.rc && (tagged.length > 0 || !isColumn(o))), int = full.filter(o => !isExt(o) && !o.rc);
+  const rcWalls = walls.filter(o => isExt(o) && !o.rc && (tagged.length > 0 || !isColumn(o)));
+  // interior concrete walls carry no facade finish
+  const ext = rcWalls.filter(o => !(o.wall === 'rc' && /^RC牆/.test(o.name))), int = full.filter(o => !isExt(o) && !o.rc);
   const slabs = boxes.filter(o => o.layer === 'slab' && !/梁/.test(o.name));
   const railings = boxes.filter(o => /欄杆/.test(o.name) && (o.layer === 'glass' || o.layer === 'rail'));
   const map = roomMap(objects, bounds, inp.labels, inp.rects);
@@ -172,7 +175,7 @@ export function computeTakeoff(inp: TakeoffInput): Takeoff {
     row(SEC.rc, CONCRETE, 'M3', `柱 ${k}`, `${m(a)} × ${m(b)} × ${m(o.h)} m × ${list.length} 支`, a * b * o.h / 1e6 * list.length);
     row(SEC.rc, FORMWORK, '㎡', `柱 ${k}`, `周長 2×(${m(a)}+${m(b)}) m × 高 ${m(o.h)} m × ${list.length} 支`, 2 * (a + b) * o.h / 1e4 * list.length);
   }
-  for (const [, list] of byDims(ext, o => `${Math.round(Math.min(o.w, o.d))}|${Math.round(o.h)}`)) {
+  for (const [, list] of byDims(rcWalls, o => `${Math.round(Math.min(o.w, o.d))}|${Math.round(o.h)}`)) {
     const t = Math.min(list[0].w, list[0].d), h = list[0].h, L = sum(list, o => Math.max(o.w, o.d));
     const where = `RC牆 厚${Math.round(t)} 高${Math.round(h)}${/窗台|窗楣|門楣/.test(list[0].name) ? '（窗台/窗楣）' : ''}`;
     row(SEC.rc, CONCRETE, 'M3', where, `長 ${m(L)} m × 厚 ${m(t)} m × 高 ${m(h)} m（${list.length} 段）`, L * t * h / 1e6);
@@ -243,7 +246,7 @@ export function computeTakeoff(inp: TakeoffInput): Takeoff {
   }
   if (int.length) {
     const L = sum(int, o => Math.max(o.w, o.d)), A = sum(int, o => len(o) * o.h / 100);
-    row(SEC.finish, '內牆雙面矽酸鈣板(一小時防火時效)', '㎡', `隔間牆 ${int.length} 段`, `合計長 ${m(L)} m × 高（各段 ${[...new Set(int.map(o => m(o.h)))].join('/')} m）`, A);
+    row(SEC.finish, '內牆雙面矽酸鈣板(一小時防火時效)', '㎡', `${int.some(o => o.wall === 'light') ? '輕隔間牆' : '隔間牆'} ${int.length} 段`, `合計長 ${m(L)} m × 高（各段 ${[...new Set(int.map(o => m(o.h)))].join('/')} m）`, A);
   }
   // doors and windows by schedule type
   const dk = new Map<string, { n: number; w: number; h: number; ext: boolean }>();

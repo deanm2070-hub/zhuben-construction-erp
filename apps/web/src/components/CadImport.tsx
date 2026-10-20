@@ -20,6 +20,7 @@ type Stage =
   | { s: 'layers'; name: string; dxf: DxfDrawing; map: Record<string, LayerKind>; unit: number; wallH: number }
   | { s: 'error'; msg: string };
 
+const ACI: Record<number, string> = { 1: '紅色', 2: '黃色', 3: '綠色', 4: '青色', 5: '藍色', 6: '洋紅色', 7: '白色', 8: '灰色' };
 export interface ImportResult { objects: ModelObject[]; cad: CadData; summary: string }
 
 const KINDS: [LayerKind, string][] = [['wall', '牆體（擠出成 3D 牆）'], ['furn', '家具／櫃（擠出）'], ['line', '只顯示線條'], ['off', '不匯入']];
@@ -182,7 +183,8 @@ function BuildingStep({ st, firstId, onBuilt, onLayers, onClose }: {
     const s = r.stats;
     const rc = r.cad.rc;
     onBuilt({ objects: r.objects, cad: r.cad, summary: `已建立 ${s.floors} 層：${s.walls} 道牆、${s.doors} 樘門、${s.windows} 樘窗` + (s.railings ? `、${s.railings} 段欄杆` : '')
-      + (rc ? `；讀到${rc.spec.sheets.join('、')}，鋼筋依配筋圖計算` : '') });
+      + (rc ? `；讀到${rc.spec.sheets.join('、')}，鋼筋依配筋圖計算` : '')
+      + (s.extColor !== undefined ? `；外牆線顏色為${ACI[s.extColor] || `色號 ${s.extColor}`}，同色內牆算 RC 牆，其他顏色算輕隔間牆` : '') });
   };
   return (
     <Modal title="整棟自動建模" desc={`來源：${name}。確認辨識結果後建立 3D。`} onClose={onClose} actions={<>

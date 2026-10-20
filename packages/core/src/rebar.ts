@@ -240,7 +240,7 @@ const isColumnShape = (o: BoxObject) => !o.rot && Math.min(o.w, o.d) >= 30 && Ma
 /** Walls that are concrete in the takeoff: exterior walls, sills, lintels and parapets (not columns). */
 export function rcWallsOf(boxes: BoxObject[]): BoxObject[] {
   const tagged = new Set(boxes.filter(o => o.rc?.kind === 'column').map(o => o.floor));
-  return boxes.filter(o => o.layer === 'wall' && o.h > 0 && !o.rc && (/外牆|窗台|窗楣|女兒牆/.test(o.name) || Math.min(o.w, o.d) >= 18)
+  return boxes.filter(o => o.layer === 'wall' && o.h > 0 && !o.rc && (o.wall ? o.wall === 'rc' : /外牆|窗台|窗楣|女兒牆/.test(o.name) || Math.min(o.w, o.d) >= 18)
     && (tagged.has(o.floor) || !isColumnShape(o)));
 }
 

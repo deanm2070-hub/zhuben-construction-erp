@@ -4,7 +4,7 @@ import { cleanText, type DxfDrawing, type Pt } from './dxf';
 interface V { x: number; y: number }
 interface DbEntity {
   type: string;
-  layer?: string;
+  layer?: string; colorIndex?: number;
   startPoint?: V; endPoint?: V;
   vertices?: (V & { bulge?: number })[]; flag?: number;
   center?: V; radius?: number; startAngle?: number; endAngle?: number;
@@ -16,7 +16,7 @@ interface DbEntity {
 interface DbBlock { name: string; basePoint?: V; entities?: DbEntity[] }
 export interface DwgDatabase {
   header?: { INSUNITS?: number; ACADVER?: string };
-  tables?: { BLOCK_RECORD?: { entries?: DbBlock[] } };
+  tables?: { BLOCK_RECORD?: { entries?: DbBlock[] }; LAYER?: { entries?: { name: string; colorIndex?: number }[] } };
   entities: DbEntity[];
 }
 
@@ -27,20 +27,23 @@ const mul = (m: M, n: M): M => [m[0] * n[0] + m[2] * n[1], m[1] * n[0] + m[3] * 
 export function drawingFromDwg(db: DwgDatabase, version = ''): DxfDrawing {
   const blocks = new Map((db.tables?.BLOCK_RECORD?.entries || []).map(b => [b.name, b]));
   const out: DxfDrawing = { segs: [], polys: [], texts: [], arcs: [], layers: new Map(), units: db.header?.INSUNITS || 0, version: db.header?.ACADVER || version, blockCount: blocks.size, inserts: 0 };
+  const layerColor = new Map((db.tables?.LAYER?.entries || []).map(l => [l.name, Math.abs(l.colorIndex ?? 7)]));
   const bump = (l: string) => out.layers.set(l, (out.layers.get(l) || 0) + 1);
 
-  const walk = (ents: DbEntity[], m: M, parent: string | null, depth: number) => {
+  const walk = (ents: DbEntity[], m: M, parent: string | null, depth: number, pcolor?: number) => {
     const P = (x: number, y: number): Pt => [m[0] * x + m[2] * y + m[4], m[1] * x + m[3] * y + m[5]];
     const k = Math.hypot(m[0], m[1]);
     for (const e of ents) {
       const raw = e.layer || '0', layer = raw === '0' && parent ? parent : raw;
       const t = e.type;
+      // AutoCAD colour index: 256 = by layer, 0 = by block (the insert's colour)
+      const ci = e.colorIndex, color = ci === undefined || ci === 256 ? layerColor.get(layer) ?? layerColor.get(raw) : ci === 0 ? pcolor ?? layerColor.get(layer) : Math.abs(ci);
       if (t === 'LINE' && e.startPoint && e.endPoint) {
-        out.segs.push({ layer, a: P(e.startPoint.x, e.startPoint.y), b: P(e.endPoint.x, e.endPoint.y) }); bump(layer);
+        out.segs.push({ layer, a: P(e.startPoint.x, e.startPoint.y), b: P(e.endPoint.x, e.endPoint.y), color }); bump(layer);
       } else if ((t === 'LWPOLYLINE' || t === 'POLYLINE2D') && e.vertices?.length) {
         const pts = e.vertices.map(v => P(v.x, v.y)), closed = ((e.flag || 0) & 1) === 1;
-        for (let i = 0; i + 1 < pts.length; i++) out.segs.push({ layer, a: pts[i], b: pts[i + 1] });
-        if (closed && pts.length > 2) out.segs.push({ layer, a: pts[pts.length - 1], b: pts[0] });
+        for (let i = 0; i + 1 < pts.length; i++) out.segs.push({ layer, a: pts[i], b: pts[i + 1], color });
+        if (closed && pts.length > 2) out.segs.push({ layer, a: pts[pts.length - 1], b: pts[0], color });
         out.polys.push({ layer, pts, closed }); bump(layer);
       } else if ((t === 'ARC' || t === 'CIRCLE') && e.center && e.radius) {
         const a0 = t === 'ARC' ? e.startAngle || 0 : 0;
@@ -51,7 +54,7 @@ export function drawingFromDwg(db: DwgDatabase, version = ''): DxfDrawing {
         for (let i = 0; i <= n; i++) {
           const a = a0 + sw * i / n;
           pts.push(P(e.center.x + e.radius * Math.cos(a), e.center.y + e.radius * Math.sin(a)));
-          if (i) out.segs.push({ layer, a: pts[i - 1], b: pts[i] });
+          if (i) out.segs.push({ layer, a: pts[i - 1], b: pts[i], color });
         }
         if (t === 'ARC') out.arcs.push({ layer, c: P(e.center.x, e.center.y), r: e.radius * k, sweep: sw * 180 / Math.PI, p0: pts[0], p1: pts[n] });
         bump(layer);
@@ -67,7 +70,7 @@ export function drawingFromDwg(db: DwgDatabase, version = ''): DxfDrawing {
         if (b) {
           out.inserts++;
           const r = e.rotation || 0, c = Math.cos(r), sn = Math.sin(r), sx = e.xScale ?? 1, sy = e.yScale ?? 1, ip = e.insertionPoint || { x: 0, y: 0 }, bp = b.basePoint || { x: 0, y: 0 };
-          walk(b.entities || [], mul(mul(m, [c * sx, sn * sx, -sn * sy, c * sy, ip.x, ip.y]), [1, 0, 0, 1, -bp.x, -bp.y]), layer, depth + 1);
+          walk(b.entities || [], mul(mul(m, [c * sx, sn * sx, -sn * sy, c * sy, ip.x, ip.y]), [1, 0, 0, 1, -bp.x, -bp.y]), layer, depth + 1, color);
         }
         if (e.attribs?.length) walk(e.attribs, m, layer, depth);
       }
