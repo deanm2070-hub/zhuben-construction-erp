@@ -1031,7 +1031,9 @@ export function buildBuilding(d: DxfDrawing, a: BuildingAnalysis, name: string, 
   const table = readSizeTable(d);
   const madeBy = new Map<ModelObject, SheetView>();
   const rcPanels: SlabPanel[] = [];
-  for (const v of a.views.filter(v => v.kind === 'structure' && v.floors.length)) {
+  const structViews = a.views.filter(v => v.kind === 'structure' && v.floors.length);
+  const prepped = new Map<SheetView, { lines: ReturnType<typeof readBeams>; beams: ReturnType<typeof readBeams>; cols: ReturnType<typeof readColumns>; panels: ReturnType<typeof readPanels> }>();
+  for (const v of structViews) {
     const gs = planGeo(d, v);
     if (!isFinite(gs.ox) || !isFinite(gs.oy)) continue;
     let X = (x: number) => (x - gs.ox - minX) * S, Z = (y: number) => (maxY - (y - gs.oy)) * S;
@@ -1049,7 +1051,31 @@ export function buildBuilding(d: DxfDrawing, a: BuildingAnalysis, name: string, 
     }
     const lines = readBeams(d, v, X, Z, S, table), beams = lines.filter(b => b.mark);
     const cols = readColumns(d, v, X, Z, S), panels = readPanels(d, v, X, Z, lines, W, D);
+    prepped.set(v, { lines, beams, cols, panels });
+  }
+  // a floor can have more than one structural sheet (an older revision, another building): the one whose beams run along the architectural walls is used
+  const fit = (v: SheetView, key: string) => {
+    const i = a.storeys.findIndex(s => s.key === key), host = i > 0 ? a.storeys[i - 1].key : key;
+    const ws = objects.filter((o): o is BoxObject => isBox(o) && o.layer === 'wall' && !o.rc && (o.floor === host || o.floor === key) && Math.max(o.w, o.d) > 60);
+    let n = 0;
+    for (const b of prepped.get(v)!.beams) {
+      const mx = (b.ax + b.bx) / 2, mz = (b.az + b.bz) / 2;
+      if (ws.some(o => { const r = o.rot || 0, along = o.w >= o.d, h = Math.max(o.w, o.d) / 2, ux = Math.cos(r) * (along ? 1 : 0) + Math.sin(r) * (along ? 0 : 1), uz = -Math.sin(r) * (along ? 1 : 0) + Math.cos(r) * (along ? 0 : 1);
+        const t = Math.max(-h, Math.min(h, (mx - o.x) * ux + (mz - o.z) * uz)); return Math.hypot(mx - (o.x + ux * t), mz - (o.z + uz * t)) < Math.min(o.w, o.d) / 2 + 45; })) n++;
+    }
+    return n;
+  };
+  const chosen = new Map<string, { v: SheetView; n: number }>();
+  for (const v of structViews) if (prepped.has(v)) for (const key of v.floors) {
+    const n = fit(v, key), c = chosen.get(key);
+    if (!c || n > c.n) chosen.set(key, { v, n });
+  }
+  for (const v of structViews) {
+    const pv = prepped.get(v);
+    if (!pv) continue;
+    const { beams, cols, panels } = pv;
     for (const key of v.floors) {
+      if (chosen.get(key)?.v !== v) continue;
       const i = a.storeys.findIndex(s => s.key === key);
       if (i < 0) continue;
       // the beams carry this floor: they hang under its slab, in the storey below (foundation beams under 1F)
@@ -1058,9 +1084,11 @@ export function buildBuilding(d: DxfDrawing, a: BuildingAnalysis, name: string, 
       for (const b of beams) {
         const m = b.mark!, ground = i === 0, along = Math.abs(b.bx - b.ax) >= Math.abs(b.bz - b.az);
         const bx = (b.ax + b.bx) / 2, bz = (b.az + b.bz) / 2;
+        // a beam drawn off the grid (e.g. along a slanted site line) is turned to follow it
+        const ang = Math.atan2(b.bz - b.az, b.bx - b.ax), off = Math.abs(((ang % (Math.PI / 2)) + Math.PI / 2) % (Math.PI / 2) - 0), slant = Math.min(off, Math.PI / 2 - off) > 0.03 && b.len > 100;
         if (objects.some(o => isBox(o) && madeBy.get(o) !== v && o.rc?.kind === 'beam' && o.floor === host.key && Math.abs(o.x - bx) < 8 && Math.abs(o.z - bz) < 8 && Math.abs(Math.max(o.w, o.d) - b.len) < 15 && Math.abs(o.y + o.h - top) < 5)) continue;
         objects.push({ id: id++, layer: 'slab', name: `${ground ? '地梁' : '梁'} ${m.code}（結構圖）`, floor: host.key, y: top - m.h, h: m.h, color: 0xcfc9bd,
-          x: (b.ax + b.bx) / 2, z: (b.az + b.bz) / 2, ...(along ? { w: b.len, d: m.w } : { w: m.w, d: b.len }), rc: { kind: 'beam', mark: m.code, fl: key } });
+          x: (b.ax + b.bx) / 2, z: (b.az + b.bz) / 2, ...(slant ? { w: b.len, d: m.w, rot: -ang } : along ? { w: b.len, d: m.w } : { w: m.w, d: b.len }), rc: { kind: 'beam', mark: m.code, fl: key } });
         madeBy.set(objects[objects.length - 1], v);
       }
       // columns of this storey: the architectural column there takes the mark and the structural size, else one is added
