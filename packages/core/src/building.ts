@@ -853,6 +853,27 @@ export function buildBuilding(d: DxfDrawing, a: BuildingAnalysis, name: string, 
 
     // unpaired diagonal lines are usually shaft crosses or hatching, not walls
     const walls = dropLouvers(lines.filter(w => !w.single || Math.abs(w.ax - w.bx) < 1 || Math.abs(w.az - w.bz) < 1).map(w => wallBox(w, H, 0)));
+    // a line marked 投影線 is the outline of the storey above projecting out (a balcony), not a wall: drop what lies beyond the facade it hangs off
+    for (const t of d.texts) {
+      if (!/投影線/.test(t.s) || !inBox(plan.box, t.x, t.y)) continue;
+      const tx = X(t.x), tz = Z(t.y);
+      let near: { c: number; horiz: boolean; d: number } | null = null;
+      for (const q of openSegs) {
+        const horiz = Math.abs(q.z1 - q.z2) < 0.5, vert = Math.abs(q.x1 - q.x2) < 0.5;
+        if ((!horiz && !vert) || Math.hypot(q.x1 - q.x2, q.z1 - q.z2) < 40) continue;
+        // the facade line the label hangs off: 40 to 300 cm away across, level with the label along
+        const across = Math.abs((horiz ? tz - q.z1 : tx - q.x1)), lo = horiz ? Math.min(q.x1, q.x2) : Math.min(q.z1, q.z2), hi = horiz ? Math.max(q.x1, q.x2) : Math.max(q.z1, q.z2), along = horiz ? tx : tz;
+        if (across < 40 || across > 300 || along < lo - 450 || along > hi + 450) continue;
+        if (!near || across < near.d) near = { c: horiz ? q.z1 : q.x1, horiz, d: across };
+      }
+      if (!near) continue;
+      const sign = (near.horiz ? tz : tx) > near.c ? 1 : -1;
+      for (let i = walls.length - 1; i >= 0; i--) {
+        const o = walls[i];
+        if (Math.max(o.w, o.d) < 120 && Math.min(o.w, o.d) >= 25) continue;
+        if (((near.horiz ? o.z : o.x) - near.c) * sign > 40) walls.splice(i, 1);
+      }
+    }
     const openings = parapet ? [] : findOpenings(walls, openSegs, swings);
     // each opening takes the nearest tag; tags left over point at openings drawn without a wall gap
     const dist = (t: { x: number; z: number }, op: Opening) => Math.hypot(t.x - op.cx, t.z - op.cz);
@@ -860,6 +881,16 @@ export function buildBuilding(d: DxfDrawing, a: BuildingAnalysis, name: string, 
     if (!parapet) {
       const used = new Set(tags.filter(t => openings.some(op => dist(t, op) < 200 && op.tag === t.code)));
       for (const t of tags) if (!used.has(t)) { const op = cutTagged(walls, t, codes.get(t.code)!.w, openSegs); if (op) openings.push(op); }
+      // a wall drawn straight through an opening is cut out of it
+      for (const op of openings) for (let i = walls.length - 1; i >= 0; i--) {
+        const o = walls[i];
+        if (!runsAlong(o, op.axis) || Math.max(o.w, o.d) < 60) continue;
+        const sp = spanOf(o, op.axis);
+        if (Math.abs(sp.c - (op.axis === 'x' ? op.cz : op.cx)) > sp.half + 1 || sp.lo >= op.b - 5 || sp.hi <= op.a + 5) continue;
+        if (sp.lo >= op.a - 1 && sp.hi <= op.b + 1) { walls.splice(i, 1); continue; }
+        if (sp.hi > op.b + 1) walls.push({ ...o, ...(op.axis === 'x' ? { x: (op.b + sp.hi) / 2, w: sp.hi - op.b } : { z: (op.b + sp.hi) / 2, d: sp.hi - op.b }) });
+        if (sp.lo < op.a - 1) setSpan(o, op.axis, sp.lo, op.a); else walls.splice(i, 1);
+      }
       fillGaps(walls, openings);
     }
     // openings count as closed when finding the outline
