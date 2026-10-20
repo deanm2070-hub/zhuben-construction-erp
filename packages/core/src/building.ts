@@ -152,6 +152,19 @@ export function parseSchedule(d: DxfDrawing): ScheduleItem[] {
     }
     items.push({ code: cd, w: +m[1], h: +m[2], name, sill, kind, type });
   }
+  // table layout: codes across the header row, each column giving "W x H", then the name, below it
+  const PURE = /^(\d+(?:\.\d+)?)\s*[xX×*]\s*(\d+(?:\.\d+)?)$/;
+  for (const c of d.texts) {
+    const cd = c.s.trim();
+    if (!/^(?:DW|SD|AW|W|D|AD|F)\d{1,3}[A-Z]?$/.test(cd) || items.some(i => i.code === cd)) continue;
+    const h = c.h || 20;
+    const size = d.texts.map(t => ({ t, m: PURE.exec(t.s.trim()) })).filter(o => o.m && o.t.y < c.y && c.y - o.t.y < h * 80 && o.t.x > c.x - h * 14 && o.t.x < c.x + h * 3)
+      .sort((a, b) => b.t.y - a.t.y)[0];
+    if (!size) continue;
+    const label = d.texts.filter(t => Math.abs(t.x - size.t.x) < h * 2 && t.y < size.t.y && size.t.y - t.y < h * 8 && /[門窗]/.test(t.s) && !/[:：]/.test(t.s)).sort((a, b) => b.y - a.y)[0]?.s.trim() || '';
+    const type = openingType(cd, label), kind = isDoorType(type) ? 'door' : 'window';
+    items.push({ code: cd, w: +size.m![1], h: +size.m![2], name: openingName(cd, label), sill: kind === 'door' || type === 'french' ? 0 : 90, kind, type });
+  }
   return items;
 }
 
@@ -283,7 +296,7 @@ function learnWalls(d: DxfDrawing, plans: SheetView[]): { scale: number; wallLay
   return { scale: best.scale, wallLayers: best.layers };
 }
 
-const isOpenLayer = (l: string) => /OPEN|DOOR|WIN|門|窗/i.test(l) && !/編號|TAG|TEXT/i.test(l);
+const isOpenLayer = (l: string) => /OPEN|DOOR|WIN|門|窗|^DW$/i.test(l) && !/編號|TAG|TEXT|-T$/i.test(l);
 
 interface PlanGeo { segs: DxfSeg[]; ox: number; oy: number; gx: number[]; gy: number[] }
 
