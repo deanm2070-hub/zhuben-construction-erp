@@ -930,6 +930,20 @@ export function buildBuilding(d: DxfDrawing, a: BuildingAnalysis, name: string, 
     for (const x of xs) if (x > -5 && x < W + 5) beam('z', x);
     for (const z of zs) if (z > -5 && z < D + 5) beam('x', z);
   }
+  // the roof slab covers the storey below it: a roof plan that shows only the parapet leaves holes, so use that storey's slabs
+  const top = a.storeys[a.storeys.length - 1], under = a.storeys[a.storeys.length - 2];
+  if (top && under && top.key === 'RF' && !under.key.startsWith('R')) {
+    const area = (rs: { x0: number; x1: number; z0: number; z1: number }[]) => rs.reduce((n, r) => n + (r.x1 - r.x0) * (r.z1 - r.z0), 0);
+    const roof = slabsOf.get('RF') || [], below = slabsOf.get(under.key) || [];
+    if (below.length && area(roof) < area(below) * 0.85) {
+      for (let i = objects.length - 1; i >= 0; i--) { const o = objects[i]; if (isBox(o) && o.floor === 'RF' && o.layer === 'slab') objects.splice(i, 1); }
+      slabsOf.set('RF', []);
+      for (const r of below) {
+        objects.push({ id: id++, layer: 'slab', name: '屋頂板（CAD）', floor: 'RF', x: (r.x0 + r.x1) / 2, z: (r.z0 + r.z1) / 2, w: r.x1 - r.x0, d: r.z1 - r.z0, h: SLAB, y: top.base - SLAB, color: 0xd6d1c7 });
+        slabsOf.get('RF')!.push(r);
+      }
+    }
+  }
   // columns and walls standing on a terrace or roof deck (nothing above them) end level with the parapet round it
   const headH = parapetNote ?? a.parapet;
   a.storeys.forEach((st, i) => {
