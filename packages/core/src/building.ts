@@ -458,6 +458,13 @@ function cutTagged(walls: BoxObject[], tag: { code: string; x: number; z: number
     const par: typeof openSegs = [];
     while (grew) { grew = false; for (const q of near) if (!par.includes(q.s) && q.lo <= hi + 1 && q.hi >= lo - 1) { par.push(q.s); lo = Math.min(lo, q.lo); hi = Math.max(hi, q.hi); grew = true; } }
     const vs = par.map(s => axis === 'x' ? s.z1 : s.x1), c = (Math.min(...vs) + Math.max(...vs)) / 2, t = Math.max(10, Math.max(...vs) - Math.min(...vs));
+    // the frame stops short of the jambs: run the opening to a wall or column face close by
+    for (const o of walls) {
+      const sp = spanOf(o, axis);
+      if (Math.abs(sp.c - c) > sp.half + t / 2 + 5) continue;
+      if (sp.lo >= hi - 1 && sp.lo - hi < 40) hi = sp.lo;
+      if (sp.hi <= lo + 1 && lo - sp.hi < 40) lo = sp.hi;
+    }
     if (hi - lo < width * 0.5 || hi - lo > width * 1.5) return null;
     return { axis, cx: axis === 'x' ? (lo + hi) / 2 : c, cz: axis === 'x' ? c : (lo + hi) / 2, a: lo, b: hi, len: hi - lo, t, arc: false, tag: tag.code };
   }
@@ -511,17 +518,30 @@ function raster(walls: BoxObject[], W: number, D: number, M = 80) {
   const nb = (k: number) => { const i = k % nx, j = (k / nx) | 0, o: number[] = []; if (i > 0) o.push(k - 1); if (i < nx - 1) o.push(k + 1); if (j > 0) o.push(k - nx); if (j < nz - 1) o.push(k + nx); return o; };
   const cell = (x: number, z: number) => { const i = Math.floor((x + M) / C), j = Math.floor((z + M) / C); return i < 0 || j < 0 || i >= nx || j >= nz ? -1 : j * nx + i; };
   /** cells of the space around (x, z) bounded by walls, or null when it is larger than `limit` cells */
-  const region = (x: number, z: number, limit: number) => {
-    const k0 = cell(x, z);
-    if (k0 < 0 || wall[k0]) return null;
+  // walls grown by two cells: closes gaps up to about 40 cm (an opening drawn a little short of its jamb)
+  let thick: Uint8Array | null = null;
+  const grown = () => {
+    if (thick) return thick;
+    thick = new Uint8Array(N);
+    for (let k = 0; k < N; k++) if (wall[k]) {
+      const i = k % nx, j = (k / nx) | 0;
+      for (let dj = -2; dj <= 2; dj++) for (let di = -2; di <= 2; di++) { const a = i + di, b = j + dj; if (a >= 0 && b >= 0 && a < nx && b < nz) thick[b * nx + a] = 1; }
+    }
+    return thick;
+  };
+  const region = (x: number, z: number, limit: number, close = false): Uint8Array | null => {
+    const k0 = cell(x, z), solid = close ? grown() : wall;
+    if (k0 < 0 || solid[k0]) return close ? region(x, z, limit) : null;
     const seen = new Uint8Array(N), stack = [k0];
     seen[k0] = 1;
     let n = 0;
     while (stack.length) {
       const k = stack.pop()!;
       if (++n > limit) return null;
-      for (const m of nb(k)) if (!seen[m] && !wall[m]) { seen[m] = 1; stack.push(m); }
+      for (const m of nb(k)) if (!seen[m] && !solid[m]) { seen[m] = 1; stack.push(m); }
     }
+    // grow back over the two cells taken by the thickened walls
+    if (close) for (let r = 0; r < 2; r++) { const add: number[] = []; for (let k = 0; k < N; k++) if (seen[k]) for (const m of nb(k)) if (!seen[m] && !wall[m]) add.push(m); for (const m of add) seen[m] = 1; }
     return seen;
   };
   return { C, M, nx, nz, N, wall, nb, cell, region };
@@ -608,7 +628,7 @@ function classifyEdges(walls: BoxObject[], shut: BoxObject[], notes: { x: number
     const kind: EdgeKind | null = PLAN_NOTES.projection.test(n.s) ? 'projection' : PLAN_NOTES.canopy.test(n.s) ? 'canopy' : PLAN_NOTES.balcony.test(n.s) && n.s.length <= 8 ? 'balcony' : null;
     if (!kind) continue;
     // labels sit inside their space; a bigger space has leaked out through a doorway that was not found
-    const cells = g.region(n.x, n.z, kind === 'balcony' ? 2500 : 4000);
+    const cells = kind === 'balcony' ? g.region(n.x, n.z, 2500, /陽台/.test(n.s)) : g.region(n.x, n.z, 4000);
     if (cells) spaces.push({ kind, label: n.s.trim(), cells });
   }
   // a note inside a terrace (上方透空遮陽, 雨遮 drawn over it) does not make the terrace a projection or canopy
@@ -651,7 +671,7 @@ function classifyEdges(walls: BoxObject[], shut: BoxObject[], notes: { x: number
       for (const k of ks) for (const sp of spaces) if (k >= 0 && sp.cells[k]) { here.add(sp.kind); if (sp.kind === 'balcony') labels.push(sp.label); }
       for (const h of here) hits.set(h, (hits.get(h) || 0) + 1);
       // a terrace or roof deck on one side and open air on the other: its parapet or railing, however thick
-      const terrace = (k: number) => k >= 0 && (spaces.some(sp => sp.cells[k] && sp.kind === 'balcony' && /露台|平台/.test(sp.label)) || !!deck?.[k]);
+      const terrace = (k: number) => k >= 0 && (spaces.some(sp => sp.cells[k] && sp.kind === 'balcony' && /露台|平台|陽台/.test(sp.label)) || !!deck?.[k]);
       const air = (k: number) => k < 0 || !!outside[k];
       if ((terrace(ks[0]) && air(ks[1])) || (terrace(ks[1]) && air(ks[0]))) edge++;
       if (deck && terrace(ks[0]) && terrace(ks[1])) between++;
@@ -705,13 +725,16 @@ function railingFor(w: BoxObject, notes: { x: number; z: number; s: string }[], 
     const m = notes.map(n => HEIGHT_NOTE.exec(n.s)).find(m => m && /欄杆|扶手/.test(m[1]));
     if (m) { const glass = /玻璃/.test(m[1]); return { h: +m[2], glass, solid: false, name: glass ? '玻璃欄杆（CAD）' : '欄杆（CAD）' }; }
   }
+  // a balcony edge drawn as a double line is an RC railing
+  const rc = /陽台/.test(label) && Math.min(w.w, w.d) > 12;
   let best: { m: RegExpExecArray; d: number } | null = null;
   for (const n of notes) {
     const m = HEIGHT_NOTE.exec(n.s), dist = Math.hypot(n.x - w.x, n.z - w.z);
     if (m && dist < 500 && (!best || dist < best.d)) best = { m, d: dist };
   }
-  if (!best) return def;
+  if (!best) return rc ? { h: def.h, glass: false, solid: true, name: 'RC欄杆（CAD）' } : def;
   const h = +best.m[2], kind = best.m[1];
+  if (rc && !/女兒牆|矮牆|花台|玻璃/.test(kind)) return { h, glass: false, solid: true, name: 'RC欄杆（CAD）' };
   if (/女兒牆|矮牆|花台/.test(kind)) return { h, glass: false, solid: true, name: kind === '花台' ? '花台（CAD）' : '女兒牆（CAD）' };
   const glass = /玻璃/.test(kind) || def.glass;
   return { h, glass, solid: false, name: glass ? '玻璃欄杆（CAD）' : '欄杆（CAD）' };
@@ -1077,7 +1100,22 @@ export function buildBuilding(d: DxfDrawing, a: BuildingAnalysis, name: string, 
     const shut = openings.map(op => ({ ...walls[0], x: op.cx, z: op.cz, w: op.axis === 'x' ? op.len : op.t, d: op.axis === 'x' ? op.t : op.len, rot: 0 }));
     // thin lines round balconies are railings, round canopies the slab edge, and projections nothing
     const notes = d.texts.filter(t => inBox(plan.box, t.x, t.y)).map(t => ({ x: X(t.x), z: Z(t.y), s: t.s }));
-    const edges = parapet ? new Map<BoxObject, { kind: EdgeKind; label: string }>() : classifyEdges(walls, shut, notes, W, D, st.key.startsWith('R'));
+    // in a balcony a double line on any layer (often the stair layer), or a short slanted pair on the wall layer, is an RC railing
+    const railCand: BoxObject[] = [];
+    if (!parapet) {
+      const balc = notes.filter(n => /陽台|露台/.test(n.s) && n.s.length <= 8 && !/投影|面積/.test(n.s));
+      const stairPairs = pairWalls(g.segs.filter(q => STAIR_LAYER.test(q.layer)).map(q => ({ x1: X(q.a[0]), z1: Z(q.a[1]), x2: X(q.b[0]), z2: Z(q.b[1]) })));
+      const slanted = lines.filter(l => Math.abs(l.ax - l.bx) >= 1 && Math.abs(l.az - l.bz) >= 1);
+      for (const l of [...stairPairs, ...slanted]) {
+        const len = Math.hypot(l.bx - l.ax, l.bz - l.az), mx = (l.ax + l.bx) / 2, mz = (l.az + l.bz) / 2;
+        if (l.single || l.t < 8 || l.t > 25 || len < 60 || len > 1200 || !balc.some(n => Math.hypot(n.x - mx, n.z - mz) < 450)) continue;
+        const b = wallBox(l, H, 0);
+        // already built (a slanted wall kept as a wall), or this pair found twice
+        if ([...walls, ...railCand].some(o => Math.abs(o.x - b.x) < 10 && Math.abs(o.z - b.z) < 10 && Math.abs(Math.max(o.w, o.d) - Math.max(b.w, b.d)) < 30)) continue;
+        railCand.push(b);
+      }
+    }
+    const edges = parapet ? new Map<BoxObject, { kind: EdgeKind; label: string }>() : classifyEdges(walls, [...shut, ...railCand], notes, W, D, st.key.startsWith('R'));
     const slabEdges: BoxObject[] = [];
     for (const [w, { kind, label }] of edges) {
       walls.splice(walls.indexOf(w), 1);
@@ -1090,6 +1128,11 @@ export function buildBuilding(d: DxfDrawing, a: BuildingAnalysis, name: string, 
       nRails++;
     }
     for (const b of walls) if (b.w > 1 && b.d > 1) add({ ...b, y: 0, name: parapet ? '女兒牆（CAD）' : b.name });
+    for (const b of railCand) {
+      add({ ...b, layer: 'wall', y: 0, h: railing.h, name: 'RC欄杆（CAD）', color: 0xeeebe5 });
+      if (!b.rot) slabEdges.push(b);
+      nRails++;
+    }
     // columns drawn as plain squares on a colour- or pen-named layer
     if (!parapet && a.colLayers.length) for (const p of d.polys) {
       if (!a.colLayers.includes(p.layer)) continue;
