@@ -261,8 +261,8 @@ function BuildingStep({ st, firstId, onBuilt, onLayers, onClose }: {
         {rep.tally.length > 0 && <>
           <h4 style={{ margin: '12px 0 4px' }}>門窗數量對帳（門窗表的數量 vs 3D 建出的數量）</h4>
           <div className="tbl"><table>
-            <thead><tr><th>編號</th><th>名稱</th><th className="num">門窗表</th><th className="num">建出</th><th>結果</th></tr></thead>
-            <tbody>{rep.tally.map(t => <tr key={t.code}><td>{t.code}</td><td>{t.name}</td><td className="num">{t.qty ?? '—'}</td><td className="num">{t.built}{t.guessed ? `（${t.guessed} 處依寬度推定）` : ''}</td>
+            <thead><tr><th>編號</th><th>名稱</th><th className="num">門窗表</th><th className="num">圖上標示</th><th className="num">建出</th><th>結果</th></tr></thead>
+            <tbody>{rep.tally.map(t => <tr key={t.code}><td>{t.code}</td><td>{t.name}</td><td className="num">{t.qty ?? '—'}</td><td className="num">{t.tagged ?? 0}</td><td className="num">{t.built}{t.guessed ? `（${t.guessed} 處依寬度推定）` : ''}</td>
               <td className={t.qty !== undefined && t.qty !== t.built ? 'warn' : ''}>{t.qty === undefined ? '表上沒寫數量' : t.qty === t.built ? '相符' : t.built < t.qty ? `少 ${t.qty - t.built}，可能沒開洞` : `多 ${t.built - t.qty}，可能重複或表上漏算`}</td></tr>)}</tbody>
           </table></div>
         </>}

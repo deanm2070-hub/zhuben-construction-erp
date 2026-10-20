@@ -808,7 +808,7 @@ export interface BuildReport {
   unmatchedTags: { floor: string; code: string }[];
   perFloor: { key: string; walls: number; doors: number; windows: number; slabs: number }[];
   /** door / window schedule against what was built */
-  tally: { code: string; name: string; qty?: number; built: number; guessed?: number }[];
+  tally: { code: string; name: string; qty?: number; built: number; guessed?: number; tagged?: number }[];
 }
 
 export interface BuildingResult {
@@ -943,8 +943,17 @@ export function buildBuilding(d: DxfDrawing, a: BuildingAnalysis, name: string, 
   const W = (maxX - minX) * S, D = (maxY - minY) * S;
   const codes = new Map(a.schedule.map(i => [i.code, i]));
   // tags written on the plans per code (a corner window counts once per leg); openings without a tag are given the codes still short of this
-  const builtCount = new Map<string, number>(), guessedN = new Map<string, number>();
-  for (const p of a.plans) for (const t of d.texts) { const c = t.s.trim(); if (codes.has(c) && inBox(p.box, t.x, t.y)) builtCount.set(c, (builtCount.get(c) || 0) + (codes.get(c)!.legs ? codes.get(c)!.legs!.length : 1)); }
+  const taggedN = new Map<string, number>(), builtCount = new Map<string, number>(), guessedN = new Map<string, number>();
+  for (const p of a.plans) {
+    const seen: { c: string; x: number; y: number }[] = [];
+    for (const t of d.texts) {
+      const c = t.s.trim();
+      if (!codes.has(c) || !inBox(p.box, t.x, t.y) || seen.some(o => o.c === c && Math.hypot(o.x - t.x, o.y - t.y) < 1)) continue;
+      seen.push({ c, x: t.x, y: t.y });
+      taggedN.set(c, (taggedN.get(c) || 0) + 1);
+      builtCount.set(c, (builtCount.get(c) || 0) + (codes.get(c)!.legs ? codes.get(c)!.legs!.length : 1));
+    }
+  }
   let id = firstId;
   const objects: ModelObject[] = [];
   const floors: CadFloor[] = [];
@@ -1475,7 +1484,7 @@ export function buildBuilding(d: DxfDrawing, a: BuildingAnalysis, name: string, 
     unmatchedTags,
     tally: a.schedule.map(i => {
       const n = objects.filter(o => (o.layer === 'door' || o.layer === 'glass') && o.name.split(' ')[0] === i.code).length;
-      return { code: i.code, name: i.name, ...(i.qty !== undefined ? { qty: i.qty } : {}), built: i.legs ? Math.ceil(n / 2) : n, ...(guessedN.get(i.code) ? { guessed: guessedN.get(i.code) } : {}) };
+      return { code: i.code, name: i.name, ...(i.qty !== undefined ? { qty: i.qty } : {}), built: i.legs ? Math.ceil(n / 2) : n, ...(guessedN.get(i.code) ? { guessed: guessedN.get(i.code) } : {}), tagged: taggedN.get(i.code) || 0 };
     }),
     perFloor: a.storeys.map(st => {
       const of = objects.filter(o => o.floor === st.key);
