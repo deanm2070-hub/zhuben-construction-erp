@@ -12,6 +12,7 @@ interface DbEntity {
   textHeight?: number; height?: number; insertionPoint?: V; tag?: string;
   name?: string; xScale?: number; yScale?: number; rotation?: number;
   attribs?: DbEntity[];
+  subDefinitionPoint1?: V; subDefinitionPoint2?: V; measurement?: number;
 }
 interface DbBlock { name: string; basePoint?: V; entities?: DbEntity[] }
 export interface DwgDatabase {
@@ -26,7 +27,7 @@ const mul = (m: M, n: M): M => [m[0] * n[0] + m[2] * n[1], m[1] * n[0] + m[3] * 
 /** Flattens a libredwg-web database (model space, nested block inserts, attributes) into a DxfDrawing. */
 export function drawingFromDwg(db: DwgDatabase, version = ''): DxfDrawing {
   const blocks = new Map((db.tables?.BLOCK_RECORD?.entries || []).map(b => [b.name, b]));
-  const out: DxfDrawing = { segs: [], polys: [], texts: [], arcs: [], layers: new Map(), units: db.header?.INSUNITS || 0, version: db.header?.ACADVER || version, blockCount: blocks.size, inserts: 0 };
+  const out: DxfDrawing = { segs: [], polys: [], texts: [], arcs: [], dims: [], layers: new Map(), units: db.header?.INSUNITS || 0, version: db.header?.ACADVER || version, blockCount: blocks.size, inserts: 0 };
   const layerColor = new Map((db.tables?.LAYER?.entries || []).map(l => [l.name, Math.abs(l.colorIndex ?? 7)]));
   const bump = (l: string) => out.layers.set(l, (out.layers.get(l) || 0) + 1);
 
@@ -65,6 +66,10 @@ export function drawingFromDwg(db: DwgDatabase, version = ''): DxfDrawing {
         if (!s || !p) continue;
         const [x, y] = P(p.x, p.y), h = (obj?.textHeight || e.textHeight || e.height || 0) * k;
         out.texts.push(e.tag ? { layer, x, y, s, h, tag: e.tag } : { layer, x, y, s, h }); bump(layer);
+      } else if (t === 'DIMENSION' && e.subDefinitionPoint1 && e.subDefinitionPoint2 && e.measurement) {
+        // the value written is the measured one unless overridden with a plain number
+        const o = typeof e.text === 'string' ? e.text.trim() : '', v = /^\d+(?:\.\d+)?$/.test(o) ? +o : e.measurement;
+        out.dims!.push({ layer, a: P(e.subDefinitionPoint1.x, e.subDefinitionPoint1.y), b: P(e.subDefinitionPoint2.x, e.subDefinitionPoint2.y), v });
       } else if (t === 'INSERT' && depth < 6 && e.name) {
         const b = blocks.get(e.name);
         if (b) {

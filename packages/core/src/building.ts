@@ -166,7 +166,18 @@ export function parseSchedule(d: DxfDrawing): ScheduleItem[] {
     const label = d.texts.filter(t => Math.abs(t.x - size.t.x) < h * 2 && t.y < size.t.y && size.t.y - t.y < h * 8 && /[門窗]/.test(t.s) && !/[:：]/.test(t.s)).sort((a, b) => b.y - a.y)[0]?.s.trim() || '';
     const type = openingType(cd, label), kind = isDoorType(type) ? 'door' : 'window';
     const legs = size.m![3] ? [+size.m![1], +size.m![3]] : undefined;
-    items.push({ code: cd, w: legs ? legs[0] + legs[1] : +size.m![1], h: +size.m![2], name: openingName(cd, label), sill: kind === 'door' || type === 'french' ? 0 : 90, kind, type, ...(legs ? { legs } : {}) });
+    let sill = kind === 'door' || type === 'french' ? 0 : 90;
+    // the elevation in the cell carries a vertical dimension for the window height and, under it, one for the sill
+    if (sill && d.dims?.length) {
+      const H = +size.m![2], vert = d.dims.filter(m => Math.abs(m.a[0] - m.b[0]) < 0.5 && m.a[0] > c.x - h * 14 && m.a[0] < c.x + h * 6 && Math.max(m.a[1], m.b[1]) < c.y && Math.min(m.a[1], m.b[1]) > size.t.y);
+      const hd = vert.find(m => Math.abs(m.v - H) < 0.6);
+      const sd = hd && vert.find(m => m !== hd && Math.abs(m.a[0] - hd.a[0]) < h * 2 && Math.abs(Math.max(m.a[1], m.b[1]) - Math.min(hd.a[1], hd.b[1])) < h * 0.3);
+      // the height written in the table can disagree with the drawing: then the lowest of two stacked dimensions is the sill
+      const low = (m: { a: Pt; b: Pt }) => Math.min(m.a[1], m.b[1]), top = (m: { a: Pt; b: Pt }) => Math.max(m.a[1], m.b[1]);
+      const st = sd || vert.filter(m => vert.some(q => q !== m && Math.abs(q.a[0] - m.a[0]) < 0.5 && Math.abs(low(q) - top(m)) < h * 0.3)).sort((p, q) => low(p) - low(q))[0];
+      if (st) sill = Math.round(st.v);
+    }
+    items.push({ code: cd, w: legs ? legs[0] + legs[1] : +size.m![1], h: +size.m![2], name: openingName(cd, label), sill, kind, type, ...(legs ? { legs } : {}) });
   }
   return items;
 }
@@ -1530,12 +1541,12 @@ export function findOpenings(boxes: BoxObject[], openSegs: Seg2[], swings: Swing
 export function mergeDrawings(ds: DxfDrawing[]): DxfDrawing {
   if (ds.length === 1) return ds[0];
   // everything is put in centimetres; files without a units header get them guessed from their size
-  const out: DxfDrawing = { segs: [], polys: [], texts: [], arcs: [], layers: new Map(), units: 5, version: ds[0].version, blockCount: 0, inserts: 0, parts: [] };
+  const out: DxfDrawing = { segs: [], polys: [], texts: [], arcs: [], dims: [], layers: new Map(), units: 5, version: ds[0].version, blockCount: 0, inserts: 0, parts: [] };
   let at = 0;
   for (const d0 of ds) {
     const k = UNIT_SCALE[guessUnits(d0)] || 1;
     const sc = (p: Pt): Pt => [p[0] * k, p[1] * k];
-    const d = k === 1 ? d0 : { ...d0, segs: d0.segs.map(s => ({ ...s, a: sc(s.a), b: sc(s.b) })), polys: d0.polys.map(p => ({ ...p, pts: p.pts.map(sc) })), texts: d0.texts.map(t => ({ ...t, x: t.x * k, y: t.y * k, ...(t.h ? { h: t.h * k } : {}) })), arcs: d0.arcs.map(c => ({ ...c, c: sc(c.c), r: c.r * k, ...(c.p0 ? { p0: sc(c.p0) } : {}), ...(c.p1 ? { p1: sc(c.p1) } : {}) })) };
+    const d = k === 1 ? d0 : { ...d0, segs: d0.segs.map(s => ({ ...s, a: sc(s.a), b: sc(s.b) })), polys: d0.polys.map(p => ({ ...p, pts: p.pts.map(sc) })), texts: d0.texts.map(t => ({ ...t, x: t.x * k, y: t.y * k, ...(t.h ? { h: t.h * k } : {}) })), arcs: d0.arcs.map(c => ({ ...c, c: sc(c.c), r: c.r * k, ...(c.p0 ? { p0: sc(c.p0) } : {}), ...(c.p1 ? { p1: sc(c.p1) } : {}) })), dims: d0.dims?.map(m => ({ ...m, a: sc(m.a), b: sc(m.b) })) };
     let minX = Infinity, maxX = -Infinity;
     for (const s of d.segs) for (const p of [s.a, s.b]) { minX = Math.min(minX, p[0]); maxX = Math.max(maxX, p[0]); }
     for (const t of d.texts) { minX = Math.min(minX, t.x); maxX = Math.max(maxX, t.x); }
@@ -1545,6 +1556,7 @@ export function mergeDrawings(ds: DxfDrawing[]): DxfDrawing {
     out.polys.push(...d.polys.map(p => ({ ...p, pts: p.pts.map(mv) })));
     out.texts.push(...d.texts.map(t => ({ ...t, x: t.x + dx })));
     out.arcs.push(...d.arcs.map(c => ({ ...c, c: mv(c.c), ...(c.p0 ? { p0: mv(c.p0) } : {}), ...(c.p1 ? { p1: mv(c.p1) } : {}) })));
+    out.dims!.push(...(d.dims || []).map(m => ({ ...m, a: mv(m.a), b: mv(m.b) })));
     for (const [l, n] of d.layers) out.layers.set(l, (out.layers.get(l) || 0) + n);
     out.blockCount += d.blockCount; out.inserts += d.inserts;
     out.parts!.push({ x0: at, x1: at + maxX - minX });

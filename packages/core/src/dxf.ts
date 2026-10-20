@@ -18,6 +18,8 @@ export interface DxfDrawing {
   version: string;
   blockCount: number;
   inserts: number;
+  /** linear dimensions: the two measured points and the value (DWG only) */
+  dims?: { layer: string; a: Pt; b: Pt; v: number }[];
   /** x ranges of the files a merged drawing was put together from */
   parts?: { x0: number; x1: number; name?: string }[];
 }
