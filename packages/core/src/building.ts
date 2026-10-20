@@ -807,6 +807,7 @@ export function buildBuilding(d: DxfDrawing, a: BuildingAnalysis, name: string, 
   const slabsOf = new Map<string, { x0: number; x1: number; z0: number; z1: number }[]>();
   const holesOf = new Map<string, { x0: number; x1: number; z0: number; z1: number }[]>();
   const terraces = new Map<string, { x: number; z: number; s: string }[]>();
+  const slants: { key: string; side: 'w' | 'e'; x1: number; z1: number; x2: number; z2: number }[] = [];
   const beamLines: { st: Storey; xs: number[]; zs: number[] }[] = [];
 
   // an unlabelled stair is drawn in full on the plan of the storey it arrives at (the lower plan cuts it short): it climbs the storey below
@@ -853,6 +854,16 @@ export function buildBuilding(d: DxfDrawing, a: BuildingAnalysis, name: string, 
 
     // unpaired diagonal lines are usually shaft crosses or hatching, not walls
     const walls = dropLouvers(lines.filter(w => !w.single || Math.abs(w.ax - w.bx) < 1 || Math.abs(w.az - w.bz) < 1).map(w => wallBox(w, H, 0)));
+    // a long slanted wall-layer line on the outer side is the slanted edge of this storey's slab (balcony following the site boundary)
+    {
+      const cand = g.segs.filter(q => isWallLayer(q.layer)).map(q => ({ x1: X(q.a[0]), z1: Z(q.a[1]), x2: X(q.b[0]), z2: Z(q.b[1]) }))
+        .filter(q => { const dx = Math.abs(q.x2 - q.x1), dz = Math.abs(q.z2 - q.z1); return dz >= 250 && dx / dz > 0.04 && dx / dz < 0.6; });
+      for (const side of ['w', 'e'] as const) {
+        const here = cand.filter(q => side === 'w' ? (q.x1 + q.x2) / 2 < W / 2 : (q.x1 + q.x2) / 2 >= W / 2);
+        const best = here.sort((p, q) => side === 'w' ? (p.x1 + p.x2) - (q.x1 + q.x2) : (q.x1 + q.x2) - (p.x1 + p.x2))[0];
+        if (best) slants.push({ key: st.key, side, ...best });
+      }
+    }
     // a line marked 投影線 is the outline of the storey above projecting out (a balcony), not a wall: drop what lies beyond the facade it hangs off
     for (const t of d.texts) {
       if (!/投影線/.test(t.s) || !inBox(plan.box, t.x, t.y)) continue;
@@ -1081,6 +1092,49 @@ export function buildBuilding(d: DxfDrawing, a: BuildingAnalysis, name: string, 
       objects.push({ id: id++, layer: 'slab', name: st.key === 'RF' ? '屋頂板（結構圖）' : '樓板（結構圖）', floor: st.key, x: (r.x0 + r.x1) / 2, z: (r.z0 + r.z1) / 2, w: r.x1 - r.x0, d: r.z1 - r.z0, h: SLAB, y: st.base - SLAB, color: 0xd6d1c7 });
       slabsOf.get(st.key)!.push(r);
     }
+  }
+  // slab edges that follow a slanted line: cut the slab back to it in 30 cm strips
+  for (const sl of slants) {
+    const zlo = Math.min(sl.z1, sl.z2), zhi = Math.max(sl.z1, sl.z2);
+    const lineX = (z: number) => sl.x1 + (sl.x2 - sl.x1) * (z - sl.z1) / (sl.z2 - sl.z1);
+    for (let i = objects.length - 1; i >= 0; i--) {
+      const o = objects[i];
+      if (!isBox(o) || o.floor !== sl.key || o.layer !== 'slab' || !/樓板|屋頂板|地坪/.test(o.name) || o.rot) continue;
+      const x0 = o.x - o.w / 2, x1 = o.x + o.w / 2, z0 = o.z - o.d / 2, z1 = o.z + o.d / 2;
+      if (z1 < zlo || z0 > zhi) continue;
+      const out = sl.side === 'w' ? x0 < Math.min(lineX(Math.max(z0, zlo)), lineX(Math.min(z1, zhi))) - 5 : x1 > Math.max(lineX(Math.max(z0, zlo)), lineX(Math.min(z1, zhi))) + 5;
+      if (!out) continue;
+      const pieces: { x0: number; x1: number; z0: number; z1: number }[] = [];
+      for (let z = z0; z < z1 - 1; z += 30) {
+        const zb = Math.min(z + 30, z1), zm = (z + zb) / 2;
+        let a = x0, b = x1;
+        if (zm >= zlo && zm <= zhi) { if (sl.side === 'w') a = Math.max(x0, lineX(zm)); else b = Math.min(x1, lineX(zm)); }
+        if (b - a < 10) continue;
+        const last = pieces[pieces.length - 1];
+        if (last && Math.abs(last.x0 - a) < 2 && Math.abs(last.x1 - b) < 2) last.z1 = zb; else pieces.push({ x0: a, x1: b, z0: z, z1: zb });
+      }
+      objects.splice(i, 1, ...pieces.map(r => ({ ...o, id: id++, x: (r.x0 + r.x1) / 2, z: (r.z0 + r.z1) / 2, w: r.x1 - r.x0, d: r.z1 - r.z0 })));
+    }
+  }
+  // and extended out to it where the slab stops short (up to 1.5 m): the slanted line is where the balcony slab ends
+  for (const sl of slants) {
+    const zlo = Math.min(sl.z1, sl.z2), zhi = Math.max(sl.z1, sl.z2);
+    const lineX = (z: number) => sl.x1 + (sl.x2 - sl.x1) * (z - sl.z1) / (sl.z2 - sl.z1);
+    const slabs = objects.filter((o): o is BoxObject => isBox(o) && o.floor === sl.key && o.layer === 'slab' && /樓板|屋頂板|地坪/.test(o.name) && !o.rot);
+    if (!slabs.length) continue;
+    const proto = slabs[0], add: { x0: number; x1: number; z0: number; z1: number }[] = [];
+    for (let z = zlo; z < zhi - 1; z += 30) {
+      const zb = Math.min(z + 30, zhi), zm = (z + zb) / 2, lx = lineX(zm);
+      const under = slabs.filter(o => zm >= o.z - o.d / 2 && zm <= o.z + o.d / 2);
+      const edge = sl.side === 'w' ? Math.min(...under.map(o => o.x - o.w / 2)) : Math.max(...under.map(o => o.x + o.w / 2));
+      if (!isFinite(edge)) continue;
+      const gap = sl.side === 'w' ? edge - lx : lx - edge;
+      if (gap < 5 || gap > 150) continue;
+      const r = sl.side === 'w' ? { x0: lx, x1: edge, z0: z, z1: zb } : { x0: edge, x1: lx, z0: z, z1: zb };
+      const last = add[add.length - 1];
+      if (last && Math.abs(last.x0 - r.x0) < 3 && Math.abs(last.x1 - r.x1) < 3) last.z1 = zb; else add.push(r);
+    }
+    for (const r of add) objects.push({ ...proto, id: id++, x: (r.x0 + r.x1) / 2, z: (r.z0 + r.z1) / 2, w: r.x1 - r.x0, d: r.z1 - r.z0 });
   }
   // wall lines: the colour of the exterior wall decides. Walls drawn in it are concrete, walls in another colour are light partitions.
   const wallBoxes = objects.filter((o): o is BoxObject => isBox(o) && o.layer === 'wall' && o.wc !== undefined && !o.rc && /^(外牆|隔間牆)（CAD）/.test(o.name) && !(Math.max(o.w, o.d) < 120 && Math.min(o.w, o.d) >= 25));
