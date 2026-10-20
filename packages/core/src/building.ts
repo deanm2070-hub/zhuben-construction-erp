@@ -809,6 +809,28 @@ export function buildBuilding(d: DxfDrawing, a: BuildingAnalysis, name: string, 
   const terraces = new Map<string, { x: number; z: number; s: string }[]>();
   const beamLines: { st: Storey; xs: number[]; zs: number[] }[] = [];
 
+  // an unlabelled stair is drawn in full on the plan of the storey it arrives at (the lower plan cuts it short): it climbs the storey below
+  const stairPre = new Map<string, ReturnType<typeof stairsOf>>();
+  const stairIn = new Map<string, { segs: { x1: number; z1: number; x2: number; z2: number }[]; labelled: boolean }>();
+  for (const st of a.storeys) {
+    if (st.key === 'RF') continue;
+    const plan = a.plans.find(p => p.floors.includes(st.key))!, g = geos.get(plan)!;
+    const X = (x: number) => (x - g.ox - minX) * S, Z = (y: number) => (maxY - (y - g.oy)) * S;
+    const segs = g.segs.filter(s => STAIR_LAYER.test(s.layer)).map(s => ({ x1: X(s.a[0]), z1: Z(s.a[1]), x2: X(s.b[0]), z2: Z(s.b[1]) }));
+    const notes = d.texts.filter(t => inBox(plan.box, t.x, t.y)).map(t => ({ x: X(t.x), z: Z(t.y), s: t.s }));
+    stairIn.set(st.key, { segs, labelled: notes.some(n => /^(上|下|UP|DN)\s*\d*$/i.test(n.s.trim())) });
+    stairPre.set(st.key, stairsOf(segs, notes, st.h));
+  }
+  a.storeys.forEach((st, i) => {
+    const nx = a.storeys[i + 1], q = stairPre.get(st.key), p = nx && stairPre.get(nx.key), qi = stairIn.get(st.key), pi = nx && stairIn.get(nx.key);
+    if (!nx || !q?.length || p?.length !== 1 || qi!.labelled || pi!.labelled || p[0].risers <= q[0].risers) return;
+    const box = (sp: StairPlan) => ({ x0: Math.min(...sp.holes.map(h => h.x0)), x1: Math.max(...sp.holes.map(h => h.x1)), z0: Math.min(...sp.holes.map(h => h.z0)), z1: Math.max(...sp.holes.map(h => h.z1)) });
+    const A = box(q[0]), B = box(p[0]);
+    if (Math.min(A.x1, B.x1) - Math.max(A.x0, B.x0) < 30 || Math.min(A.z1, B.z1) - Math.max(A.z0, B.z0) < 30) return;
+    stairPre.set(st.key, stairsOf(pi!.segs, [], st.h));
+    stairPre.set(nx.key, []);
+  });
+
   for (const st of a.storeys) {
     const plan = a.plans.find(p => p.floors.includes(st.key))!, g = geos.get(plan)!;
     const X = (x: number) => (x - g.ox - minX) * S, Z = (y: number) => (maxY - (y - g.oy)) * S;
@@ -869,7 +891,7 @@ export function buildBuilding(d: DxfDrawing, a: BuildingAnalysis, name: string, 
     nWalls += walls.length;
     // stairs: steps, half landings and the inner handrail; the storey above gets a hole in its slab
     const stairSegs = g.segs.filter(s => STAIR_LAYER.test(s.layer)).map(s => ({ x1: X(s.a[0]), z1: Z(s.a[1]), x2: X(s.b[0]), z2: Z(s.b[1]) }));
-    const stairs = parapet ? [] : stairsOf(stairSegs, notes, H);
+    const stairs = parapet ? [] : stairPre.get(st.key) ?? stairsOf(stairSegs, notes, H);
     for (const sp of stairs) {
       const r = H / sp.risers;
       // quantities follow the riser count written on the plan (上16); the drawing may leave treads out
