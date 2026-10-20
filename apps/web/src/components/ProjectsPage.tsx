@@ -1,3 +1,4 @@
+import { InstallButton } from './InstallButton';
 import { sampleObjects } from '@cloud-modeler/core';
 import { useEffect, useState } from 'react';
 import { emptyModel, store, type ProjectMeta } from '../lib/store';
@@ -30,6 +31,7 @@ export function ProjectsPage({ email, onOpen }: { email: string | null; onOpen: 
         <div className="head">
           <h1>我的專案 <small className="ver">{VERSION}</small></h1>
           <div className="kv">
+            <InstallButton />
             {email && <span className="note">{email}</span>}
             {supabase && <button className="chip ghost" onClick={() => supabase!.auth.signOut()}>登出</button>}
           </div>

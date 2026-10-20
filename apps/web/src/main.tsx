@@ -20,3 +20,6 @@ class ErrorBoundary extends Component<{ children: ReactNode }, { error: Error | 
 }
 
 createRoot(document.getElementById('root')!).render(<ErrorBoundary><App /></ErrorBoundary>);
+
+// installable as a desktop / home-screen app (the worker caches nothing, so updates still wait for the user's tap)
+if ('serviceWorker' in navigator && !import.meta.env.DEV) addEventListener('load', () => { navigator.serviceWorker.register('/sw.js').catch(() => {}); });

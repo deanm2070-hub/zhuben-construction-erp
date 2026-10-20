@@ -24,7 +24,7 @@ export function AuthPage() {
   return (
     <div className="page">
       <form className="auth" onSubmit={submit}>
-        <h1>雲端室內建模</h1>
+        <h1>3DAI算圖</h1>
         <p className="note">登入後，專案會存在雲端，換電腦也能繼續編輯。</p>
         <input id="email" type="email" autoComplete="email" placeholder="電子郵件" value={email} onChange={e => setEmail(e.target.value)} required />
         <input id="password" type="password" autoComplete={mode === 'in' ? 'current-password' : 'new-password'} placeholder="密碼（至少 6 碼）" minLength={6} value={password} onChange={e => setPassword(e.target.value)} required />
