@@ -1,7 +1,7 @@
 import { computeBuildingTakeoff, computeTakeoff, DEFAULT_SETTINGS, type FinishChoice, type TakeoffSettings } from '@cloud-modeler/core';
 import { useCallback, useEffect, useRef, useState } from 'react';
 import { DRAW_KINDS, TOOL_HINT, Viewer, type DrawKind, type RenderMode, type SceneKey, type Tool } from '../engine/Viewer';
-import { download, loadImage, pdfFirstPage } from '../lib/files';
+import { download, loadImage, pdfFirstPage, PROJECT_EXT, projectFile } from '../lib/files';
 import { store } from '../lib/store';
 import { CadImport } from './CadImport';
 import { Dock } from './Dock';
@@ -93,6 +93,13 @@ export function Editor({ projectId, importNow, onExit }: { projectId: string; im
   }, [projectId, showToast, scheduleSave]);
 
   // save on leave
+  // Ctrl+S saves now; closing the page with unsaved changes asks first
+  useEffect(() => {
+    const k = (e: KeyboardEvent) => { if ((e.ctrlKey || e.metaKey) && e.key.toLowerCase() === 's') { e.preventDefault(); persist(true).then(() => showToast(store.cloud ? '已存到雲端' : '已存在這個瀏覽器')); } };
+    const b = (e: BeforeUnloadEvent) => { if (save !== 'saved') { e.preventDefault(); e.returnValue = ''; } };
+    window.addEventListener('keydown', k); window.addEventListener('beforeunload', b);
+    return () => { window.removeEventListener('keydown', k); window.removeEventListener('beforeunload', b); };
+  }, [persist, save, showToast]);
   useEffect(() => () => { if (saveTimer.current) { clearTimeout(saveTimer.current); persist(true); } }, [persist]);
   useEffect(() => { if (loaded.current) scheduleSave(); }, [finishes, settings]); // eslint-disable-line react-hooks/exhaustive-deps
 
@@ -141,6 +148,8 @@ export function Editor({ projectId, importNow, onExit }: { projectId: string; im
           <button className="chip ghost" onClick={async () => { if (save !== 'saved') await persist(true); onExit(); }}>← 專案</button>
           <span className="brand title" title={name}>{name}</span>
           <span className="save" role="status">{saveLabel}</span>
+          <button className="chip key" onClick={async () => { await persist(true); showToast(store.cloud ? '已存到雲端' : '已存在這個瀏覽器'); }}>儲存</button>
+          <button className="chip" onClick={() => { const v = viewer.current; if (!v) return; download(`${name || '專案'}${PROJECT_EXT}`, projectFile(name || '未命名專案', { objects: v.objects, cad: v.cad, ...meta.current }), 'application/json'); showToast('已存成檔案，可在「我的專案」用「開啟專案檔」讀回'); }}>存成檔案</button>
         </div>
         <div className="row wrap">
           {MODES.map(([k, l]) => <button key={k} className={`chip ${mode === k ? 'on' : ''}`} onClick={() => { v().setMode(k); setMode(k); }}>{l}</button>)}

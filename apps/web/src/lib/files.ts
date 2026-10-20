@@ -1,3 +1,4 @@
+import type { ProjectModel } from '@cloud-modeler/core';
 import { REBAR_KINDS, REBAR_STD, rebarSummary, type Takeoff } from '@cloud-modeler/core';
 import * as pdfjs from 'pdfjs-dist';
 import workerUrl from 'pdfjs-dist/build/pdf.worker.min.mjs?url';
@@ -91,4 +92,16 @@ export function takeoffWorkbook(t: Takeoff, project: string) {
   for (const r of t.rooms) rooms.push([r.name, Math.round(r.area * 100) / 100, Math.round(r.area / 3.3058 * 100) / 100, Math.round(r.perim * 10) / 10, r.fin.f, r.fin.c, r.fin.w]);
   XLSX.utils.book_append_sheet(wb, XLSX.utils.aoa_to_sheet(rooms), '空間做法');
   return XLSX.write(wb, { bookType: 'xlsx', type: 'array' }) as ArrayBuffer;
+}
+
+/** Project file: the whole model with its name, as JSON. */
+export const PROJECT_EXT = '.zhuliang.json';
+export function projectFile(name: string, model: unknown): string {
+  return JSON.stringify({ format: 'zhuliang-project', version: 1, name, savedAt: new Date().toISOString(), model });
+}
+export async function readProjectFile(f: File): Promise<{ name: string; model: ProjectModel }> {
+  let j: { format?: string; name?: string; model?: ProjectModel };
+  try { j = JSON.parse(await f.text()); } catch { throw new Error('這不是築量雲的專案檔'); }
+  if (j.format !== 'zhuliang-project' || !j.model || !Array.isArray(j.model.objects)) throw new Error('這不是築量雲的專案檔');
+  return { name: j.name || f.name.replace(/\.zhuliang\.json$|\.json$/i, ''), model: j.model };
 }
