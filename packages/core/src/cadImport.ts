@@ -15,7 +15,11 @@ export function guessLayerKind(name: string): LayerKind {
 
 /** Units code to use: the header value when known, otherwise a guess from the drawing extent. */
 export function guessUnits(dxf: DxfDrawing): number {
-  if (UNIT_SCALE[dxf.units]) return dxf.units;
+  if (UNIT_SCALE[dxf.units]) {
+    // a header saying millimetres over text a few centimetres high is a centimetre drawing (text is drawn ~3 mm tall at paper scale)
+    const hs = dxf.texts.map(t => t.h || 0).filter(h => h > 0).sort((a, b) => a - b);
+    return dxf.units === 4 && hs.length >= 50 && hs[Math.floor(hs.length / 2)] < 150 ? 5 : dxf.units;
+  }
   let minX = Infinity, minY = Infinity, maxX = -Infinity, maxY = -Infinity;
   for (const s of dxf.segs) for (const p of [s.a, s.b]) { minX = Math.min(minX, p[0]); maxX = Math.max(maxX, p[0]); minY = Math.min(minY, p[1]); maxY = Math.max(maxY, p[1]); }
   const ext = Math.max(maxX - minX, maxY - minY) || 0;

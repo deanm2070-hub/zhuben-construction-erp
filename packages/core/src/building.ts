@@ -90,7 +90,8 @@ const inBox = (b: SheetView['box'], x: number, y: number) => x >= b[0] && x <= b
 export function findViews(d: DxfDrawing): SheetView[] {
   // each file of a merged set has its own title size and sheet spacing
   if (d.parts && d.parts.length > 1) return d.parts.flatMap(p => findViews({ ...d, parts: undefined, texts: d.texts.filter(t => t.x >= p.x0 - 1 && t.x <= p.x1 + 1) }));
-  const cand = d.texts.filter(t => TITLE_RE.test(t.s.replace(/\s/g, '')) && t.s.length <= 20);
+  const bare = (x: string) => x.replace(/\s/g, '').replace(/[(（][^)）]*[)）]$/, '');
+  const cand = d.texts.filter(t => TITLE_RE.test(bare(t.s)) && t.s.length <= 24);
   if (!cand.length) return [];
   // titles come in several sizes (index sheet, sheet names, view labels): use the size that names the most views
   const hs = [...new Set(cand.map(t => t.h || 0))];
@@ -107,8 +108,8 @@ export function findViews(d: DxfDrawing): SheetView[] {
   // sheets often skip a slot, so the typical view width is the smaller spacings
   const w = quantile(gaps, 0.25) || (hMax ? hMax * 30 : 3000);
   const STRUCT = /結構平面圖$/;
-  return titles.filter(t => STRUCT.test(t.s.replace(/\s/g, '')) || !SKIP_RE.test(t.s)).map(t => {
-    const s = t.s.replace(/\s/g, '');
+  return titles.filter(t => STRUCT.test(bare(t.s)) || !SKIP_RE.test(t.s)).map(t => {
+    const s = bare(t.s);
     const kind: ViewKind = STRUCT.test(s) ? 'structure' : /平面圖$/.test(s) ? 'plan' : /立面圖$/.test(s) ? 'elevation' : /剖面圖$/.test(s) ? 'section' : 'schedule';
     let top = w * 1.3;
     for (const o of titles) if (o !== t && o.y > t.y + w * 0.2 && Math.abs(o.x - t.x) < w * 0.5) top = Math.min(top, o.y - t.y);
@@ -339,7 +340,7 @@ function planGeo(d: DxfDrawing, v: SheetView): PlanGeo {
   let segs = d.segs.filter(s => inBox(v.box, s.a[0], s.a[1]) && inBox(v.box, s.b[0], s.b[1]));
   const k = scaleNow || UNIT_SCALE[guessUnits(d)] || 1, area = buildingArea(segs, 400 / k), m = 200 / k;
   if (area) segs = segs.filter(s => [s.a, s.b].every(q => q[0] >= area.x0 - m && q[0] <= area.x1 + m && q[1] >= area.y0 - m && q[1] <= area.y1 + m));
-  const grid = d.texts.filter(t => /GTAG|GRID|AXIS|軸/i.test(t.layer) && inBox(v.box, t.x, t.y));
+  const grid = d.texts.filter(t => /GTAG|GRID|AXIS|軸|格線/i.test(t.layer) && inBox(v.box, t.x, t.y));
   const nums = grid.filter(t => /^\d{1,2}$/.test(t.s)).sort((a, b) => +a.s - +b.s);
   const lets = grid.filter(t => /^[A-Z]$/.test(t.s)).sort((a, b) => a.s.localeCompare(b.s));
   const gx = [...new Set(nums.map(t => Math.round(t.x)))], gy = [...new Set(lets.map(t => Math.round(t.y)))];
@@ -670,14 +671,43 @@ const BEAM_LAYER = /^BM|BEAM|梁/i;
 const BEAM_MARK = /^(F?[GBJ]\d*[a-z]?|F?J\d*[a-z]?)\s*\((\d{2,3})\s*[xX×]\s*(\d{2,3})(?:\s*\/\s*(\d{2,3}))?\)$/;
 const BEAM_CODE = /^F?[GBJ]\d*[a-z]?$/, BEAM_SIZE = /^\((\d{2,3})\s*[xX×]\s*(\d{2,3})(?:\s*\/\s*(\d{2,3}))?\)$/;
 
+/** A row of a 尺寸表 (size table): marks it covers, e.g. "FB*,FG*,CFG*" or "Fb1~Fb3", and the section written beside them. */
+interface SizeRow { test: (code: string) => boolean; w: number; h: number; x: number; y: number }
+export function readSizeTable(d: DxfDrawing): SizeRow[] {
+  const SIZE2 = /^(\d+(?:\.\d+)?)\s*[xX×]\s*(\d+(?:\.\d+)?)$/, LIST = /^[A-Za-z][A-Za-z0-9*~,]*$/;
+  const rows: SizeRow[] = [];
+  for (const t of d.texts) {
+    const s = t.s.trim();
+    if (!LIST.test(s) || s.length < 2) continue;
+    const h = t.h || 12;
+    const sz = d.texts.map(o => ({ o, m: SIZE2.exec(o.s.trim()) })).filter(q => q.m && Math.abs(q.o.y - t.y) <= h * 0.6 && q.o.x > t.x + h * 6 && q.o.x < t.x + h * 60)
+      .sort((p, q) => Math.abs(p.o.y - t.y) - Math.abs(q.o.y - t.y))[0];
+    if (!sz) continue;
+    const parts = s.split(',').map(tok => {
+      const star = /^([A-Za-z]+)\*$/.exec(tok), range = /^([A-Za-z]+)(\d+)~(?:[A-Za-z]+)?(\d+)$/.exec(tok);
+      if (star) return (c: string) => c.startsWith(star[1]);
+      if (range) return (c: string) => { const m = /^([A-Za-z]+)(\d+)$/.exec(c); return !!m && m[1] === range[1] && +m[2] >= +range[2] && +m[2] <= +range[3]; };
+      return (c: string) => c === tok;
+    });
+    rows.push({ test: c => parts.some(f => f(c)), w: +sz.m![1], h: +sz.m![2], x: t.x, y: t.y });
+  }
+  return rows;
+}
+
 /** Beams of one structural plan: paired beam outlines, each named and sized by the nearest beam mark. */
-function readBeams(d: DxfDrawing, v: SheetView, X: (x: number) => number, Z: (y: number) => number, S: number) {
+function readBeams(d: DxfDrawing, v: SheetView, X: (x: number) => number, Z: (y: number) => number, S: number, table: SizeRow[] = []) {
   const segs = d.segs.filter(s => BEAM_LAYER.test(s.layer) && inBox(v.box, s.a[0], s.a[1]) && inBox(v.box, s.b[0], s.b[1]));
   const texts = d.texts.filter(t => inBox(v.box, t.x, t.y));
   const marks: { code: string; w: number; h: number; x: number; z: number }[] = [];
   for (const t of texts) {
     const m = BEAM_MARK.exec(t.s.trim());
     if (m) { marks.push({ code: m[1], w: +m[2], h: m[4] ? (+m[3] + +m[4]) / 2 : +m[3], x: X(t.x), z: Z(t.y) }); continue; }
+    // marks written alone, their section given in the plan's size table (nearest table to this plan wins; the specific row beats the wildcard)
+    if (/梁編號/.test(t.layer) && table.length) {
+      const code = t.s.trim(), cx = (v.box[0] + v.box[2]) / 2, cy = (v.box[1] + v.box[3]) / 2;
+      const hit = table.filter(r => r.test(code)).sort((p, q) => Math.hypot(p.x - cx, p.y - cy) - Math.hypot(q.x - cx, q.y - cy))[0];
+      if (hit) { marks.push({ code, w: hit.w, h: hit.h, x: X(t.x), z: Z(t.y) }); continue; }
+    }
     if (!BEAM_CODE.test(t.s.trim())) continue;
     const sz = texts.map(o => ({ o, m: BEAM_SIZE.exec(o.s.trim()) })).filter(q => q.m && Math.hypot(q.o.x - t.x, q.o.y - t.y) < (t.h || 25) * 4)
       .sort((p, q) => Math.hypot(p.o.x - t.x, p.o.y - t.y) - Math.hypot(q.o.x - t.x, q.o.y - t.y))[0];
@@ -699,7 +729,7 @@ function readBeams(d: DxfDrawing, v: SheetView, X: (x: number) => number, Z: (y:
 }
 
 /** column outlines; numbered variants (COL1) are the columns of the storey below, drawn hidden */
-const COL_LAYER = /^(?:S-)?(?:COL|COLUMN|COLS|柱)$/i, COL_MARK = /^C\d+[a-z]?$/;
+const COL_LAYER = /^(?:0?S-)?(?:COL|COLUMN|COLS|柱)$/i, COL_MARK = /^C\d+[a-z]?$/;
 /** Columns of one structural plan: closed outlines on the column layer, each named by the nearest column mark (C1, C2 …). */
 function readColumns(d: DxfDrawing, v: SheetView, X: (x: number) => number, Z: (y: number) => number, S: number) {
   const marks = d.texts.filter(t => COL_MARK.test(t.s.trim()) && inBox(v.box, t.x, t.y)).map(t => ({ mark: t.s.trim(), x: X(t.x), z: Z(t.y) }));
@@ -880,12 +910,26 @@ export function buildBuilding(d: DxfDrawing, a: BuildingAnalysis, name: string, 
   }
   // beams from structural plans (二層結構平面圖 → under the 2F slab), lined up on the grid bubbles
   const drawn = new Set<string>();
+  const table = readSizeTable(d);
+  const madeBy = new Map<ModelObject, SheetView>();
   const rcPanels: SlabPanel[] = [];
   for (const v of a.views.filter(v => v.kind === 'structure' && v.floors.length)) {
     const gs = planGeo(d, v);
-    if (!gs.gx.length || !gs.gy.length) continue;
-    const X = (x: number) => (x - gs.ox - minX) * S, Z = (y: number) => (maxY - (y - gs.oy)) * S;
-    const lines = readBeams(d, v, X, Z, S), beams = lines.filter(b => b.mark);
+    if (!isFinite(gs.ox) || !isFinite(gs.oy)) continue;
+    let X = (x: number) => (x - gs.ox - minX) * S, Z = (y: number) => (maxY - (y - gs.oy)) * S;
+    // sheets without grid bubbles line up by their wall outline, which can differ a little from the architectural plan:
+    // slide the sheet so its columns land on the architectural ones
+    if (!gs.gx.length || !gs.gy.length) {
+      const sc = readColumns(d, v, X, Z, S), ac = objects.filter((o): o is BoxObject => isBox(o) && o.layer === 'wall' && o.name === '柱' && o.floor === v.floors[0]);
+      let best = { n: 0, dx: 0, dz: 0 };
+      for (const p of sc) for (const q of ac) {
+        const dx = q.x - p.x, dz = q.z - p.z;
+        const n = sc.filter(c => ac.some(o => Math.abs(o.x - (c.x + dx)) < 15 && Math.abs(o.z - (c.z + dz)) < 15)).length;
+        if (n > best.n) best = { n, dx, dz };
+      }
+      if (best.n >= 4) { const X0 = X, Z0 = Z; X = x => X0(x) + best.dx; Z = y => Z0(y) + best.dz; }
+    }
+    const lines = readBeams(d, v, X, Z, S, table), beams = lines.filter(b => b.mark);
     const cols = readColumns(d, v, X, Z, S), panels = readPanels(d, v, X, Z, lines, W, D);
     for (const key of v.floors) {
       const i = a.storeys.findIndex(s => s.key === key);
@@ -895,17 +939,23 @@ export function buildBuilding(d: DxfDrawing, a: BuildingAnalysis, name: string, 
       if (i > 0 && beams.length) drawn.add(host.key);
       for (const b of beams) {
         const m = b.mark!, ground = i === 0, along = Math.abs(b.bx - b.ax) >= Math.abs(b.bz - b.az);
+        const bx = (b.ax + b.bx) / 2, bz = (b.az + b.bz) / 2;
+        if (objects.some(o => isBox(o) && madeBy.get(o) !== v && o.rc?.kind === 'beam' && o.floor === host.key && Math.abs(o.x - bx) < 8 && Math.abs(o.z - bz) < 8 && Math.abs(Math.max(o.w, o.d) - b.len) < 15 && Math.abs(o.y + o.h - top) < 5)) continue;
         objects.push({ id: id++, layer: 'slab', name: `${ground ? '地梁' : '梁'} ${m.code}（結構圖）`, floor: host.key, y: top - m.h, h: m.h, color: 0xcfc9bd,
           x: (b.ax + b.bx) / 2, z: (b.az + b.bz) / 2, ...(along ? { w: b.len, d: m.w } : { w: m.w, d: b.len }), rc: { kind: 'beam', mark: m.code, fl: key } });
+        madeBy.set(objects[objects.length - 1], v);
       }
       // columns of this storey: the architectural column there takes the mark and the structural size, else one is added
       const st = a.storeys[i];
       for (const c of cols) {
+        // the same plan is often drawn twice on one sheet (title block copy)
+        if (objects.some(o => isBox(o) && madeBy.get(o) !== v && o.rc?.kind === 'column' && o.floor === key && Math.abs(o.x - c.x) < 8 && Math.abs(o.z - c.z) < 8)) continue;
         const arch = objects.find(o => isBox(o) && o.floor === key && o.layer === 'wall' && !o.rc && !o.rot && o.h >= 200 && Math.min(o.w, o.d) >= 25
           && Math.abs(o.x - c.x) <= o.w / 2 + 5 && Math.abs(o.z - c.z) <= o.d / 2 + 5 && Math.max(o.w, o.d) <= Math.min(o.w, o.d) * 3) as BoxObject | undefined;
         const tag = { kind: 'column' as const, mark: c.mark, fl: key, b: Math.min(c.w, c.d), h: Math.max(c.w, c.d) };
-        if (arch) { arch.rc = tag; arch.x = c.x; arch.z = c.z; arch.w = c.w; arch.d = c.d; }
+        if (arch) { arch.rc = tag; arch.x = c.x; arch.z = c.z; arch.w = c.w; arch.d = c.d; madeBy.set(arch, v); }
         else objects.push({ id: id++, layer: 'wall', name: `柱 ${c.mark}（結構圖）`, floor: key, x: c.x, z: c.z, w: c.w, d: c.d, h: st.h, y: st.base, color: 0xeeebe5, rc: tag });
+        if (!arch) madeBy.set(objects[objects.length - 1], v);
       }
       for (const p of panels) rcPanels.push({ ...p, fl: key });
     }

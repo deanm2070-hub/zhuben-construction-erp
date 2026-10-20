@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { buildingArea, computeRebar, floorRange, ldhOf, lstOf, readRebarSpec, rebarSummary, REBAR_STD, type BoxObject, type CadData, type DxfDrawing } from '../src';
+import { buildingArea, findViews, readSizeTable, computeRebar, floorRange, ldhOf, lstOf, readRebarSpec, rebarSummary, REBAR_STD, type BoxObject, type CadData, type DxfDrawing } from '../src';
 
 const KEYS = ['1F', '2F', '3F', '4F', '5F', 'R1F', 'RF'];
 function sheet(texts: [string, number, number, number?][]): DxfDrawing {
@@ -85,5 +85,22 @@ describe('building area', () => {
     const a = buildingArea([...bld, ...drain], 400)!;
     expect(a.dropped).toBe(2);
     expect(a.x1).toBe(2000);
+  });
+});
+
+describe('size table and plan titles', () => {
+  const t = (s: string, x: number, y: number) => ({ layer: 'T', s, x, y, h: 10 });
+  const d = { segs: [], polys: [], texts: [t('FB*,FG*,CFG*', 100, 500), t('40x135', 300, 504), t('Fb1~Fb3', 100, 400), t('30x135', 300, 400), t('B*,G*', 100, 300), t('35x60', 300, 300)], arcs: [], layers: new Map(), units: 5, version: '', blockCount: 0, inserts: 0 } as DxfDrawing;
+  it('reads wildcard and range rows', () => {
+    const rows = readSizeTable(d);
+    const find = (c: string) => rows.find(r => r.test(c));
+    expect(find('CFG3')).toMatchObject({ w: 40, h: 135 });
+    expect(find('Fb2')).toMatchObject({ w: 30, h: 135 });
+    expect(find('Fb4')).toBeUndefined();
+    expect(find('G4')).toMatchObject({ w: 35, h: 60 });
+  });
+  it('accepts a floor note after the plan title', () => {
+    const v = findViews({ ...d, texts: [t('二層結構平面圖(2F)', 0, 0), t('一層結構平面圖(1F)', 1000, 0)].map(x => ({ ...x, h: 100 })) } as DxfDrawing);
+    expect(v.map(x => [x.kind, x.floors.join()])).toEqual([['structure', '2F'], ['structure', '1F']]);
   });
 });
