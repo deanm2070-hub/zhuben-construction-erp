@@ -1181,14 +1181,14 @@ export function findOpenings(boxes: BoxObject[], openSegs: Seg2[], swings: Swing
     : { lo: o.z - o.d / 2, hi: o.z + o.d / 2, c: o.x, half: o.w / 2 };
   const isRun = (o: BoxObject, axis: 'x' | 'z') => axis === 'x' ? o.w > o.d * 1.5 : o.d > o.w * 1.5;
   /** first wall face hit going from u along the line `at`, in direction dir */
-  const cast = (axis: 'x' | 'z', at: number, u: number, dir: 1 | -1, max: number, behind = false) => {
+  const cast = (axis: 'x' | 'z', at: number, u: number, dir: 1 | -1, max: number, behind = false, slack = 0) => {
     let best: { u: number; o: BoxObject } | null = null;
     for (const o of solid) {
       const sp = span(o, axis);
-      if (Math.abs(sp.c - at) > sp.half + 0.5) continue;
+      if (Math.abs(sp.c - at) > sp.half + 0.5 + slack) continue;
       const face = dir > 0 ? sp.lo : sp.hi;
       // walls are lengthened by half their thickness, so a jamb face may sit that far behind a hinge
-      if ((face - u) * dir < -(behind ? sp.half + 1 : 1) || Math.abs(face - u) > max) continue;
+      if ((face - u) * dir < -(behind ? sp.half + 1 + slack : 1) || Math.abs(face - u) > max) continue;
       if (!best || (face - best.u) * dir < 0) best = { u: face, o };
     }
     return best;
@@ -1202,23 +1202,29 @@ export function findOpenings(boxes: BoxObject[], openSegs: Seg2[], swings: Swing
 
   // doors: the closed leaf runs from the hinge along the wall, and the wall continues behind the hinge
   for (const s of swings) {
-    const cands: { axis: 'x' | 'z'; at: number; a: number; b: number; t: number; run: boolean }[] = [];
-    for (const [ex, ez] of s.ends) {
-      const dx = ex - s.x, dz = ez - s.z;
-      const axis = Math.abs(dx) > Math.abs(dz) * 4 ? 'x' : Math.abs(dz) > Math.abs(dx) * 4 ? 'z' : null;
-      if (!axis) continue;
-      const dir = (axis === 'x' ? dx : dz) > 0 ? 1 : -1;
-      const u0 = axis === 'x' ? s.x : s.z, at0 = axis === 'x' ? s.z : s.x;
-      const end = u0 + dir * s.r;
-      // the wall behind the hinge, or (when the hinge side is open) the wall the closed leaf meets
-      const jamb = cast(axis, at0, u0, dir === 1 ? -1 : 1, 25, true) || cast(axis, at0, end, dir, 15, true);
-      if (!jamb) continue;
-      const sp = span(jamb.o, axis), run = isRun(jamb.o, axis);
-      cands.push({ axis, at: run ? sp.c : at0, a: Math.min(u0, end), b: Math.max(u0, end), t: run ? sp.half * 2 : 20, run });
+    let lone: { axis: 'x' | 'z'; at: number; a: number; b: number; t: number } | null = null;
+    for (const slack of [0, 12]) {
+      const cands: { axis: 'x' | 'z'; at: number; a: number; b: number; t: number; run: boolean }[] = [];
+      for (const [ex, ez] of s.ends) {
+        const dx = ex - s.x, dz = ez - s.z;
+        const axis = Math.abs(dx) > Math.abs(dz) * 4 ? 'x' : Math.abs(dz) > Math.abs(dx) * 4 ? 'z' : null;
+        if (!axis) continue;
+        const dir = (axis === 'x' ? dx : dz) > 0 ? 1 : -1;
+        const u0 = axis === 'x' ? s.x : s.z, at0 = axis === 'x' ? s.z : s.x;
+        const end = u0 + dir * s.r;
+        // the wall behind the hinge, or (when the hinge side is open) the wall the closed leaf meets
+        const jamb = cast(axis, at0, u0, dir === 1 ? -1 : 1, 25, true, slack) || cast(axis, at0, end, dir, 15, true, slack);
+        if (!jamb) continue;
+        const sp = span(jamb.o, axis), run = isRun(jamb.o, axis);
+        cands.push({ axis, at: run ? sp.c : at0, a: Math.min(u0, end), b: Math.max(u0, end), t: run ? sp.half * 2 : 20, run });
+      }
+      // the closed leaf lies along a wall; next to a column either end can look like a jamb
+      const c = cands.find(q => q.run);
+      if (c) { push(c.axis, c.at, c.a, c.b, c.t, true); lone = null; break; }
+      if (!slack && cands.length === 1) lone = cands[0];
     }
-    // the closed leaf lies along a wall; next to a column either end can look like a jamb
-    const c = cands.find(q => q.run) || (cands.length === 1 ? cands[0] : null);
-    if (c) push(c.axis, c.at, c.a, c.b, c.t, true);
+    // second pass above lets walls drawn a little off the hinge line count as the jamb; only then a lone end is taken
+    if (lone) push(lone.axis, lone.at, lone.a, lone.b, lone.t, true);
   }
 
   // other openings: linework between two walls / columns
@@ -1253,6 +1259,15 @@ export function findOpenings(boxes: BoxObject[], openSegs: Seg2[], swings: Swing
       a = Math.min(a, Math.max(qa, lo.u - 15)); b = Math.max(b, Math.min(qb, hi.u + 15));
     }
     push(axis, at, a, b, t, false);
+  }
+
+  // the two leaves of a double door meet: one opening
+  for (let i = 0; i < out.length; i++) for (let j = out.length - 1; j > i; j--) {
+    const p = out[i], q = out[j];
+    if (!p.arc || !q.arc || p.axis !== q.axis || Math.abs((p.axis === 'x' ? p.cz - q.cz : p.cx - q.cx)) > 15 || q.a > p.b + 10 || p.a > q.b + 10) continue;
+    p.a = Math.min(p.a, q.a); p.b = Math.max(p.b, q.b); p.len = p.b - p.a;
+    if (p.axis === 'x') p.cx = (p.a + p.b) / 2; else p.cz = (p.a + p.b) / 2;
+    out.splice(j, 1);
   }
 
   // trim wall ends that reach into an opening (at most half the wall's thickness)
