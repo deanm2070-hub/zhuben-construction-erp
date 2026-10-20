@@ -258,6 +258,14 @@ function BuildingStep({ st, firstId, onBuilt, onLayers, onClose }: {
           <thead><tr><th>圖名</th><th>種類</th><th>用在</th></tr></thead>
           <tbody>{a.views.map((v, i) => { const [kind, use] = ({ plan: ['平面圖', '各層牆、柱、門窗、樓板'], structure: ['結構平面圖', '梁、柱、板編號與配筋'], elevation: ['立面圖', '樓層高程、樓高'], section: ['剖面圖', '樓層高程、樓梯、女兒牆'], schedule: ['門窗表／詳圖', '門窗尺寸、窗台高、數量'] } as Record<string, string[]>)[v.kind]; return <tr key={i}><td>{v.title}</td><td>{kind}</td><td>{v.floors.length ? v.floors.join('、') + ' ' : ''}{use}</td></tr>; })}</tbody>
         </table></div>
+        {rep.areaChecks.length > 0 && <>
+          <h4 style={{ margin: '12px 0 4px' }}>樓地板面積對帳（圖上法規檢討寫的面積 vs 3D 建出的樓板）</h4>
+          <div className="tbl"><table>
+            <thead><tr><th>樓層</th><th className="num">圖上面積 ㎡</th><th className="num">3D 樓板 ㎡</th><th>結果</th></tr></thead>
+            <tbody>{rep.areaChecks.map(c => { const p = (c.built / c.stated - 1) * 100; return <tr key={c.floor}><td>{c.floor}</td><td className="num">{c.stated}</td><td className="num">{c.built}</td>
+              <td className={Math.abs(p) > 8 ? 'warn' : ''}>{Math.abs(p) <= 8 ? `相差 ${p.toFixed(1)}%（法規面積算到牆中心，3D 算到牆外緣，屬正常）` : `相差 ${p.toFixed(1)}%，樓板範圍可能有漏或多`}</td></tr>; })}</tbody>
+          </table></div>
+        </>}
         {rep.tally.length > 0 && <>
           <h4 style={{ margin: '12px 0 4px' }}>門窗數量對帳（門窗表的數量 vs 3D 建出的數量）</h4>
           <div className="tbl"><table>

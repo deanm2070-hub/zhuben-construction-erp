@@ -572,6 +572,23 @@ function raster(walls: BoxObject[], W: number, D: number, M = 80) {
  * about a metre are bridged), the walls themselves included, minus shafts and light wells
  * named 天井 / 挑空 / 管道 and the `holes` cut for stairs coming up from below.
  */
+/** the drawing's own 「*NF樓地板面積計算」 sum (…=228.32㎡) against the slab area the model built */
+function areaChecks(d: DxfDrawing, keys: string[], objects: ModelObject[]) {
+  const heads = d.texts.map(t => ({ f: /^\*?\s*([1-9]\d?)\s*F\s*樓地板面積/.exec(t.s.trim())?.[1], x: t.x, y: t.y })).filter(h => h.f);
+  const heads2 = d.texts.filter(t => /^\*?\s*[1-9]\d?\s*F\s*(陽台|露台)面積|^\*?\s*[1-9]\d?\s*F\s*#/.test(t.s.trim()));
+  const out: { floor: string; stated: number; built: number }[] = [];
+  for (const h of heads) {
+    const key = h.f + 'F';
+    if (!keys.includes(key) || out.some(o => o.floor === key)) continue;
+    const stop = Math.max(...heads2.filter(t => Math.abs(t.x - h.x) < 800 && t.y < h.y).map(t => t.y), h.y - 1500);
+    const r = d.texts.map(t => ({ v: /=\s*([\d.]+)\s*㎡/.exec(t.s), x: t.x, y: t.y })).filter(t => t.v && Math.abs(t.x - h.x) < 800 && t.y < h.y && t.y > stop).sort((p, q) => q.y - p.y)[0];
+    if (!r) continue;
+    const built = objects.reduce((n, o) => n + (o.floor === key && isBox(o) && o.layer === 'slab' && /（CAD）/.test(o.name) ? o.w * o.d : 0), 0) / 1e4;
+    out.push({ floor: key, stated: +r.v![1], built: Math.round(built * 100) / 100 });
+  }
+  return out;
+}
+
 export function slabRects(walls: BoxObject[], labels: { x: number; z: number; s: string }[], W: number, D: number, holes: { x0: number; x1: number; z0: number; z1: number }[] = []) {
   const { C, M, nx, nz, N, wall, nb } = raster(walls, W, D);
   const R = 5, dil = new Uint8Array(N);
@@ -808,6 +825,8 @@ export interface BuildReport {
   unmatchedTags: { floor: string; code: string }[];
   perFloor: { key: string; walls: number; doors: number; windows: number; slabs: number }[];
   /** door / window schedule against what was built */
+  /** 樓地板面積 written on the drawing (法規檢討) against the slab built */
+  areaChecks: { floor: string; stated: number; built: number }[];
   tally: { code: string; name: string; qty?: number; built: number; guessed?: number; tagged?: number }[];
 }
 
@@ -1482,6 +1501,7 @@ export function buildBuilding(d: DxfDrawing, a: BuildingAnalysis, name: string, 
     projectionLabels, stairs: stairList,
     slantWalls: objects.filter(o => isBox(o) && o.layer === 'wall' && o.rot && Math.max(o.w, o.d) >= 300).length,
     unmatchedTags,
+    areaChecks: areaChecks(d, a.storeys.map(st => st.key), objects),
     tally: a.schedule.map(i => {
       const n = objects.filter(o => (o.layer === 'door' || o.layer === 'glass') && o.name.split(' ')[0] === i.code).length;
       return { code: i.code, name: i.name, ...(i.qty !== undefined ? { qty: i.qty } : {}), built: i.legs ? Math.ceil(n / 2) : n, ...(guessedN.get(i.code) ? { guessed: guessedN.get(i.code) } : {}), tagged: taggedN.get(i.code) || 0 };
