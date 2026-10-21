@@ -22,20 +22,25 @@ export interface Account {
   adminExists: boolean;
   profile: Profile | null;
   active: boolean;
+  /** the account has since been signed in on another device */
+  elsewhere: boolean;
 }
 
-export const OPEN_ACCOUNT: Account = { ready: false, admin: false, adminExists: true, profile: null, active: true };
+export const OPEN_ACCOUNT: Account = { ready: false, admin: false, adminExists: true, profile: null, active: true, elsewhere: false };
 
 export async function loadAccount(userId: string): Promise<Account> {
   if (!supabase) return OPEN_ACCOUNT;
-  const [admin, exists, prof] = await Promise.all([
+  const [admin, exists, prof, device] = await Promise.all([
     supabase.rpc('is_admin'), supabase.rpc('admin_exists'),
     supabase.from('profiles').select('*').eq('id', userId).maybeSingle(),
+    supabase.rpc('device_ok'),
   ]);
   if (admin.error || exists.error || prof.error) return OPEN_ACCOUNT;
+  // without the one-device migration (0003) every device keeps working
+  const elsewhere = !device.error && device.data === false;
   const p = prof.data as Profile | null, isAdmin = !!admin.data;
   const active = isAdmin || (!!p && !p.disabled && (!p.expires_at || new Date(p.expires_at) > new Date()));
-  return { ready: true, admin: isAdmin, adminExists: !!exists.data, profile: p, active };
+  return { ready: true, admin: isAdmin, adminExists: !!exists.data, profile: p, active: active && !elsewhere, elsewhere };
 }
 
 export async function claimAdmin() {
@@ -78,4 +83,10 @@ export function extend(current: string | null, months: number) {
   const d = new Date(from);
   d.setMonth(d.getMonth() + months);
   return d.toISOString();
+}
+
+export const CLAIM_FLAG = 'zl-claim-device';
+/** Right after a password sign-in: this device becomes the one the account is used on (any other is signed out). */
+export async function claimDevice() {
+  if (supabase) await supabase.rpc('claim_device');
 }

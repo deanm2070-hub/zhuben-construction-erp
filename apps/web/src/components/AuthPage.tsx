@@ -1,4 +1,5 @@
 import { useState } from 'react';
+import { CLAIM_FLAG } from '../lib/account';
 import { supabase } from '../lib/supabase';
 import { RELEASES, VERSION } from '../lib/version';
 
@@ -13,10 +14,13 @@ export function AuthPage() {
     e.preventDefault();
     setBusy(true); setMsg({});
     const auth = supabase!.auth;
+    // one device per account: the device signing in now takes over; the app claims it before loading the account
+    try { if (mode === 'in') sessionStorage.setItem(CLAIM_FLAG, '1'); } catch { /* private mode */ }
     const { error } = mode === 'in'
       ? await auth.signInWithPassword({ email, password })
       : await auth.signUp({ email, password, options: { emailRedirectTo: location.origin } });
     setBusy(false);
+    if (error) try { sessionStorage.removeItem(CLAIM_FLAG); } catch { /* private mode */ }
     if (error) setMsg({ err: error.message === 'Invalid login credentials' ? '電子郵件或密碼不正確' : error.message });
     else if (mode === 'up') setMsg({ ok: '註冊信已寄出，請到信箱點連結啟用帳號後再登入。' });
   };

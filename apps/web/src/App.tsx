@@ -4,7 +4,7 @@ import { AdminPage } from './components/AdminPage';
 import { AuthPage } from './components/AuthPage';
 import { Editor } from './components/Editor';
 import { ProjectsPage } from './components/ProjectsPage';
-import { loadAccount, OPEN_ACCOUNT, type Account } from './lib/account';
+import { CLAIM_FLAG, claimDevice, loadAccount, OPEN_ACCOUNT, type Account } from './lib/account';
 import { supabase, supabaseConfigError } from './lib/supabase';
 import { watchUpdates } from './lib/update';
 
@@ -20,8 +20,23 @@ export function App() {
   const [update, setUpdate] = useState<string | null>(null);
   const [account, setAccount] = useState<Account | null>(supabase ? null : OPEN_ACCOUNT);
   const uid = session?.user.id;
-  const reloadAccount = () => { if (uid) loadAccount(uid).then(setAccount).catch(() => setAccount(OPEN_ACCOUNT)); };
+  const reloadAccount = async () => {
+    if (!uid) return;
+    // a password sign-in just happened on this device: it becomes the account's device first
+    let claim = false;
+    try { claim = sessionStorage.getItem(CLAIM_FLAG) === '1'; sessionStorage.removeItem(CLAIM_FLAG); } catch { /* private mode */ }
+    if (claim) await claimDevice().catch(() => {});
+    loadAccount(uid).then(setAccount).catch(() => setAccount(OPEN_ACCOUNT));
+  };
   useEffect(() => { setAccount(supabase ? null : OPEN_ACCOUNT); reloadAccount(); }, [uid]);
+  // another device may sign in on this account at any time: check every minute and whenever the app comes back to the front
+  useEffect(() => {
+    if (!uid) return;
+    const check = () => { if (document.visibilityState === 'visible') loadAccount(uid).then(a => { if (a.elsewhere || !a.active) setAccount(a); }).catch(() => {}); };
+    const t = setInterval(check, 60000);
+    document.addEventListener('visibilitychange', check);
+    return () => { clearInterval(t); document.removeEventListener('visibilitychange', check); };
+  }, [uid]);
 
   useEffect(() => {
     if (!supabase) return;
@@ -57,6 +72,7 @@ export function App() {
     if (supabase && session === undefined) return <div className="page"><div className="wrap"><p className="note">載入中…</p></div></div>;
     if (supabase && !session) return <AuthPage />;
     if (!account) return <div className="page"><div className="wrap"><p className="note">載入中…</p></div></div>;
+    if (account.elsewhere) return <Elsewhere email={session?.user.email ?? ''} />;
     if (!account.active) return <Expired email={session?.user.email ?? ''} profile={account.profile} />;
     if (route && 'admin' in route) return account.admin ? <AdminPage selfId={uid!} onBack={() => { location.hash = ''; }} /> : <ProjectsPage email={session?.user.email ?? null} account={account} onAccount={reloadAccount} onOpen={(id, importNow) => { location.hash = `#/p/${id}${importNow ? '/import' : ''}`; }} />;
     if (route) return <Editor key={route.id} projectId={route.id} importNow={route.importNow} onExit={() => { location.hash = ''; }} />;
@@ -74,6 +90,20 @@ function Expired({ email, profile }: { email: string; profile: Account['profile'
       <div className="kv">
         <button className="chip on" onClick={() => location.reload()}>重新整理</button>
         <button className="chip ghost" onClick={() => supabase!.auth.signOut()}>登出</button>
+      </div>
+    </div></div>
+  );
+}
+
+/** This account has been signed in on another device since; only one device can use it at a time. */
+function Elsewhere({ email }: { email: string }) {
+  return (
+    <div className="page"><div className="wrap" style={{ maxWidth: 520 }}>
+      <img src="/logo.png" alt="築量雲" width={72} height={72} />
+      <h1>帳號已在其他裝置登入</h1>
+      <p className="note">{email} 剛剛在另一台裝置登入，每個帳號同一時間只能在一台裝置使用，所以這台已登出。要改在這台使用，請重新登入（另一台就會被登出）。尚未儲存的修改無法再存到雲端。</p>
+      <div className="kv">
+        <button className="chip on" onClick={() => supabase!.auth.signOut({ scope: 'local' })}>在這台重新登入</button>
       </div>
     </div></div>
   );
