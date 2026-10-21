@@ -16,14 +16,16 @@ export function dueForReminder(list: Profile[], now = new Date()) {
  * The renewal reminder sent to an account 14 days before it expires. Plain table layout and inline styles so it
  * shows the same in Gmail, Outlook and phone mail apps.
  */
-export function reminderEmail(p: Profile, site = location.origin, now = new Date()) {
+export const RENEW_HOW = '請直接回覆這封信，或與我們聯絡，確認付款後我們會為您延長使用期限。';
+
+export function reminderEmail(p: Profile, site = location.origin, now = new Date(), how = RENEW_HOW) {
   const date = (p.expires_at || '').slice(0, 10), left = daysLeft(p, now), plan = PLANS[p.plan] || p.plan;
   const subject = `【築量雲】您的訂閱將於 ${date} 到期，請續訂以繼續使用`;
   const text = [
     `${p.email} 您好：`, '',
     `感謝您使用築量雲。您的帳號（${plan}方案）將於 ${date} 到期，剩下 ${left} 天。`,
     '到期後將無法開啟及儲存專案；您的專案資料會完整保留，續訂後即可繼續使用。', '',
-    '續訂方式：請直接回覆這封信，或與我們聯絡，確認付款後我們會為您延長使用期限。', '',
+    `續訂方式：${how}`, '',
     `登入築量雲：${site}`, '', '築量雲 敬上', '（這是系統自動寄出的提醒信）',
   ].join('\n');
   const row = (k: string, v: string) => `<tr><td style="padding:6px 0;color:#6b7280;width:96px">${k}</td><td style="padding:6px 0;color:#111827;font-weight:600">${esc(v)}</td></tr>`;
@@ -39,7 +41,7 @@ export function reminderEmail(p: Profile, site = location.origin, now = new Date
 ${row('帳號', p.email || '')}${row('方案', plan)}${row('到期日', date)}
 </table>
 <p style="margin:0 0 16px;font-size:14px;line-height:1.7;color:#374151">到期後將無法開啟及儲存專案；您的專案資料會完整保留，續訂後即可繼續使用。</p>
-<p style="margin:0 0 20px;font-size:14px;line-height:1.7;color:#374151"><b>續訂方式：</b>請直接回覆這封信，或與我們聯絡，確認付款後我們會為您延長使用期限。</p>
+<p style="margin:0 0 20px;font-size:14px;line-height:1.7;color:#374151"><b>續訂方式：</b>${esc(how).replace(/\n/g, '<br>')}</p>
 <p style="margin:0 0 8px"><a href="${esc(site)}" style="display:inline-block;background:#0f766e;color:#ffffff;text-decoration:none;font-weight:700;padding:10px 20px;border-radius:10px">登入築量雲</a></p>
 </td></tr>
 <tr><td style="padding:14px 24px;background:#f9fafb;color:#9ca3af;font-size:12px">築量雲 敬上・這是系統自動寄出的提醒信</td></tr>

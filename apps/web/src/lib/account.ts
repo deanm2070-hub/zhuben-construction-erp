@@ -10,6 +10,8 @@ export interface Profile {
   disabled: boolean;
   note: string | null;
   created_at: string;
+  /** when the last renewal reminder e-mail went out (0004_renewal_reminders.sql) */
+  reminded_at?: string | null;
 }
 
 export const PLANS: Record<string, string> = { trial: '試用', monthly: '月訂', yearly: '年訂', unlimited: '不限期' };
@@ -89,4 +91,30 @@ export const CLAIM_FLAG = 'zl-claim-device';
 /** Right after a password sign-in: this device becomes the one the account is used on (any other is signed out). */
 export async function claimDevice() {
   if (supabase) await supabase.rpc('claim_device');
+}
+
+/** Mail settings for the renewal reminders (table public.app_settings); null before 0004 has been run. */
+export async function loadSettings(): Promise<Record<string, string> | null> {
+  const { data, error } = await supabase!.from('app_settings').select('*');
+  if (error) return null;
+  return Object.fromEntries((data as { key: string; value: string }[]).map(r => [r.key, r.value]));
+}
+
+export async function saveSetting(key: string, value: string) {
+  const { error } = await supabase!.from('app_settings').upsert({ key, value });
+  if (error) throw error;
+}
+
+/** the reminder of one account, sent to the administrator's own mailbox; returns that address */
+export async function sendTestReminder(id: string) {
+  const { data, error } = await supabase!.rpc('send_test_reminder', { p_id: id });
+  if (error) throw error;
+  return data as string;
+}
+
+/** the daily reminder run, now; returns how many e-mails went out */
+export async function runReminders() {
+  const { data, error } = await supabase!.rpc('run_renewal_reminders');
+  if (error) throw error;
+  return data as number;
 }
