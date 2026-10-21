@@ -1,0 +1,26 @@
+name: Database migrations
+
+# Runs new SQL files in supabase/migrations against the live Supabase database whenever they reach main.
+on:
+  push:
+    branches: [main]
+    paths: ['supabase/migrations/**', 'scripts/db-migrate.sh']
+  workflow_dispatch:
+
+concurrency: db-migrate
+
+jobs:
+  migrate:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Apply migrations
+        env:
+          SUPABASE_DB_URL: ${{ secrets.SUPABASE_DB_URL }}
+        run: |
+          if [ -z "$SUPABASE_DB_URL" ]; then
+            echo "::warning::SUPABASE_DB_URL secret is not set; skipping database migrations"
+            exit 0
+          fi
+          sudo apt-get install -y -qq postgresql-client >/dev/null
+          ./scripts/db-migrate.sh
