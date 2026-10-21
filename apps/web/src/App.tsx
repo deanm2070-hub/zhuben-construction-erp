@@ -57,8 +57,9 @@ export function App() {
   useEffect(() => {
     if (!supabase) return;
     supabase.auth.getSession().then(({ data }) => {
-      // the e-mail's sign-in link is for another account than the one signed in on this device: show the sign-in page for it
-      if (data.session && LOGIN_LINK?.email && data.session.user.email?.toLowerCase() !== LOGIN_LINK.email.toLowerCase()) { supabase!.auth.signOut({ scope: 'local' }).finally(() => setSession(null)); return; }
+      // the e-mail's sign-in link always signs in afresh: the session kept on this device may be another account, or
+      // the same address from before the account was deleted and opened again (a user id that no longer exists)
+      if (data.session && LOGIN_LINK?.email && LOGIN_LINK.password) { supabase!.auth.signOut({ scope: 'local' }).finally(() => setSession(null)); return; }
       setSession(data.session);
     });
     const { data } = supabase.auth.onAuthStateChange((_e, s) => setSession(s));

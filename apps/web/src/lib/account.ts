@@ -57,6 +57,9 @@ export async function loadAccount(userId: string): Promise<Account> {
   if (admin.error || exists.error || prof.error) return OPEN_ACCOUNT;
   // an account made without its profile (plan and expiry) gets its 7-day trial now (0013); re-read it once
   if (!prof.data && !admin.data) {
+    // a session kept from an account that has since been deleted: its user is gone, so sign in again
+    const me = await supabase.auth.getUser();
+    if (me.error || !me.data.user) { await supabase.auth.signOut({ scope: 'local' }).catch(() => {}); return { ...OPEN_ACCOUNT, active: false }; }
     const fix = await supabase.rpc('ensure_profile');
     if (!fix.error) {
       const again = await supabase.from('profiles').select('*').eq('id', userId).maybeSingle();
