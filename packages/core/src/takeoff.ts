@@ -91,7 +91,7 @@ export function computeTakeoff(inp: TakeoffInput): Takeoff {
   const rcWalls = walls.filter(o => isExt(o) && !o.rc && (tagged.length > 0 || !isColumn(o)));
   // interior concrete walls carry no facade finish
   const ext = rcWalls.filter(o => !(o.wall === 'rc' && /^RC牆/.test(o.name))), int = full.filter(o => !isExt(o) && !o.rc);
-  const slabs = boxes.filter(o => o.layer === 'slab' && !/梁/.test(o.name));
+  const slabs = boxes.filter(o => o.layer === 'slab' && !/梁|屋簷/.test(o.name)), eaves = boxes.filter(o => o.layer === 'slab' && /屋簷/.test(o.name));
   const railings = boxes.filter(o => /欄杆/.test(o.name) && (o.layer === 'glass' || o.layer === 'rail'));
   const map = roomMap(objects, bounds, inp.labels, inp.rects);
   const rooms: RoomWithFinish[] = map.rooms.map(r => ({ ...r, fl, fin: { ...defaultFinish(r.name), ...(inp.finishes[r.name] || {}) } }));
@@ -188,7 +188,14 @@ export function computeTakeoff(inp: TakeoffInput): Takeoff {
     row(SEC.rc, CONCRETE, 'M3', name, `面積 ${r2(slabA)} ㎡ × 厚 ${m(t)} m`, slabA * t / 100);
     if (!ground) row(SEC.rc, FORMWORK, '㎡', `${name}底模`, `面積 ${r2(slabA)} ㎡`, slabA);
     if (name === '屋頂板') row(SEC.water, '屋頂.露台防水處理（含保護層）', '㎡', '屋頂板', `面積 ${r2(slabA)} ㎡`, slabA);
-  } else if (!inp.objects.some(o => o.floor)) {
+  }
+  const eaveA = sum(eaves, o => o.w * o.d / 1e4);
+  if (eaveA > 0) {
+    const t = eaves[0].h || S.slab;
+    row(SEC.rc, CONCRETE, 'M3', '屋簷', `面積 ${r2(eaveA)} ㎡ × 厚 ${m(t)} m`, eaveA * t / 100);
+    row(SEC.rc, FORMWORK, '㎡', '屋簷底模', `面積 ${r2(eaveA)} ㎡`, eaveA);
+  }
+  if (slabA <= 0 && !inp.objects.some(o => o.floor)) {
     // single plans have no slab objects: use the outline
     const fp = bounds.W * bounds.D / 1e4;
     row(SEC.rc, CONCRETE, 'M3', '樓板', `建築外框 ${m(bounds.W)} × ${m(bounds.D)} m × 厚 ${m(S.slab)} m`, fp * S.slab / 100);

@@ -818,9 +818,14 @@ export function slabRects(walls: BoxObject[], labels: { x: number; z: number; s:
     while (stack.length && n < 4000) { const k = stack.pop()!; n++; for (const m of nb(k)) if (!seen[m] && !wall[m] && keep[m]) { seen[m] = 1; stack.push(m); } }
     if (n < 4000) for (let k = 0; k < N; k++) if (seen[k]) keep[k] = 0; // a void larger than 40 m² is not a shaft
   }
-  // merge cells into rectangles: runs per row, stacked while the next row has the same run
-  const rects: { x0: number; x1: number; z0: number; z1: number }[] = [];
-  const open = new Map<string, { x0: number; x1: number; z0: number; z1: number }>();
+  return maskRects(keep, nx, nz, C, M);
+}
+
+type Rect = { x0: number; x1: number; z0: number; z1: number };
+/** Cells of a raster merged into rectangles: runs per row, stacked while the next row has the same run. */
+function maskRects(keep: Uint8Array, nx: number, nz: number, C: number, M: number, minArea = 400): Rect[] {
+  const rects: Rect[] = [];
+  const open = new Map<string, Rect>();
   for (let j = 0; j <= nz; j++) {
     const runs: [number, number][] = [];
     if (j < nz) for (let i = 0; i < nx;) { if (!keep[j * nx + i]) { i++; continue; } let e = i; while (e < nx && keep[j * nx + e]) e++; runs.push([i, e]); i = e; }
@@ -832,7 +837,84 @@ export function slabRects(walls: BoxObject[], labels: { x: number; z: number; s:
       else open.set(k, { x0: a * C - M, x1: b * C - M, z0: z, z1: z + C });
     }
   }
-  return rects.filter(r => (r.x1 - r.x0) * (r.z1 - r.z0) >= 400);
+  return rects.filter(r => (r.x1 - r.x0) * (r.z1 - r.z0) >= minArea);
+}
+
+/** open-air spaces named on a plan: walkways, terraces, balconies, courtyards */
+const OUTDOOR = /外廊|騎樓|迴廊|露台|平台|陽台|曬衣|庭院|中庭|廣場|車道/;
+/**
+ * The roof plan laid on the top indoor storey. Indoor is what that storey's full-height walls, windows and doorways
+ * close off from the outside (gaps up to a metre bridged), less the open-air spaces named on it (外廊, 露台),
+ * each flooded out to the walls round it. The roof slab covers the indoor floor, and whatever the roof outline (holes in it filled) reaches beyond
+ * that is the eaves (屋簷). Without a usable roof outline the indoor floor alone is roofed.
+ */
+function roofSplit(roof: Rect[], below: Rect[], walls: BoxObject[], outdoor: { x: number; z: number }[], rooms: { x: number; z: number }[], W: number, D: number): { indoor: Rect[]; eaves: Rect[] } {
+  const { C, M, nx, nz, N, wall, nb } = raster(walls, W, D);
+  const paint = (rs: Rect[]) => {
+    const m = new Uint8Array(N);
+    for (const r of rs)
+      for (let j = Math.max(0, Math.round((r.z0 + M) / C)); j < Math.min(nz, Math.round((r.z1 + M) / C)); j++)
+        for (let i = Math.max(0, Math.round((r.x0 + M) / C)); i < Math.min(nx, Math.round((r.x1 + M) / C)); i++) m[j * nx + i] = 1;
+    return m;
+  };
+  const fillHoles = (m: Uint8Array) => {
+    const out = new Uint8Array(N), q: number[] = [];
+    for (let k = 0; k < N; k++) { const i = k % nx, j = (k / nx) | 0; if ((i === 0 || j === 0 || i === nx - 1 || j === nz - 1) && !m[k]) { out[k] = 1; q.push(k); } }
+    while (q.length) { const k = q.pop()!; for (const n of nb(k)) if (!out[n] && !m[n]) { out[n] = 1; q.push(n); } }
+    return out;
+  };
+  const dilate = (R: number) => {
+    const t = new Uint8Array(N);
+    for (let k = 0; k < N; k++) if (wall[k]) {
+      const i = k % nx, j = (k / nx) | 0;
+      for (let b = Math.max(0, j - R); b <= Math.min(nz - 1, j + R); b++) for (let a = Math.max(0, i - R); a <= Math.min(nx - 1, i + R); a++)
+        if ((a - i) ** 2 + (b - j) ** 2 <= R * R) t[b * nx + a] = 1;
+    }
+    return t;
+  };
+  // walls thickened by half a metre so doorless gaps close, flooded from outside, then grown back up to the walls
+  const R = 5, thick = dilate(R);
+  const out = fillHoles(thick);
+  for (let step = 0; step < R + 1; step++) {
+    const add: number[] = [];
+    for (let k = 0; k < N; k++) if (out[k]) for (const n of nb(k)) if (!out[n] && !wall[n]) add.push(n);
+    if (!add.length) break;
+    for (const n of add) out[n] = 1;
+  }
+  // open-air spaces against rooms: every space named on the plan grows out from its name at the same pace between
+  // the walls (thickened 20 cm), so an opening with nothing drawn in it is shared out where the two meet instead of
+  // letting a walkway flood the room behind it; what the open-air names claim is outside, grown back up to the walls
+  const cellOf = (p: { x: number; z: number }) => Math.floor((p.z + M) / C) * nx + Math.floor((p.x + M) / C);
+  const r2 = 2, bar = dilate(r2), owner = new Int8Array(N);
+  let front: number[] = [];
+  for (const [list, tag] of [[outdoor, 1], [rooms, 2]] as const) for (const p of list) {
+    const k = cellOf(p);
+    if (k >= 0 && k < N && !out[k] && !bar[k] && !owner[k]) { owner[k] = tag; front.push(k); }
+  }
+  while (front.length) {
+    const next: number[] = [];
+    for (const k of front) for (const m of nb(k)) if (!owner[m] && !bar[m] && !out[m]) { owner[m] = owner[k]; next.push(m); }
+    front = next;
+  }
+  const open = new Uint8Array(N);
+  for (let k = 0; k < N; k++) if (owner[k] === 1) open[k] = 1;
+  for (let step = 0; step < r2 + 1; step++) {
+    const add: number[] = [];
+    for (let k = 0; k < N; k++) if (open[k]) for (const m of nb(k)) if (!open[m] && !wall[m] && owner[m] !== 2) add.push(m);
+    for (const m of add) open[m] = 1;
+  }
+  for (let k = 0; k < N; k++) if (open[k]) out[k] = 1;
+  const floor = paint(below), indoor = new Uint8Array(N);
+  let nIn = 0;
+  for (let k = 0; k < N; k++) if (!out[k] && floor[k]) { indoor[k] = 1; nIn++; }
+  if (!nIn) return { indoor: below, eaves: [] };
+  const rfOut = fillHoles(paint(roof)), eave = new Uint8Array(N);
+  let nRf = 0;
+  for (let k = 0; k < N; k++) if (!rfOut[k]) nRf++;
+  if (nRf >= nIn * 0.3) for (let k = 0; k < N; k++) eave[k] = !rfOut[k] && !indoor[k] ? 1 : 0;
+  // strips narrower than 20 cm along the outline are drawing slack, not eaves
+  const eaves = maskRects(eave, nx, nz, C, M, 2000).filter(r => Math.min(r.x1 - r.x0, r.z1 - r.z0) >= 20);
+  return { indoor: maskRects(indoor, nx, nz, C, M), eaves };
 }
 
 type EdgeKind = 'balcony' | 'canopy' | 'projection';
@@ -1184,6 +1266,8 @@ export function buildBuilding(d: DxfDrawing, a: BuildingAnalysis, name: string, 
   const slabsOf = new Map<string, { x0: number; x1: number; z0: number; z1: number }[]>();
   const holesOf = new Map<string, { x0: number; x1: number; z0: number; z1: number }[]>();
   const terraces = new Map<string, { x: number; z: number; s: string }[]>();
+  /** names of open-air spaces on each storey (外廊, 露台 …) on any layer: they are not under the roof */
+  const outdoorOf = new Map<string, { x: number; z: number }[]>(), roomsOf = new Map<string, { x: number; z: number }[]>();
   const slants: { key: string; side: 'w' | 'e'; x1: number; z1: number; x2: number; z2: number }[] = [];
   const beamLines: { st: Storey; xs: number[]; zs: number[] }[] = [];
 
@@ -1436,6 +1520,9 @@ export function buildBuilding(d: DxfDrawing, a: BuildingAnalysis, name: string, 
     const holes = below;
     holesOf.set(st.key, holes);
     slabsOf.set(st.key, []);
+    // indoor room names (客廳, 廚房, 臥室 …): short labels of two to five characters naming a space
+    roomsOf.set(st.key, d.texts.filter(t => inBox(plan.box, t.x, t.y) && /^[一-鿿]{2,5}$/.test(t.s.trim()) && /[廳房室廚廁浴衛鋪舖間廊道梯]/.test(t.s) && !OUTDOOR.test(t.s) && !/平面圖|立面|剖面|投影|上方/.test(t.s)).map(t => ({ x: X(t.x), z: Z(t.y) })));
+    outdoorOf.set(st.key, d.texts.filter(t => inBox(plan.box, t.x, t.y) && t.s.trim().length <= 8 && OUTDOOR.test(t.s) && !PLAN_NOTES.projection.test(t.s)).map(t => ({ x: X(t.x), z: Z(t.y) })));
     terraces.set(st.key, texts.filter(t => /露台|平台/.test(t.s) && !/屋突屋頂平台|上方/.test(t.s) || /屋突屋頂平台/.test(t.s)));
     below = stairs.flatMap(sp => sp.holes);
     for (const r of slabRects(walls.length ? [...walls, ...shut, ...slabEdges] : walls, texts, W, D, holes)) {
@@ -1652,12 +1739,17 @@ export function buildBuilding(d: DxfDrawing, a: BuildingAnalysis, name: string, 
       o.name = o.wall === 'light' ? '輕隔間牆（CAD）' : Math.min(o.w, o.d) >= 18 ? '外牆（CAD）' : 'RC牆（CAD）';
     }
   }
-  // the roof slab covers the storey below it: a roof plan that shows only the parapet leaves holes, so use that storey's slabs
+  // the roof plan sits on the top indoor storey: the roof slab covers that storey (a roof plan that shows only the
+  // parapet leaves holes, so its slabs are used), and what the roof outline reaches beyond it is the eaves (屋簷)
   const top = a.storeys[a.storeys.length - 1], under = a.storeys[a.storeys.length - 2];
   if (top && under && top.key === 'RF' && !under.key.startsWith('R')) {
-    const area = (rs: { x0: number; x1: number; z0: number; z1: number }[]) => rs.reduce((n, r) => n + (r.x1 - r.x0) * (r.z1 - r.z0), 0);
-    const roof = slabsOf.get('RF') || [], below = slabsOf.get(under.key) || [];
-    if (below.length && area(roof) < area(below) * 0.85) {
+    const roof = slabsOf.get('RF') || [], below0 = slabsOf.get(under.key) || [];
+    const { indoor: below, eaves } = roofSplit(roof, below0, [
+      ...objects.filter((o): o is BoxObject => isBox(o) && o.floor === under.key && (o.layer === 'glass' || (o.layer === 'wall' && o.h >= under.h * 0.8))),
+      // doorways close the rooms off too
+      ...objects.filter((o): o is DoorObject => !isBox(o) && o.floor === under.key).map(o => ({ ...o, layer: 'wall' as const, x: o.axis === 'x' ? (o.a + o.b) / 2 : o.at, z: o.axis === 'x' ? o.at : (o.a + o.b) / 2, w: o.axis === 'x' ? Math.abs(o.b - o.a) : 20, d: o.axis === 'x' ? 20 : Math.abs(o.b - o.a), h: 1, y: 0, color: 0 }) as BoxObject),
+    ], outdoorOf.get(under.key) || [], roomsOf.get(under.key) || [], W, D);
+    if (below.length) {
       for (let i = objects.length - 1; i >= 0; i--) { const o = objects[i]; if (isBox(o) && o.floor === 'RF' && o.layer === 'slab') objects.splice(i, 1); }
       slabsOf.set('RF', []);
       // the stair up to the roof leaves its opening
@@ -1673,6 +1765,10 @@ export function buildBuilding(d: DxfDrawing, a: BuildingAnalysis, name: string, 
       }), [r]);
       for (const r of below.flatMap(cut)) {
         objects.push({ id: id++, layer: 'slab', name: '屋頂板（CAD）', floor: 'RF', x: (r.x0 + r.x1) / 2, z: (r.z0 + r.z1) / 2, w: r.x1 - r.x0, d: r.z1 - r.z0, h: SLAB, y: top.base - SLAB, color: 0xd6d1c7 });
+        slabsOf.get('RF')!.push(r);
+      }
+      for (const r of eaves) {
+        objects.push({ id: id++, layer: 'slab', name: '屋簷（CAD）', floor: 'RF', x: (r.x0 + r.x1) / 2, z: (r.z0 + r.z1) / 2, w: r.x1 - r.x0, d: r.z1 - r.z0, h: SLAB, y: top.base - SLAB, color: 0xd6d1c7 });
         slabsOf.get('RF')!.push(r);
       }
     }
