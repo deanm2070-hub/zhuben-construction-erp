@@ -26,6 +26,8 @@ export const lineMessage = (text: string) => `https://line.me/R/oaMessage/${LINE
 /** a referral counts once the new account has 3 days of at least 60 minutes online within its first 7 days */
 export const REFERRAL = { days: 3, minutes: 60, within: 7, reward: 7 };
 export const shareLink = (code: string) => `${location.origin}/?ref=${code}`;
+/** phones and tablets, where LINE links open the LINE app with the message typed; on computers they only show a QR code */
+export const isMobile = () => /Android|iPhone|iPad|iPod/i.test(navigator.userAgent) || (/Macintosh/.test(navigator.userAgent) && navigator.maxTouchPoints > 1);
 
 export const PLANS: Record<string, string> = { trial: '試用', monthly: '月訂', yearly: '年訂', unlimited: '不限期' };
 
@@ -155,4 +157,41 @@ export async function listUsage(days = 30): Promise<{ usage: UsageDay[]; logins:
   ]);
   if (u.error || l.error) return null;
   return { usage: u.data as UsageDay[], logins: l.data as Login[] };
+}
+
+/** a trial request from the sign-in page: saved for the admin page and e-mailed to the administrator (0007) */
+export async function requestTrial(email: string, ref: string) {
+  const { data, error } = await supabase!.rpc('request_trial', { p_email: email, p_ref: ref || null });
+  if (error) throw error;
+  if (!data) throw new Error('請確認電子郵件是否正確');
+}
+/** the same, while the page is leaving for LINE: the request still goes out */
+export function requestTrialBeacon(email: string, ref: string) {
+  const url = import.meta.env.VITE_SUPABASE_URL as string | undefined, key = (import.meta.env.VITE_SUPABASE_ANON_KEY as string | undefined)?.trim().replace(/^['"]|['"]$/g, '');
+  if (!url || !key) return;
+  fetch(`${normalizeSupabaseUrl(url)}/rest/v1/rpc/request_trial`, {
+    method: 'POST', keepalive: true,
+    headers: { apikey: key, Authorization: `Bearer ${key}`, 'Content-Type': 'application/json' },
+    body: JSON.stringify({ p_email: email, p_ref: ref || null }),
+  }).catch(() => {});
+}
+
+export interface TrialRequest { id: number; email: string; ref_code: string | null; created_at: string; handled_at: string | null }
+export async function listTrialRequests(): Promise<TrialRequest[] | null> {
+  const { data, error } = await supabase!.from('trial_requests').select('*').is('handled_at', null).order('created_at', { ascending: false });
+  return error ? null : data as TrialRequest[];
+}
+export async function handleTrialRequest(id: number) {
+  const { error } = await supabase!.from('trial_requests').update({ handled_at: new Date().toISOString() }).eq('id', id);
+  if (error) throw error;
+}
+/** e-mails a new account its sign-in details */
+export async function sendWelcome(email: string, password: string) {
+  const { error } = await supabase!.rpc('send_welcome', { p_email: email, p_password: password });
+  if (error) throw error;
+}
+/** an easy-to-type password: no 0/O, 1/l/I */
+export function newPassword() {
+  const c = 'abcdefghjkmnpqrstuvwxyz23456789';
+  return Array.from(crypto.getRandomValues(new Uint8Array(8)), b => c[b % c.length]).join('');
 }

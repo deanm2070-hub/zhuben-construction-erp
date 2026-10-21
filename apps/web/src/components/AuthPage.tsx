@@ -1,5 +1,5 @@
 import { useState } from 'react';
-import { CLAIM_FLAG, LINE_ADD, LINE_ID, lineMessage } from '../lib/account';
+import { CLAIM_FLAG, isMobile, LINE_ADD, LINE_ID, lineMessage, requestTrial, requestTrialBeacon } from '../lib/account';
 import { supabase } from '../lib/supabase';
 import { RELEASES, VERSION } from '../lib/version';
 
@@ -18,6 +18,16 @@ export function AuthPage() {
   // accounts are opened by the administrator after a trial request on LINE; there is no self sign-up
   const [mode, setMode] = useState<'in' | 'trial'>(() => new URLSearchParams(location.search).get('ref') ? 'trial' : 'in');
   const [ref] = useState(referralCode);
+  const [sent, setSent] = useState(false);
+  const mobile = isMobile();
+  const okEmail = /^[^@\s]+@[^@\s]+\.[^@\s]+$/.test(email.trim());
+  // computers: the request goes straight to the administrator from here (LINE links only show a QR code there)
+  const sendRequest = async () => {
+    if (!okEmail) { setMsg({ err: '請先填寫正確的電子郵件' }); return; }
+    setBusy(true); setMsg({});
+    try { await requestTrial(email.trim(), ref); setSent(true); } catch (x) { setMsg({ err: `送出失敗：${(x as Error).message}。也可以用手機加 LINE ${LINE_ID} 申請` }); }
+    setBusy(false);
+  };
   const [msg, setMsg] = useState<{ err?: string; ok?: string }>({});
   const [busy, setBusy] = useState(false);
 
@@ -48,15 +58,28 @@ export function AuthPage() {
           <button type="button" className="chip key" onClick={() => { setMode('trial'); setMsg({}); }}>第一次使用？申請免費試用</button>
         </> : <div className="trial">
           <h3>申請免費試用</h3>
-          <ol>
-            <li>加入管理員 LINE 好友 <a href={LINE_ADD} target="_blank" rel="noopener">{LINE_ID}</a></li>
-            <li>填寫你的電子郵件，按「傳送申請」，LINE 會帶出已寫好的訊息{ref && <>（含推薦碼 <b>{ref}</b>）</>}，送出即可</li>
-            <li>管理員開通後會在 LINE 回覆你的密碼，回到這頁登入就能開始試用</li>
-          </ol>
-          <a className="chip key" href={LINE_ADD} target="_blank" rel="noopener">① 加入 LINE {LINE_ID}</a>
-          <input id="trial-email" type="email" autoComplete="email" placeholder="你的電子郵件" value={email} onChange={e => setEmail(e.target.value)} />
-          <a className={`chip on${email.includes('@') ? '' : ' off'}`} href={email.includes('@') ? lineMessage(request) : undefined} target="_blank" rel="noopener" onClick={e => { if (!email.includes('@')) { e.preventDefault(); setMsg({ err: '請先填寫電子郵件' }); } }}>② 傳送申請</a>
-          <button type="button" className="chip ghost" onClick={() => { setMode('in'); setMsg({}); }}>已有帳號？登入</button>
+          {sent ? <>
+            <p className="note">申請已送出 ✓<br />管理員開通後，帳號和密碼會寄到 <b>{email.trim()}</b>（沒看到請找垃圾郵件匣），收到後回到這頁登入即可開始試用。</p>
+            <button type="button" className="chip on" onClick={() => { setMode('in'); setSent(false); setMsg({}); }}>回到登入</button>
+          </> : mobile ? <>
+            <ol>
+              <li>填寫你的電子郵件</li>
+              <li>按「用 LINE 傳送申請」，會直接打開管理員 {LINE_ID} 的 LINE 對話並帶出寫好的訊息{ref && <>（含推薦碼 <b>{ref}</b>）</>}，按傳送即可</li>
+              <li>管理員開通後會回覆你的密碼，回到這頁登入就能開始試用</li>
+            </ol>
+            <input id="trial-email" type="email" autoComplete="email" placeholder="你的電子郵件" value={email} onChange={e => setEmail(e.target.value)} />
+            <a className={`chip on${okEmail ? '' : ' off'}`} href={okEmail ? lineMessage(request) : undefined} rel="noopener"
+              onClick={e => { if (!okEmail) { e.preventDefault(); setMsg({ err: '請先填寫正確的電子郵件' }); } else requestTrialBeacon(email.trim(), ref); }}>用 LINE 傳送申請</a>
+          </> : <>
+            <ol>
+              <li>填寫你的電子郵件，按「送出申請」，申請會直接送到管理員{ref && <>（含推薦碼 <b>{ref}</b>）</>}</li>
+              <li>管理員開通後，帳號和密碼會寄到你的信箱，回到這頁登入就能開始試用</li>
+            </ol>
+            <input id="trial-email" type="email" autoComplete="email" placeholder="你的電子郵件" value={email} onChange={e => setEmail(e.target.value)} onKeyDown={e => { if (e.key === 'Enter') { e.preventDefault(); sendRequest(); } }} />
+            <button type="button" className="chip on" disabled={busy} onClick={sendRequest}>{busy ? '送出中…' : '送出申請'}</button>
+            <p className="note">有問題也可以用手機加 LINE <a href={LINE_ADD} target="_blank" rel="noopener">{LINE_ID}</a> 聯絡管理員。</p>
+          </>}
+          {!sent && <button type="button" className="chip ghost" onClick={() => { setMode('in'); setMsg({}); }}>已有帳號？登入</button>}
         </div>}
         {msg.err && <p className="err">{msg.err}</p>}
         {msg.ok && <p className="note">{msg.ok}</p>}

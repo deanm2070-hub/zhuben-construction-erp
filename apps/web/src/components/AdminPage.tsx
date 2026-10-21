@@ -1,5 +1,5 @@
 import { useEffect, useState } from 'react';
-import { createAccount, extend, listProfiles, listUsage, loadSettings, PLANS, REFERRAL, runReminders, saveSetting, sendTestReminder, updateProfile, type Login, type Profile, type UsageDay } from '../lib/account';
+import { createAccount, extend, handleTrialRequest, listProfiles, listTrialRequests, listUsage, newPassword, sendWelcome, type TrialRequest, loadSettings, PLANS, REFERRAL, runReminders, saveSetting, sendTestReminder, updateProfile, type Login, type Profile, type UsageDay } from '../lib/account';
 import { daysLeft, dueForReminder, REMIND_DAYS, reminderEmail, RENEW_HOW } from '../lib/reminder';
 import { Modal } from './Modal';
 
@@ -16,7 +16,9 @@ export function AdminPage({ selfId, onBack }: { selfId: string; onBack: () => vo
   const [err, setErr] = useState('');
   const [msg, setMsg] = useState('');
   const [q, setQ] = useState('');
-  const [form, setForm] = useState({ email: '', password: '', plan: 'monthly', expires: day(extend(null, 1)), ref: '' });
+  const [form, setForm] = useState({ email: '', password: '', plan: 'monthly', expires: day(extend(null, 1)), ref: '', mail: true, request: 0 });
+  // null: the trial-request migration (0007) has not been run
+  const [requests, setRequests] = useState<TrialRequest[] | null>(null);
   // null: the usage migration (0005) has not been run
   const [usage, setUsage] = useState<{ usage: UsageDay[]; logins: Login[] } | null>(null);
   const [busy, setBusy] = useState(false);
@@ -25,7 +27,7 @@ export function AdminPage({ selfId, onBack }: { selfId: string; onBack: () => vo
   const [settings, setSettings] = useState<Record<string, string> | null>(null);
 
   const refresh = () => listProfiles().then(setList).catch(e => setErr(String(e.message || e)));
-  useEffect(() => { refresh(); loadSettings().then(setSettings); listUsage().then(setUsage); }, []);
+  useEffect(() => { refresh(); loadSettings().then(setSettings); listUsage().then(setUsage); listTrialRequests().then(setRequests); }, []);
 
   const act = async (f: () => Promise<string>) => {
     setErr(''); setMsg(''); setBusy(true);
@@ -51,8 +53,13 @@ export function AdminPage({ selfId, onBack }: { selfId: string; onBack: () => vo
       const referrer = key ? (list || []).find(p => p.ref_code === key || (p.email || '').toLowerCase() === key) : null;
       if (key && !referrer) throw new Error(`找不到推薦碼或帳號「${form.ref.trim()}」`);
       const r = await createAccount(form.email.trim(), form.password, form.plan, form.plan === 'unlimited' || !form.expires ? null : new Date(`${form.expires}T23:59:59`).toISOString(), referrer?.id ?? null);
-      setMsg(`已建立 ${form.email}${referrer ? `（推薦人 ${referrer.email}）` : ''}${r.confirm ? '，對方需先到信箱點啟用連結才能登入' : ''}`);
-      setForm({ ...form, email: '', password: '', ref: '' });
+      let mailed = '';
+      if (form.mail && requests !== null) {
+        try { await sendWelcome(form.email.trim(), form.password); mailed = '，帳號密碼已寄到對方信箱'; } catch (x) { mailed = `，但開通信沒寄出（${(x as Error).message}）`; }
+      }
+      if (form.request) { await handleTrialRequest(form.request).catch(() => {}); listTrialRequests().then(setRequests); }
+      setMsg(`已建立 ${form.email}${referrer ? `（推薦人 ${referrer.email}）` : ''}${mailed}${r.confirm ? '；對方需先到信箱點啟用連結才能登入' : ''}`);
+      setForm({ ...form, email: '', password: '', ref: '', request: 0 });
       refresh();
     } catch (x) { setErr(String((x as Error).message || x)); }
     setBusy(false);
@@ -126,6 +133,18 @@ export function AdminPage({ selfId, onBack }: { selfId: string; onBack: () => vo
           ))}
         </div>
 
+        {requests && requests.length > 0 && <div className="card">
+          <h3>試用申請（{requests.length}）</h3>
+          <p className="note">從登入頁送出的申請。按「開通」會把資料填到下方的新增帳號（試用 14 天、自動產生密碼），確認後按「建立帳號」，帳號密碼會寄到對方信箱。</p>
+          {requests.map(q => (
+            <div className="kv" key={q.id}>
+              <span><b>{q.email}</b>{q.ref_code && `・推薦碼 ${q.ref_code}`}・{new Date(q.created_at).toLocaleString('zh-TW')}{list?.some(p => (p.email || '').toLowerCase() === q.email) && '・已有帳號'}</span>
+              <button className="chip on" onClick={() => { setForm({ ...form, email: q.email, password: newPassword(), plan: 'trial', expires: day(new Date(Date.now() + 14 * 864e5).toISOString()), ref: q.ref_code || '', request: q.id }); document.getElementById('new-email')?.scrollIntoView({ behavior: 'smooth', block: 'center' }); }}>開通</button>
+              <button className="chip ghost" onClick={() => handleTrialRequest(q.id).then(() => listTrialRequests().then(setRequests)).catch(e => setErr(String(e.message || e)))}>略過</button>
+            </div>
+          ))}
+        </div>}
+
         <form className="card" onSubmit={add}>
           <h3>新增帳號</h3>
           <div className="kv">
@@ -136,6 +155,7 @@ export function AdminPage({ selfId, onBack }: { selfId: string; onBack: () => vo
             </select>
             <input id="new-ref" type="text" placeholder="推薦碼或推薦人 email（選填）" value={form.ref} onChange={e => setForm({ ...form, ref: e.target.value })} />
             {form.plan !== 'unlimited' && <label className="note">到期日 <input id="new-expires" type="date" value={form.expires} onChange={e => setForm({ ...form, expires: e.target.value })} required /></label>}
+            {requests !== null && <label className="note"><input id="new-mail" type="checkbox" checked={form.mail} onChange={e => setForm({ ...form, mail: e.target.checked })} /> 寄帳號密碼到對方信箱</label>}
             <button className="chip on" disabled={busy}>{busy ? '建立中…' : '建立帳號'}</button>
           </div>
         </form>
