@@ -3,7 +3,7 @@ import {
   type BoxObject, type CadData, type DoorObject, type ModelObject, type RoomRect,
 } from '@cloud-modeler/core';
 import * as THREE from 'three';
-import { TrackballControls } from 'three/examples/jsm/controls/TrackballControls.js';
+import { OrbitControls } from 'three/examples/jsm/controls/OrbitControls.js';
 import { RoomEnvironment } from 'three/examples/jsm/environments/RoomEnvironment.js';
 import { EffectComposer } from 'three/examples/jsm/postprocessing/EffectComposer.js';
 import { RenderPass } from 'three/examples/jsm/postprocessing/RenderPass.js';
@@ -102,8 +102,7 @@ export class Viewer {
   private renderer: THREE.WebGLRenderer;
   private scene = new THREE.Scene();
   private camera = new THREE.PerspectiveCamera(40, 1, 5, 40000);
-  /** free rotation in every direction: over the top, under the building, all the way round */
-  private controls: TrackballControls;
+  private controls: OrbitControls;
   private sun = new THREE.DirectionalLight(0xfff4e0, 0.75);
   private hemi = new THREE.HemisphereLight(0xffffff, 0x9aa6b8, 2.2);
   private env: THREE.Texture | null = null;
@@ -155,13 +154,10 @@ export class Viewer {
     this.renderer.localClippingEnabled = true;
     this.renderer.shadowMap.type = phone ? THREE.PCFShadowMap : THREE.PCFSoftShadowMap;
     view.prepend(this.renderer.domElement);
-    this.controls = new TrackballControls(this.camera, this.renderer.domElement);
-    this.controls.rotateSpeed = 3;
-    this.controls.zoomSpeed = 1.2;
-    this.controls.panSpeed = 0.9;
-    this.controls.dynamicDampingFactor = 0.18;
-    this.controls.minDistance = 50;
-    this.controls.keys = ['', '', ''];  // W A S D belong to walking
+    this.controls = new OrbitControls(this.camera, this.renderer.domElement);
+    this.controls.enableDamping = true;
+    this.controls.dampingFactor = 0.12;
+    this.controls.maxPolarAngle = Math.PI / 2 - 0.02;
     this.scene.add(this.hemi);
     this.sun.intensity = 2.2;
     this.sun.castShadow = true;
@@ -389,9 +385,8 @@ export class Viewer {
     if (this.tool === 'measure' && t !== 'measure') this.measA = null;
     this.tool = t;
     this.controls.mouseButtons.LEFT = t === 'pan' ? THREE.MOUSE.PAN : THREE.MOUSE.ROTATE;
-    this.controls.mouseButtons.RIGHT = t === 'pan' ? THREE.MOUSE.ROTATE : THREE.MOUSE.PAN;
-    // one finger always turns the model on phones; two fingers zoom and move
-    this.controls.noRotate = t === 'draw';
+    this.controls.touches.ONE = t === 'pan' ? THREE.TOUCH.PAN : THREE.TOUCH.ROTATE;
+    this.controls.enableRotate = t !== 'draw';
     if (t === 'walk') this.enterWalk();
     this.ev.info(TOOL_HINT[t]);
   }
@@ -760,8 +755,6 @@ export class Viewer {
     const aspect = this.view.clientWidth / Math.max(1, this.view.clientHeight);
     const fit = s.target ? 1 : Math.max(1, 0.92 / aspect);
     const to = { pos: new THREE.Vector3(...s.pos).sub(target).multiplyScalar(fit).add(target), target, fov: s.fov };
-    // a set view stands upright again however the model was turned
-    this.camera.up.set(0, 1, 0);
     if (instant) {
       this.camera.position.copy(to.pos);
       this.controls.target.copy(to.target);
@@ -776,7 +769,6 @@ export class Viewer {
     const w = this.view.clientWidth, h = this.view.clientHeight;
     this.renderer.setSize(w, h);
     this.composer?.setSize(w, h);
-    this.controls.handleResize();
     this.camera.aspect = w / Math.max(1, h);
     this.camera.updateProjectionMatrix();
   }
@@ -797,7 +789,6 @@ export class Viewer {
     this.walk.on = false;
     const s = this.walk.saved;
     if (s) { this.camera.position.copy(s.pos); this.controls.target.copy(s.target); this.camera.fov = s.fov; this.camera.updateProjectionMatrix(); }
-    this.camera.up.set(0, 1, 0);
     this.controls.enabled = true;
   }
   /** On-screen walk buttons: f/b/l/r. */
@@ -1205,7 +1196,7 @@ export class Viewer {
       if (w.keys.has('b')) this.camera.position.addScaledVector(fw, -sp);
       if (w.keys.has('r')) this.camera.position.addScaledVector(r, sp);
       if (w.keys.has('l')) this.camera.position.addScaledVector(r, -sp);
-    } else this.controls.update();
+    } else if (this.controls.update()) this.active = now;
     // idle: redraw about once a second only, which catches any change made without input
     const busy = !!f || (this.walk.on && this.walk.keys.size > 0) || now - this.active < 1500;
     // rendered modes: plain frames while moving, then one finished frame (ambient occlusion, smooth edges) once at rest
