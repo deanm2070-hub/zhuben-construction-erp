@@ -65,7 +65,9 @@ export function App() {
     return () => data.subscription.unsubscribe();
   }, []);
   useEffect(() => {
-    const on = () => setRoute(readRoute());
+    // the e-mail's 登入築本算圖 link opened in a window already showing the site only changes the hash, so the page
+    // does not load again: load it now so the sign-in link is read (see LOGIN_LINK)
+    const on = () => { if (/^#\/login\?/.test(location.hash)) { location.reload(); return; } setRoute(readRoute()); };
     addEventListener('hashchange', on);
     return () => removeEventListener('hashchange', on);
   }, []);
