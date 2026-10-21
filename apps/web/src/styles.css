@@ -58,7 +58,9 @@ button{font-family:inherit}
 .dim.meas{background:var(--accent);color:var(--accent-fg);border-color:var(--accent)}
 
 .dock{position:absolute;top:12px;left:max(12px,env(safe-area-inset-left));background:var(--panel);backdrop-filter:blur(10px);border:1px solid var(--line);border-radius:18px;padding:8px;box-shadow:var(--shadow);display:flex;flex-direction:column;gap:8px;z-index:4;max-height:calc(100% - 24px);overflow-y:auto;scrollbar-width:none}
-.dock h6{margin:0;text-align:center;font:700 10px var(--mono);letter-spacing:.2em;color:var(--muted)}
+.dockToggle{margin:0;border:0;background:none;cursor:pointer;text-align:center;font:700 10px var(--mono);letter-spacing:.2em;color:var(--muted);padding:2px 0}
+.dockToggle:hover{color:var(--accent)}
+.dock.folded{gap:4px}
 .dgrid{display:grid;grid-template-columns:repeat(2,52px);gap:6px}
 .dgrid+.dgrid{border-top:1px solid var(--line);padding-top:8px}
 .tool{width:52px;height:50px;border-radius:12px;border:1px solid var(--line);background:var(--panel-solid);color:var(--fg);display:flex;flex-direction:column;align-items:center;justify-content:center;gap:2px;cursor:pointer;font:700 11px var(--font);padding:0}

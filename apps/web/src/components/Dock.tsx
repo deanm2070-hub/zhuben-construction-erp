@@ -1,3 +1,4 @@
+import { useState } from 'react';
 import type { Tool } from '../engine/Viewer';
 
 const I: Record<string, JSX.Element> = {
@@ -24,17 +25,26 @@ const GROUPS: [string, string, string, string][][] = [
 ];
 
 export function Dock({ tool, section, onTool, onUndo, onSection, onHome }: { tool: Tool; section: boolean; onTool: (t: Tool) => void; onUndo: () => void; onSection: () => void; onHome: () => void }) {
-  const btn = (k: string, label: string, title: string, cls: string, on: boolean, click: () => void) => (
-    <button key={k} className={`tool ${cls} ${on ? 'on' : ''}`} title={title} onClick={click}><Icon k={k} />{label}</button>
+  // folded to one button showing the current tool; tapping it opens the full dock, picking a tool folds it again
+  const [open, setOpen] = useState(false);
+  const btn = (k: string, label: string, title: string, cls: string, on: boolean, click: () => void, keep = false) => (
+    <button key={k} className={`tool ${cls} ${on ? 'on' : ''}`} title={title} onClick={() => { click(); if (!keep) setOpen(false); }}><Icon k={k} />{label}</button>
+  );
+  const cur = [...GROUPS.flat(), ['walk', '漫遊', '', '']].find(([k]) => k === tool) || GROUPS[0][0];
+  if (!open) return (
+    <nav className="dock folded" aria-label="工具">
+      <button className="tool on" title="展開工具" aria-expanded="false" onClick={() => setOpen(true)}><Icon k={cur[0]} />{cur[1]}</button>
+      <button className="dockToggle" onClick={() => setOpen(true)}>DOCK ▸</button>
+    </nav>
   );
   return (
     <nav className="dock" aria-label="工具">
-      <h6>DOCK</h6>
+      <button className="dockToggle" aria-expanded="true" title="收合工具" onClick={() => setOpen(false)}>DOCK ◂</button>
       {GROUPS.map((g, i) => (
         <div className="dgrid" key={i}>{g.map(([k, label, title, cls]) => btn(k, label, title, cls, tool === k, () => onTool(tool === k && k !== 'orbit' ? 'orbit' : k as Tool)))}</div>
       ))}
       <div className="dgrid">
-        {btn('undo', '復原', '復原 (Ctrl+Z)', '', false, onUndo)}
+        {btn('undo', '復原', '復原 (Ctrl+Z)', '', false, onUndo, true)}
         {btn('walk', '漫遊', '第一人稱漫遊', '', tool === 'walk', () => onTool(tool === 'walk' ? 'orbit' : 'walk'))}
         {btn('section', '剖面', '水平剖面', '', section, onSection)}
         {btn('home', '歸位', '回到預設視角', '', false, onHome)}
