@@ -218,7 +218,7 @@ export function computeTakeoff(inp: TakeoffInput): Takeoff {
     const where = `RC牆 厚${Math.round(t)} 高${Math.round(h)}${/窗台|窗楣|門楣/.test(list[0].name) ? '（窗台/窗楣）' : ''}`;
     const less = cut > 0 ? ` − 梁、板重疊 ${r2(cut / 1e4)} ㎡` : '';
     row(SEC.rc, CONCRETE, 'M3', where, `(長 ${m(L)} m × 高 ${m(h)} m${less}) × 厚 ${m(t)} m（${list.length} 段，柱內已扣）`, A * t / 1e6);
-    row(SEC.rc, FORMWORK, '㎡', where, `(長 ${m(L)} m × 高 ${m(h)} m${less}) × 2 面（柱內已扣）`, A * 2 / 1e4);
+    row(SEC.rc, FORMWORK, '㎡', where, `(長 ${m(L)} m × 高 ${m(h)} m${less}) × 2 面（門窗開口兩面已扣、柱內已扣）`, A * 2 / 1e4);
   }
   const ground = /^1F$|^B/.test(fl) || slabs.some(o => /地坪/.test(o.name));
   const slabA = sum(slabs, o => o.w * o.d / 1e4);
