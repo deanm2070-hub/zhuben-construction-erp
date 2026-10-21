@@ -81,6 +81,10 @@ export class Viewer {
   showLabels = true;
   sectionOn = false;
   sectionH = 140;
+  /** h: horizontal cut at a height; x / z: vertical cut at a plan position; flip keeps the other side */
+  sectionKind: 'h' | 'x' | 'z' = 'h';
+  sectionFlip = false;
+  private sectionPlane: THREE.Plane | null = null;
   drawKind: DrawKind = 'wall';
   /** thickness and height typed in the toolbar, cm (0: the tool's own) */
   drawThick = 0;
@@ -139,6 +143,7 @@ export class Viewer {
     this.renderer = new THREE.WebGLRenderer({ antialias: !phone, preserveDrawingBuffer: true, powerPreference: phone ? 'low-power' : 'default' });
     this.renderer.setPixelRatio(Math.min(devicePixelRatio, phone ? 1.5 : 2));
     this.renderer.shadowMap.enabled = true;
+    this.renderer.localClippingEnabled = true;
     this.renderer.shadowMap.type = phone ? THREE.PCFShadowMap : THREE.PCFSoftShadowMap;
     view.prepend(this.renderer.domElement);
     this.controls = new OrbitControls(this.camera, this.renderer.domElement);
@@ -218,7 +223,6 @@ export class Viewer {
     this.selectedId = null;
     this.applyCadView();
     this.rebuild();
-    if (this.sectionOn) this.setSection(true, this.sectionH);
   }
   private get floorBase() { return this.floors.find(f => f.key === this.floor)?.y || 0; }
   private shown(o: ModelObject) { return (!this.floor || !o.floor || o.floor === this.floor) && (!this.hidden.size || !this.hidden.has(memberOf(o))); }
@@ -330,10 +334,33 @@ export class Viewer {
   }
   setMagnet(on: boolean) { this.magnet = on; }
   setShowLabels(on: boolean) { this.showLabels = on; }
-  setSection(on: boolean, h = this.sectionH) {
+  /** Section cut. Horizontal: v is the height above ground (0 … top of the building); vertical: v is the plan position. */
+  setSection(on: boolean, v = this.sectionH, kind = this.sectionKind, flip = this.sectionFlip) {
     this.sectionOn = on;
-    this.sectionH = h;
-    this.renderer.clippingPlanes = on ? [new THREE.Plane(new THREE.Vector3(0, -1, 0), h + this.floorBase)] : [];
+    this.sectionH = v;
+    this.sectionKind = kind;
+    this.sectionFlip = flip;
+    const s = kind !== 'h' && flip ? -1 : 1;
+    const n = kind === 'h' ? new THREE.Vector3(0, -1, 0) : kind === 'x' ? new THREE.Vector3(-s, 0, 0) : new THREE.Vector3(0, 0, -s);
+    this.sectionPlane = on ? new THREE.Plane(n, v * s) : null;
+    this.applyClip();
+    this.invalidate();
+  }
+  /** the cut applies to the building only: ground, grid and measurements stay whole */
+  private applyClip() {
+    const planes = this.sectionPlane ? [this.sectionPlane] : null;
+    for (const g of [this.floorGroup, this.objGroup, this.cadGroup, this.meshGroup]) g.traverse(n => {
+      const m = (n as THREE.Mesh).material as THREE.Material | THREE.Material[] | undefined;
+      for (const x of m ? (Array.isArray(m) ? m : [m]) : []) if (x.clippingPlanes !== planes) { x.clippingPlanes = planes; x.clipShadows = true; x.needsUpdate = true; }
+    });
+  }
+  /** How far a section can go: plan size and the highest point of the whole building, cm. */
+  sectionExtent() {
+    let top = Math.max(0, ...this.floors.map(f => f.y + f.h));
+    for (const o of this.objects) top = Math.max(top, ((o as { y?: number }).y || 0) + ((o as { h?: number }).h || 0));
+    const box = new THREE.Box3().setFromObject(this.objGroup);
+    if (!box.isEmpty()) top = Math.max(top, box.max.y);
+    return { W: this.bounds.W, D: this.bounds.D, top: Math.ceil(top || WALL_H) };
   }
   setTool(t: Tool) {
     if (this.tool === 'walk' && t !== 'walk') this.exitWalk();
@@ -517,6 +544,7 @@ export class Viewer {
     }
     for (const o of this.objects) if (this.shown(o)) this.objGroup.add(this.buildObj(o));
     this.buildMeshes();
+    this.applyClip();
     const floorTint = (f: THREE.Mesh, base: number) => {
       const mat = f.material as THREE.MeshStandardMaterial;
       mat.color.setHex(this.mode === 'white' ? 0xf4f4f2 : this.mode === 'layer' ? 0xe9ecf0 : base);
@@ -668,6 +696,8 @@ export class Viewer {
     const rw = this.view.clientWidth, rh = this.view.clientHeight, v = new THREE.Vector3();
     for (const it of this.labels) {
       if ((it.room && this.cad) || (!this.showLabels && !it.meas)) { it.el.hidden = true; continue; }
+      // a vertical section also takes away the names of what is cut off
+      if (!it.meas && this.sectionPlane && this.sectionKind !== 'h' && this.sectionPlane.distanceToPoint(it.pos) < 0) { it.el.hidden = true; continue; }
       v.copy(it.pos).project(this.camera);
       const off = v.z > 1 || Math.abs(v.x) > 1.2 || Math.abs(v.y) > 1.2;
       it.el.hidden = off;
@@ -744,7 +774,7 @@ export class Viewer {
     this.setRay(e);
     for (const h of this.ray.intersectObjects(this.objGroup.children, true)) {
       if (!(h.object as THREE.Mesh).isMesh || !h.object.userData.id) continue;
-      if (this.sectionOn && h.point.y > this.sectionH) continue;
+      if (this.sectionPlane && this.sectionPlane.distanceToPoint(h.point) < 0) continue;
       const o = this.byId(h.object.userData.id);
       if (o) return { o, point: h.point };
     }

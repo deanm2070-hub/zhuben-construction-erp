@@ -46,7 +46,7 @@ export function Dock({ tool, section, onTool, onUndo, onSection, onHome }: { too
       <div className="dgrid">
         {btn('undo', '復原', '復原 (Ctrl+Z)', '', false, onUndo, true)}
         {btn('walk', '漫遊', '第一人稱漫遊', '', tool === 'walk', () => onTool(tool === 'walk' ? 'orbit' : 'walk'))}
-        {btn('section', '剖面', '水平剖面', '', section, onSection)}
+        {btn('section', '剖面', '水平／垂直剖面', '', section, onSection)}
         {btn('home', '歸位', '回到預設視角', '', false, onHome)}
       </div>
     </nav>

@@ -41,7 +41,14 @@ export function Editor({ projectId, importNow, trial = false, onExit }: { projec
   const [tool, setTool] = useState<Tool>('orbit');
   const [scene, setScene] = useState<SceneKey>('sw');
   const [labels, setLabels] = useState(true);
-  const [section, setSection] = useState({ on: false, h: 140 });
+  // section cut: horizontal at a height (0 … top of the building) or vertical at a plan X / Y position, cm
+  const [section, setSection] = useState({ on: false, kind: 'h' as 'h' | 'x' | 'z', v: { h: 140, x: 0, z: 0 }, flip: false, ext: { W: 1000, D: 800, top: 300 } });
+  const cutSection = (next: Partial<typeof section>) => {
+    const s = { ...section, ...next, v: { ...section.v, ...next.v } };
+    if (s.on && !next.ext) s.ext = v().sectionExtent();
+    v().setSection(s.on, s.v[s.kind], s.kind, s.flip);
+    setSection(s);
+  };
   const [drawKind, setDrawKind] = useState<DrawKind>('wall');
   const [drawThick, setDrawThick] = useState(''), [drawH, setDrawH] = useState('');
   const [paint, setPaint] = useState(0x2f6fd6);
@@ -233,7 +240,13 @@ export function Editor({ projectId, importNow, trial = false, onExit }: { projec
         {module === '3d' && !readOnly && <Dock tool={tool} section={section.on}
           onTool={chooseTool}
           onUndo={() => v().undo()}
-          onSection={() => { const on = !section.on; v().setSection(on, section.h); setSection({ ...section, on }); showToast(on ? `剖面開啟：切在 ${section.h} cm` : '剖面關閉'); }}
+          onSection={() => {
+            const on = !section.on, ext = v().sectionExtent();
+            // a fresh cut: 1.4 m above the storey shown, through the middle of the plan
+            const fresh = { h: Math.min(ext.top, (v().floors.find(f => f.key === floor)?.y || 0) + 140), x: Math.round(ext.W / 2), z: Math.round(ext.D / 2) };
+            cutSection({ on, ext, v: on ? fresh : section.v });
+            showToast(on ? '剖面開啟：可選水平或垂直剖面，拖曳滑桿移動切面' : '剖面關閉');
+          }}
           onHome={() => { chooseTool('orbit'); v().goScene('sw'); setScene('sw'); }} />}
         {module === '3d' && (tool === 'draw' || tool === 'paint' || tool === 'measure' || section.on) && (
           <div className="sub"><div className="subInner">
@@ -246,9 +259,16 @@ export function Editor({ projectId, importNow, trial = false, onExit }: { projec
             {tool === 'paint' && <><span className="t">顏色</span>{PALETTE.map(c =>
               <button key={c} className={`sw ${paint === c ? 'on' : ''}`} style={{ background: hex(c) }} aria-label={`顏色 ${hex(c)}`} onClick={() => { v().paintColor = c; setPaint(c); }} />)}</>}
             {tool === 'measure' && <><span className="t">捲尺</span><button className="chip" onClick={() => { v().clearMeasure(); setInfo('量測已清除'); }}>清除量測</button></>}
-            {section.on && <><span className="t">剖面高度</span>
-              <input id="section-h" type="range" min={20} max={280} step={5} value={section.h} onChange={e => { const h = +e.target.value; v().setSection(true, h); setSection({ on: true, h }); }} />
-              <b style={{ fontFamily: 'var(--mono)', fontSize: 12 }}>{section.h} cm</b></>}
+            {section.on && <><span className="t">剖面</span>
+              {([['h', '水平'], ['x', '垂直 X'], ['z', '垂直 Y']] as const).map(([k, l]) =>
+                <button key={k} className={`chip ${section.kind === k ? 'on' : ''}`} onClick={() => cutSection({ kind: k })}>{l}</button>)}
+              {(() => {
+                const max = section.kind === 'h' ? section.ext.top : section.kind === 'x' ? section.ext.W : section.ext.D, val = section.v[section.kind];
+                return <><input id="section-v" type="range" min={0} max={Math.max(1, Math.round(max))} step={5} value={Math.min(val, max)} aria-label={section.kind === 'h' ? '剖面高度' : '剖面位置'}
+                    onChange={e => cutSection({ v: { [section.kind]: +e.target.value } as typeof section.v })} />
+                  <b style={{ fontFamily: 'var(--mono)', fontSize: 12 }}>{section.kind === 'h' ? '高' : section.kind === 'x' ? 'X' : 'Y'} {(val / 100).toFixed(2)} / {(max / 100).toFixed(2)} m</b>
+                  {section.kind !== 'h' && <button className={`chip ${section.flip ? 'on' : ''}`} onClick={() => cutSection({ flip: !section.flip })}>看另一側</button>}</>;
+              })()}</>}
           </div></div>
         )}
         {module === '3d' && tool === 'walk' && (
