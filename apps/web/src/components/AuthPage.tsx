@@ -62,9 +62,7 @@ export function AuthPage() {
   const [msg, setMsg] = useState<{ err?: string; ok?: string }>({});
   const [busy, setBusy] = useState(false);
 
-  const submit = async (e: React.FormEvent) => {
-    e.preventDefault();
-    if (mode !== 'in') return;
+  const signIn = async (email: string, password: string) => {
     setBusy(true); setMsg({});
     const auth = supabase!.auth;
     // one device per account: the device signing in now takes over; the app claims it before loading the account
@@ -74,6 +72,14 @@ export function AuthPage() {
     if (error) try { sessionStorage.removeItem(CLAIM_FLAG); } catch { /* private mode */ }
     if (error) setMsg({ err: error.message === 'Invalid login credentials' ? '電子郵件或密碼不正確' : error.message });
   };
+  const submit = (e: React.FormEvent) => {
+    e.preventDefault();
+    if (mode === 'in') signIn(email, password);
+  };
+  // the 登入築本算圖 button in the account e-mail: sign straight in with the address and password it carries
+  useEffect(() => {
+    if (LOGIN_LINK?.email && LOGIN_LINK.password && supabase) signIn(LOGIN_LINK.email, LOGIN_LINK.password);
+  }, []); // eslint-disable-line react-hooks/exhaustive-deps
 
   return (
     <div className="page">
@@ -81,7 +87,7 @@ export function AuthPage() {
         <img src="/logo.png" alt="築本算圖" width={96} height={96} style={{ display: 'block', margin: '0 auto 8px' }} />
         <h1>築本算圖</h1>
         <p className="note">登入後，專案會存在雲端，換電腦也能繼續編輯。</p>
-        {LOGIN_LINK?.email && mode === 'in' && <p className="note" style={{ color: 'var(--accent)' }}>已帶入信裡的帳號和密碼，按「登入」即可。</p>}
+        {LOGIN_LINK?.email && mode === 'in' && <p className="note" style={{ color: 'var(--accent)' }}>{busy ? '正在用信裡的帳號密碼登入…' : msg.err ? '信裡的帳號密碼登入失敗，請確認後按「登入」。' : '已帶入信裡的帳號和密碼。'}</p>}
         {verified && <p className="note" style={{ color: 'var(--accent)' }}>✓ 已確認 {verified}，試用申請已送到管理員。開通後帳號和密碼會寄到這個信箱。</p>}
         {mode === 'in' ? <>
           <input id="email" type="email" autoComplete="email" placeholder="電子郵件" value={email} onChange={e => setEmail(e.target.value)} required />
