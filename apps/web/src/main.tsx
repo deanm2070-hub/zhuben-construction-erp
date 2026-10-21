@@ -3,6 +3,13 @@ import { createRoot } from 'react-dom/client';
 import { App } from './App';
 import './styles.css';
 
+// phone: the page never zooms (iPhone Safari ignores user-scalable=no). Pinches on the 3D view still reach it,
+// because it reads pointer events, which these do not block.
+const noZoom = (e: Event) => e.preventDefault();
+document.addEventListener('gesturestart', noZoom, { passive: false });
+document.addEventListener('gesturechange', noZoom, { passive: false });
+document.addEventListener('touchmove', e => { if (e.touches.length > 1 && !(e.target as Element)?.closest?.('canvas')) e.preventDefault(); }, { passive: false });
+
 /** Shows the error text instead of an empty page if anything throws while rendering. */
 class ErrorBoundary extends Component<{ children: ReactNode }, { error: Error | null }> {
   state = { error: null as Error | null };
