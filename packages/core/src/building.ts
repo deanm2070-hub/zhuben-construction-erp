@@ -23,6 +23,9 @@ export interface SheetView {
   box: [number, number, number, number];
   /** storey keys a plan stands for, e.g. ['3F', '4F'] */
   floors: string[];
+  /** title letter height; set when the region is the sheet frame around the title (then it is not grown) */
+  th?: number;
+  framed?: boolean;
 }
 export interface ScheduleItem { code: string; w: number; h: number; name: string; sill: number; kind: 'door' | 'window'; type: OpeningType; /** a corner window: the width of each leg */ legs?: number[]; /** 數量 column of the schedule */ qty?: number; /** storey named in the 位置 row (一樓廁所 → 1F) */ where?: string; /** openings given this code by width, not by a tag on the plan */ guessed?: number }
 export interface Storey { key: string; title: string; base: number; h: number }
@@ -60,6 +63,11 @@ function cnNum(s: string): number {
 export function parseFloors(title: string): string[] {
   const t = title.replace(/\s/g, '').replace(/平面圖$/, '');
   if (/屋頂/.test(t) && !/屋突/.test(t)) return ['RF'];
+  // 夾層 (mezzanine): above the storey it names, the ground floor when it names none (一層夾層 / 夾層 → 1MF)
+  if (/夾層/.test(t)) {
+    const m = /([一二三四五六七八九十]+|\d+)(?:層|樓|F)?夾層/.exec(t);
+    return [`${m ? cnNum(m[1]) || 1 : 1}MF`];
+  }
   const out: string[] = [];
   const re = /(地下|屋突|B|R)?([一二三四五六七八九十]+|\d+)(?:層|樓|F|f)?(?:\s*([至~～到\-])\s*(地下|屋突|B|R)?([一二三四五六七八九十]+|\d+)(?:層|樓|F|f)?)?/g;
   for (const m of t.matchAll(re)) {
@@ -73,15 +81,16 @@ export function parseFloors(title: string): string[] {
 }
 
 const levelOrder = (k: string) => {
-  const m = /^(B|R)?(\d+)F$/.exec(k);
+  const m = /^(B|R)?(\d+)F$/.exec(k), mz = /^(\d+)MF$/.exec(k);
   if (k === 'RF') return 2000;
+  if (mz) return +mz[1] + 0.5;
   if (!m) return 5000;
   return m[1] === 'B' ? -+m[2] : m[1] === 'R' ? 1000 + +m[2] : +m[2];
 };
 const normLevel = (s: string) => {
   const t = s.replace(/\s/g, '').toUpperCase();
-  if (/^(B\d+F|\d+F|R\d+F|RF|PRF)$/.test(t)) return t === 'PRF' ? 'RF' : t;
-  if (/^(B\d+|\d+)FL$/.test(t)) return t.slice(0, -1);
+  if (/^(B\d+F|\d+M?F|R\d+F|RF|PRF)$/.test(t)) return t === 'PRF' ? 'RF' : t;
+  if (/^(B\d+|\d+M?|R\d*)FL$/.test(t)) return t.slice(0, -1);
   return null;
 };
 
@@ -94,7 +103,11 @@ export function findViews(d: DxfDrawing): SheetView[] {
   if (d.parts && d.parts.length > 1) return d.parts.flatMap(p => findViews({ ...d, parts: undefined, texts: d.texts.filter(t => t.x >= p.x0 - 1 && t.x <= p.x1 + 1) }));
   const bare = (x: string) => x.replace(/\s/g, '').replace(/[(（][^)）]*[)）]$/, '');
   // notes that end in 平面圖 (「開啟方向依平面圖」「*相關檢討同二層平面圖」) and lists naming several views are not titles
-  const all = d.texts.filter(t => TITLE_RE.test(bare(t.s)) && t.s.length <= 24 && !/[、，,。；;：:*＊]|依|詳|見|參|同/.test(t.s));
+  const all0 = d.texts.filter(t => TITLE_RE.test(bare(t.s)) && t.s.length <= 24 && !/[、，,。；;：:*＊]|依|詳|見|參|同/.test(t.s));
+  // the sheet name in the title block repeats an elevation's or section's title: the label under the view on the same sheet is the one to use
+  const FRAME = /圖框|TITLE|FRAME|BORDER/i;
+  const all = all0.filter(t => !FRAME.test(t.layer) || !/[立剖]面圖$/.test(bare(t.s))
+    || !all0.some(o => !FRAME.test(o.layer) && bare(o.s) === bare(t.s) && Math.hypot(o.x - t.x, o.y - t.y) < (t.h || 1) * 150));
   const SHEET_CODE = /^[A-Z]{1,2}\d{0,2}-\d{1,3}[A-Z]?$/;
   const cand = all.filter(t => {
     const h = t.h || 0;
@@ -146,8 +159,53 @@ function viewsOf(titles0: DxfText[], hMax: number, bare: (s: string) => string):
       : [t.x - w * 0.15, t.y - w * 0.02, t.x + w * 0.85, t.y + top];
     // 基礎及一層結構平面圖 → 1F (its foundation beams sit under the ground floor)
     const floors = kind === 'plan' ? parseFloors(s) : kind === 'structure' ? parseFloors(s.replace(STRUCT, '').replace(/^基礎及?/, '')) : [];
-    return { title: s, kind, x: t.x, y: t.y, box, floors };
+    return { title: s, kind, x: t.x, y: t.y, box, floors, th: t.h };
   });
+}
+
+/**
+ * A sheet frame (a rectangle drawn round each sheet) holding a view's title is the best guess of that view's region:
+ * sets drawn as one sheet per view, stacked in a column with the title at the bottom, otherwise run into the
+ * next sheet or stop short of the drawing. The smallest frame around the title is used; a frame holding several
+ * views only trims the guessed region.
+ */
+function frameViews(d: DxfDrawing, views: SheetView[]) {
+  const rects: [number, number, number, number][] = [];
+  for (const p of d.polys) {
+    if (p.pts.length < 4 || p.pts.length > 5 || /TEXT|DIM|FURN|AREA/i.test(p.layer)) continue;
+    const xs = p.pts.map(q => q[0]), ys = p.pts.map(q => q[1]);
+    const x0 = minOf(xs), x1 = maxOf(xs), y0 = minOf(ys), y1 = maxOf(ys), tol = (x1 - x0) * 0.002;
+    // axis-aligned: every corner on the bounding box
+    if (!p.pts.every(q => (Math.abs(q[0] - x0) < tol || Math.abs(q[0] - x1) < tol) && (Math.abs(q[1] - y0) < tol || Math.abs(q[1] - y1) < tol))) continue;
+    rects.push([x0, y0, x1, y1]);
+  }
+  if (!rects.length) return;
+  const same = (a: SheetView, b: SheetView) => a.title === b.title && Math.hypot(a.x - b.x, a.y - b.y) < (a.th || 1) * 3;
+  for (const v of views) {
+    if (!v.th || v.kind === 'schedule') continue;
+    let best: typeof rects[number] | null = null, many = false;
+    for (const f of rects) {
+      const w = f[2] - f[0], h = f[3] - f[1];
+      if (w < v.th * 25 || h < v.th * 15 || w > v.th * 400 || !inBox(f, v.x, v.y)) continue;
+      if (best && w * h >= (best[2] - best[0]) * (best[3] - best[1])) continue;
+      best = f;
+      many = views.some(o => o !== v && !same(o, v) && o.kind !== 'schedule' && inBox(f, o.x, o.y));
+    }
+    if (!best) continue;
+    if (!many) { v.box = [...best]; v.framed = true; continue; }
+    // several views stacked in one frame, each titled under its drawing (e.g. 屋突二層 above 屋頂層): each one gets the band from its title up to the title above it
+    const f = best, inF = views.filter(o => o.kind !== 'schedule' && inBox(f, o.x, o.y) && !views.some(p => p !== o && same(p, o) && views.indexOf(p) < views.indexOf(o)));
+    const th = v.th, xs = inF.map(o => o.x);
+    if (inF.length > 1 && maxOf(xs) - minOf(xs) < (f[2] - f[0]) * 0.25) {
+      const ys = inF.map(o => o.y).sort((a, b) => b - a), i = ys.findIndex(y => Math.abs(y - v.y) < 1e-6);
+      if (i >= 0 && ys.every((y, k) => !k || ys[k - 1] - y > th * 10)) {
+        v.box = [f[0], i === ys.length - 1 ? f[1] : v.y - th * 2, f[2], i === 0 ? f[3] : ys[i - 1] - th * 2];
+        v.framed = true;
+        continue;
+      }
+    }
+    v.box = [Math.max(v.box[0], best[0]), Math.max(v.box[1], best[1]), Math.min(v.box[2], best[2]), Math.min(v.box[3], best[3])];
+  }
 }
 
 /** Door / window schedule: a code next to "W x H 名稱", sill read from the elevation drawn in its cell (bottom of the frame above the FL line). */
@@ -226,7 +284,9 @@ export function parseSchedule(d: DxfDrawing): ScheduleItem[] {
     const cd = c.s.trim();
     if (!CODE.test(cd) || items.some(i => i.code === cd)) continue;
     const h = c.h || 20;
-    const size = d.texts.map(t => ({ t, m: PURE.exec(t.s.trim()) })).filter(o => o.m && o.t.y < c.y && c.y - o.t.y < h * 80 && o.t.x > c.x - h * 14 && o.t.x < c.x + h * 3)
+    // a survey point label (D1 on 控制點) is not a door code; a tiny text on Defpoints (a paper size like 840x590) is not its size
+    if (/控制點|地籍|地界|測量|SURVEY/i.test(c.layer)) continue;
+    const size = d.texts.map(t => ({ t, m: PURE.exec(t.s.trim()) })).filter(o => o.m && (o.t.h || h) > h * 0.2 && !/^DEFPOINTS$/i.test(o.t.layer) && o.t.y < c.y && c.y - o.t.y < h * 80 && o.t.x > c.x - h * 14 && o.t.x < c.x + h * 3)
       .sort((a, b) => b.t.y - a.t.y)[0];
     if (!size) continue;
     const label = d.texts.filter(t => Math.abs(t.x - size.t.x) < h * 2 && t.y < size.t.y && size.t.y - t.y < h * 8 && /[門窗]/.test(t.s) && !/[:：]/.test(t.s)).sort((a, b) => b.y - a.y)[0]?.s.trim() || '';
@@ -291,11 +351,12 @@ const ROOF_UPSTAND = 30;
 
 export function analyzeBuilding(d: DxfDrawing, defaultH = WALL_H): BuildingAnalysis | null {
   const views = findViews(d);
+  frameViews(d, views);
   const planViews = views.filter(v => v.kind === 'plan' && v.floors.length);
   if (!planViews.length) return null;
   // a plan with nothing above its title would span a whole column of the sheet: no taller than its siblings
   const hs = planViews.map(v => v.box[3] - v.box[1]).sort((a, b) => a - b), med = hs[Math.floor((hs.length - 1) / 2)];
-  for (const v of planViews) if (v.box[3] - v.box[1] > med * 2.5) v.box[3] = v.box[1] + med * 1.4;
+  for (const v of planViews) if (!v.framed && v.box[3] - v.box[1] > med * 2.5) v.box[3] = v.box[1] + med * 1.4;
   growPlans(d, planViews);
   const { scale, wallLayers } = learnWalls(d, planViews);
   const colLayers = wallLayers.length ? learnColumns(d, planViews, scale) : [];
@@ -335,6 +396,7 @@ export function analyzeBuilding(d: DxfDrawing, defaultH = WALL_H): BuildingAnaly
  */
 function growPlans(d: DxfDrawing, plans: SheetView[]) {
   for (const v of plans) {
+    if (v.framed) continue;
     const [x0, y0, x1, y1] = v.box, w = x1 - x0, step = w * 0.02, max = w * 0.7;
     const busy = (a: number, b: number) => {
       let n = 0;
@@ -1791,6 +1853,16 @@ export function buildBuilding(d: DxfDrawing, a: BuildingAnalysis, name: string, 
       cutHeads++;
     }
   });
+  // the same plan referenced twice (an xref nested in itself) draws every wall twice: keep one of each identical box
+  const seenBox = new Set<string>();
+  for (let i = 0; i < objects.length; i++) {
+    const o = objects[i];
+    if (!isBox(o)) continue;
+    const r = (v: number | undefined) => Math.round((v || 0) * 2);
+    const k = [o.floor, o.layer, r(o.x), r(o.z), r(o.y), r(o.w), r(o.d), r(o.h), Math.round((o.rot || 0) * 1000)].join();
+    if (seenBox.has(k)) { objects.splice(i--, 1); if (o.layer === 'wall') nWalls--; else if (o.layer === 'glass') nWins--; }
+    else seenBox.add(k);
+  }
   const spec = readRebarSpec(d, a.storeys.map(s => s.key));
   const colourLen = new Map<number, number>();
   for (const o of wallBoxes) colourLen.set(o.wc!, (colourLen.get(o.wc!) || 0) + Math.max(o.w, o.d));

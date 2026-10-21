@@ -20,6 +20,14 @@ export function guessUnits(dxf: DxfDrawing): number {
     const hs = dxf.texts.map(t => t.h || 0).filter(h => h > 0).sort((a, b) => a - b);
     return dxf.units === 4 && hs.length >= 50 && hs[Math.floor(hs.length / 2)] < 150 ? 5 : dxf.units;
   }
+  // no header: text is drawn about 2–5 mm tall on paper, so at 1:100 – 1:200 it is 20–100 units in a centimetre drawing
+  // and 200–1000 in a millimetre one (a sheet set spread over a large area otherwise looks like millimetres by its size)
+  const hs = dxf.texts.map(t => t.h || 0).filter(h => h > 0).sort((a, b) => a - b);
+  if (hs.length >= 50) {
+    const h = hs[Math.floor(hs.length / 2)];
+    if (h >= 5 && h < 150) return 5;
+    if (h >= 150 && h < 1500) return 4;
+  }
   let minX = Infinity, minY = Infinity, maxX = -Infinity, maxY = -Infinity;
   for (const s of dxf.segs) for (const p of [s.a, s.b]) { minX = Math.min(minX, p[0]); maxX = Math.max(maxX, p[0]); minY = Math.min(minY, p[1]); maxY = Math.max(maxY, p[1]); }
   const ext = Math.max(maxX - minX, maxY - minY) || 0;
