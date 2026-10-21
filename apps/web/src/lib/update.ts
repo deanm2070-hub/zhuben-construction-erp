@@ -5,18 +5,18 @@ declare const __BUILD__: string;
  * when the page comes back into view and every few minutes. The page never reloads by itself;
  * `onNew` gets the new version name so the user can update when their work is done.
  */
-export function watchUpdates(onNew: (version: string) => void) {
+export function watchUpdates(onNew: (version: string, notes: string[]) => void) {
   if (import.meta.env.DEV) return () => {};
   let told = '';
   const check = async () => {
     try {
       const r = await fetch('/version.json', { cache: 'no-store' });
-      const { build, version } = await r.json();
+      const { build, version, notes } = await r.json();
       if (build && build !== __BUILD__ && build !== told) {
         told = build;
         // a short buzz on phones that allow it (Android); iPhone browsers ignore it
         try { navigator.vibrate?.([60, 80, 60]); } catch { /* not supported */ }
-        onNew(version || '');
+        onNew(version || '', Array.isArray(notes) ? notes : []);
       }
     } catch { /* offline: try again later */ }
   };

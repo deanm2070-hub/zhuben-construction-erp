@@ -7,6 +7,7 @@ import { ProjectsPage } from './components/ProjectsPage';
 import { CLAIM_FLAG, claimDevice, heartbeat, LINE_ADD, LINE_ID, isTrial, loadAccount, OPEN_ACCOUNT, type Account } from './lib/account';
 import { supabase, supabaseConfigError } from './lib/supabase';
 import { watchUpdates } from './lib/update';
+import { VERSION } from './lib/version';
 
 const readRoute = () => {
   if (location.hash === '#/admin') return { admin: true as const };
@@ -17,7 +18,8 @@ const readRoute = () => {
 export function App() {
   const [session, setSession] = useState<Session | null | undefined>(supabase ? undefined : null);
   const [route, setRoute] = useState(readRoute);
-  const [update, setUpdate] = useState<string | null>(null);
+  const [update, setUpdate] = useState<{ v: string; notes: string[] } | null>(null);
+  const [updateOpen, setUpdateOpen] = useState(false);
   const [account, setAccount] = useState<Account | null>(supabase ? null : OPEN_ACCOUNT);
   const uid = session?.user.id;
   const reloadAccount = async () => {
@@ -68,13 +70,18 @@ export function App() {
     return () => removeEventListener('hashchange', on);
   }, []);
 
-  useEffect(() => watchUpdates(v => setUpdate(v)), []);
+  useEffect(() => watchUpdates((v, notes) => setUpdate({ v, notes })), []);
 
   const page = view();
-  return update !== null ? <>{page}<div className="update-bar">
-    <span>有新版本{update && ` ${update}`} 可以更新</span>
-    <button className="chip on" onClick={() => location.reload()}>更新</button>
-    <button className="chip ghost" onClick={() => setUpdate(null)}>稍後</button>
+  // top centre, yellow: the new version and what changed; it only updates when tapped, so work in progress is never cut off
+  return update !== null ? <>{page}<div className="update-bar" role="status">
+    <div className="row">
+      <span>🔔 有新版本 <b>{update.v || ''}</b>（目前 {VERSION}）</span>
+      {update.notes.length > 0 && <button className="chip ghost" onClick={() => setUpdateOpen(!updateOpen)}>{updateOpen ? '收起' : '更新內容'}</button>}
+      <button className="chip on" onClick={() => location.reload()}>立即更新</button>
+      <button className="chip ghost" onClick={() => setUpdate(null)}>稍後</button>
+    </div>
+    {updateOpen && <ul>{update.notes.map(n => <li key={n}>{n}</li>)}</ul>}
   </div></> : page;
 
   function view() {

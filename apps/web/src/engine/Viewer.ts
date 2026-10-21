@@ -5,6 +5,10 @@ import {
 import * as THREE from 'three';
 import { OrbitControls } from 'three/examples/jsm/controls/OrbitControls.js';
 import { RoomEnvironment } from 'three/examples/jsm/environments/RoomEnvironment.js';
+import { EffectComposer } from 'three/examples/jsm/postprocessing/EffectComposer.js';
+import { RenderPass } from 'three/examples/jsm/postprocessing/RenderPass.js';
+import { GTAOPass } from 'three/examples/jsm/postprocessing/GTAOPass.js';
+import { OutputPass } from 'three/examples/jsm/postprocessing/OutputPass.js';
 
 /** mat: automatic rendering (lit materials, sky, soft shadows); persp: the same look from eye level */
 export type RenderMode = 'mat' | 'persp' | 'layer' | 'white' | 'wire';
@@ -103,6 +107,9 @@ export class Viewer {
   private env: THREE.Texture | null = null;
   private sky: THREE.Texture | null = null;
   private groundMesh: THREE.Mesh | null = null;
+  /** rendered modes: ambient occlusion and anti-aliasing, drawn whenever the view comes to rest */
+  private composer: EffectComposer | null = null;
+  private ao: GTAOPass | null = null;
   private grid: THREE.GridHelper | null = null;
   private floorGroup = new THREE.Group();
   private objGroup = new THREE.Group();
@@ -153,8 +160,9 @@ export class Viewer {
     this.scene.add(this.hemi);
     this.sun.intensity = 2.2;
     this.sun.castShadow = true;
-    this.sun.shadow.mapSize.set(phone ? 1024 : 2048, phone ? 1024 : 2048);
-    this.sun.shadow.bias = -0.0008;
+    this.sun.shadow.mapSize.set(phone ? 2048 : 4096, phone ? 2048 : 4096);
+    this.sun.shadow.bias = -0.0004;
+    this.sun.shadow.normalBias = 1.5;
     this.scene.add(this.sun, this.sun.target, this.floorGroup, this.objGroup, this.measGroup, this.helperGroup, this.cadGroup, this.meshGroup);
     this.buildSampleFloors(SAMPLE_ROOMS);
     this.bindEvents();
@@ -182,6 +190,8 @@ export class Viewer {
     cancelAnimationFrame(this.raf);
     this.disposers.forEach(d => d());
     this.controls.dispose();
+    this.composer?.dispose();
+    this.ao?.dispose();
     this.renderer.dispose();
     this.renderer.domElement.remove();
     this.labels.forEach(l => l.el.remove());
@@ -301,13 +311,19 @@ export class Viewer {
       this.sky.colorSpace = THREE.SRGBColorSpace;
     }
     this.scene.environment = r ? this.env : null;
-    this.scene.environmentIntensity = 0.35;
+    this.scene.environmentIntensity = 0.4;
     this.scene.background = r ? this.sky : cssColor('--canvas');
-    this.hemi.intensity = r ? 0.45 : 2.2;
-    this.sun.intensity = r ? 2.4 : 2.2;
+    this.hemi.intensity = r ? 0.55 : 2.2;
+    this.hemi.color.setHex(r ? 0xdcebff : 0xffffff);
+    this.hemi.groundColor.setHex(r ? 0x8c8270 : 0x9aa6b8);
+    this.sun.intensity = r ? 2.6 : 2.2;
+    this.sun.color.setHex(r ? 0xfff0d8 : 0xfff4e0);
+    // the ground fades into the sky at the horizon, like an architectural rendering
+    const size = Math.max(this.bounds.W, this.bounds.D, this.height * 1.4);
+    this.scene.fog = r ? new THREE.Fog(0xe4ecf1, size * 4, size * 14) : null;
     if (this.grid) this.grid.visible = !r;
     if (r && !this.groundMesh) {
-      this.groundMesh = new THREE.Mesh(new THREE.PlaneGeometry(1, 1), new THREE.MeshStandardMaterial({ color: 0xaeb5a2, roughness: 1 }));
+      this.groundMesh = new THREE.Mesh(new THREE.PlaneGeometry(1, 1), new THREE.MeshStandardMaterial({ color: 0xffffff, map: grassTexture(), roughness: 1 }));
       this.groundMesh.rotation.x = -Math.PI / 2;
       this.groundMesh.receiveShadow = true;
       this.groundMesh.raycast = () => {};
@@ -316,6 +332,7 @@ export class Viewer {
     if (this.groundMesh) {
       const gs = Math.max(6000, Math.max(this.bounds.W, this.bounds.D) * 6);
       this.groundMesh.scale.set(gs, gs, 1);
+      (this.groundMesh.material as THREE.MeshStandardMaterial).map!.repeat.set(gs / 500, gs / 500);
       this.groundMesh.position.set(this.center.x, -2, this.center.z);
       this.groundMesh.visible = r;
     }
@@ -658,7 +675,8 @@ export class Viewer {
   }
   private fitSun() {
     const s = Math.max(this.bounds.W, this.bounds.D, this.height * 1.4) / 1180, c = this.center;
-    this.sun.position.set(c.x - 900 * s, 1600 * s, c.z + 700 * s);
+    // late-morning sun from the south-east: the south faces lit, the west faces in soft shade, shadows falling back-left in the default view
+    this.sun.position.set(c.x + 1100 * s, 1250 * s, c.z + 900 * s);
     this.sun.target.position.copy(c);
     Object.assign(this.sun.shadow.camera, { left: -1000 * s, right: 1000 * s, top: 1000 * s, bottom: -1000 * s, near: 100, far: 4000 * s });
     this.sun.shadow.camera.updateProjectionMatrix();
@@ -739,6 +757,7 @@ export class Viewer {
     this.active = performance.now();
     const w = this.view.clientWidth, h = this.view.clientHeight;
     this.renderer.setSize(w, h);
+    this.composer?.setSize(w, h);
     this.camera.aspect = w / Math.max(1, h);
     this.camera.updateProjectionMatrix();
   }
@@ -1102,6 +1121,34 @@ export class Viewer {
     if (prev) { this.floor = prev; this.rebuild(); }
     return parts;
   }
+  private finished = false;
+  /** the finished frame of the rendered modes; false when the graphics card cannot do it */
+  private finish() {
+    try {
+      if (!this.composer) {
+        const w = this.view.clientWidth, h = this.view.clientHeight, pr = this.renderer.getPixelRatio();
+        const rt = new THREE.WebGLRenderTarget(w * pr, h * pr, { type: THREE.HalfFloatType, samples: 4 });
+        this.composer = new EffectComposer(this.renderer, rt);
+        this.composer.addPass(new RenderPass(this.scene, this.camera));
+        this.ao = new GTAOPass(this.scene, this.camera, w, h);
+        // the model is in centimetres: shade corners, wall bases and the ground around the building over about half a metre
+        this.ao.updateGtaoMaterial({ radius: 60, distanceExponent: 1.2, thickness: 20, scale: 1, samples: 16, distanceFallOff: 1, screenSpaceRadius: false });
+        this.ao.updatePdMaterial({ lumaPhi: 10, depthPhi: 2, normalPhi: 3, radius: 6, rings: 2, samples: 16 });
+        this.ao.blendIntensity = 0.85;
+        this.composer.addPass(this.ao);
+        this.composer.addPass(new OutputPass());
+        this.composer.setSize(w, h);
+      }
+      // a section cut is not seen by the occlusion pass: leave it out rather than shade what was cut away
+      this.ao!.enabled = !this.sectionPlane;
+      this.composer.render();
+      return true;
+    } catch (e) {
+      console.warn('finished frame unavailable', e);
+      this.composer = null;
+      return false;
+    }
+  }
   /** Small JPEG of the current view for the project list. */
   thumbnail() {
     this.renderer.render(this.scene, this.camera);
@@ -1141,9 +1188,12 @@ export class Viewer {
     } else if (this.controls.update()) this.active = now;
     // idle: redraw about once a second only, which catches any change made without input
     const busy = !!f || (this.walk.on && this.walk.keys.size > 0) || now - this.active < 1500;
-    if (busy || now - this.drawn > 1000) {
+    // rendered modes: plain frames while moving, then one finished frame (ambient occlusion, smooth edges) once at rest
+    const rest = this.real && !this.walk.on && !busy;
+    if (busy || now - this.drawn > 1000 || (rest && !this.finished)) {
       this.selBox?.update();
-      this.renderer.render(this.scene, this.camera);
+      if (rest && this.finish()) this.finished = true;
+      else { this.renderer.render(this.scene, this.camera); this.finished = false; }
       this.placeLabels();
       this.drawn = now;
     }
@@ -1155,3 +1205,23 @@ export function describe(o: ModelObject) {
   return `${o.name}｜${LAYER_COLORS[o.layer].name}｜${Math.round(o.w)} × ${Math.round(o.d)} × ${Math.round(o.h)} cm` + (o.y ? `｜離地 ${o.y} cm` : '');
 }
 export const esc = (s: string) => String(s).replace(/[&<>"]/g, c => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;' }[c]!));
+
+/** a soft lawn for the ground of the rendered modes: tufts of a few greens, tiled every 5 m */
+function grassTexture() {
+  const c = document.createElement('canvas');
+  c.width = c.height = 256;
+  const g = c.getContext('2d')!;
+  g.fillStyle = '#9fae86';
+  g.fillRect(0, 0, 256, 256);
+  const tones = ['#93a37a', '#a9b78f', '#8c9c73', '#b2bf98', '#9aab80'];
+  for (let i = 0; i < 2600; i++) {
+    g.fillStyle = tones[i % tones.length];
+    g.globalAlpha = 0.35 + Math.random() * 0.4;
+    g.fillRect(Math.random() * 256, Math.random() * 256, 1 + Math.random() * 3, 1 + Math.random() * 3);
+  }
+  const t = new THREE.CanvasTexture(c);
+  t.wrapS = t.wrapT = THREE.RepeatWrapping;
+  t.colorSpace = THREE.SRGBColorSpace;
+  t.anisotropy = 4;
+  return t;
+}
