@@ -207,32 +207,44 @@ export function Editor({ projectId, importNow, trial = false, onExit }: { projec
             </button>
           ))}
         </nav>
-        {module === '3d' && <>
-          <div className="row wrap">
-            {MODES.map(([k, l]) => <button key={k} className={`chip ${mode === k ? 'on' : ''}`} onClick={() => { v().setMode(k); setMode(k); if (k === 'persp') { v().goScene('eye'); setScene('eye'); if (tool === 'walk') setTool('orbit'); v().setShowLabels(false); setLabels(false); } }}>{l}</button>)}
-            <span className="sep" />
-            <button className="chip" onClick={() => { v().setShowLabels(!labels); setLabels(!labels); }}>{labels ? '隱藏標籤' : '顯示標籤'}</button>
-            <span className="sep" />
-            <button className="chip" onClick={exportSkp}>匯出 .SKP</button>
-            <button className="chip" onClick={() => download(`${name || 'model'}.obj`, v().exportOBJ(name), 'text/plain')}>匯出 .OBJ</button>
+        {module === '3d' && <div className="ctl">
+          <div className="ctlRow">
+            <span className="lbl">顯示</span>
+            <div className="seg" role="group" aria-label="顯示方式">
+              {MODES.map(([k, l]) => <button key={k} className={mode === k ? 'on' : ''} aria-pressed={mode === k} onClick={() => { v().setMode(k); setMode(k); if (k === 'persp') { v().goScene('eye'); setScene('eye'); if (tool === 'walk') setTool('orbit'); v().setShowLabels(false); setLabels(false); } }}>{l}</button>)}
+            </div>
           </div>
-          <div className="row wrap">
+          <div className="ctlRow">
             <span className="lbl">視角</span>
-            {SCENES.map(([k, l]) => <button key={k} className={`chip ${scene === k ? 'on' : ''}`} onClick={() => { v().goScene(k); setScene(k); if (tool === 'walk') setTool('orbit'); }}>{l}</button>)}
-            {viewer.current && viewer.current.floors.length > 0 && <>
-              <span className="sep" />
-              <span className="lbl">樓層</span>
-              {[null, ...viewer.current.floors.map(f => f.key)].map(k => (
-                <button key={k || 'all'} className={`chip ${floor === k ? 'on' : ''}`} onClick={() => { v().setFloor(k); setFloor(k); v().goScene(scene); }}>{k || '整棟'}</button>
-              ))}
-            </>}
+            <div className="seg" role="group" aria-label="視角">
+              {SCENES.map(([k, l]) => <button key={k} className={scene === k ? 'on' : ''} aria-pressed={scene === k} onClick={() => { v().goScene(k); setScene(k); if (tool === 'walk') setTool('orbit'); }}>{l}</button>)}
+            </div>
           </div>
-          {present.size > 1 && <div className="row wrap">
-            <span className="lbl">構件</span>
-            {MEMBERS.filter(k => present.has(k)).map(k => <button key={k} className={`chip ${hidden.has(k) ? 'off' : 'on'}`} aria-pressed={!hidden.has(k)} onClick={() => toggleKind(k)}>{k}</button>)}
-            {hidden.size > 0 && <button className="chip ghost" onClick={() => { setHidden(new Set()); v().setHidden([]); }}>全部顯示</button>}
+          {viewer.current && viewer.current.floors.length > 0 && <div className="ctlRow">
+            <span className="lbl">樓層</span>
+            <div className="seg" role="group" aria-label="樓層">
+              {[null, ...viewer.current.floors.map(f => f.key)].map(k => (
+                <button key={k || 'all'} className={floor === k ? 'on' : ''} aria-pressed={floor === k} onClick={() => { v().setFloor(k); setFloor(k); v().goScene(scene); }}>{k || '整棟'}</button>
+              ))}
+            </div>
           </div>}
-        </>}
+          <div className="ctlRow">
+            {present.size > 1 && <><span className="lbl">構件</span>
+            <div className="pills">
+              {MEMBERS.filter(k => present.has(k)).map(k => <button key={k} className={hidden.has(k) ? '' : 'on'} aria-pressed={!hidden.has(k)} onClick={() => toggleKind(k)}>{hidden.has(k) ? '' : '✓ '}{k}</button>)}
+              {hidden.size > 0 && <button className="all" onClick={() => { setHidden(new Set()); v().setHidden([]); }}>全部顯示</button>}
+            </div></>}
+            <span className="grow" />
+            <button className={`chip sm ${labels ? 'on' : ''}`} aria-pressed={labels} onClick={() => { v().setShowLabels(!labels); setLabels(!labels); }}>標籤</button>
+            <details className="menu">
+              <summary className="chip sm">匯出 ▾</summary>
+              <div className="menuPop" onClick={e => (e.currentTarget.parentElement as HTMLDetailsElement).open = false}>
+                <button onClick={exportSkp}>SketchUp 檔（.skp）</button>
+                <button onClick={() => download(`${name || 'model'}.obj`, v().exportOBJ(name), 'text/plain')}>OBJ 檔（.obj）</button>
+              </div>
+            </details>
+          </div>
+        </div>}
       </div>
 
       <div className="view" ref={viewRef}>

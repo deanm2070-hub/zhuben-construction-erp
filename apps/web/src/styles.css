@@ -298,3 +298,27 @@ textarea{font:13px var(--font);padding:6px 8px;border-radius:8px;border:1px soli
 @media (max-width:560px){.hideSm{display:none!important}}
 .cols2{display:grid;grid-template-columns:repeat(auto-fit,minmax(260px,1fr));gap:12px}
 .tag.selTag{background:#1f6feb;z-index:3}.tag.selTag b{color:#fff}
+
+/* 3D 模型 controls: one labelled line per group, segmented buttons that scroll sideways on phones instead of wrapping */
+.ctl{display:flex;flex-direction:column;gap:6px;padding:8px 10px;margin-top:2px;border:1px solid var(--line);border-radius:14px;background:var(--panel-solid,var(--panel))}
+.ctlRow{display:flex;align-items:center;gap:8px;min-width:0}
+.ctlRow>.lbl{flex:0 0 auto;width:32px;white-space:nowrap;font-size:12px;font-weight:700;color:var(--muted);letter-spacing:.05em}
+.ctlRow .grow{flex:1 1 0;min-width:0}
+.seg{display:inline-flex;gap:2px;padding:3px;border-radius:11px;background:var(--chip);overflow-x:auto;scrollbar-width:none;max-width:100%;min-width:0;flex:0 1 auto}
+.seg::-webkit-scrollbar{display:none}
+.seg button{flex:0 0 auto;border:0;background:none;color:var(--fg);font:inherit;font-size:13px;font-weight:600;padding:6px 12px;border-radius:8px;cursor:pointer;white-space:nowrap}
+.seg button.on{background:var(--accent);color:#fff;box-shadow:0 1px 3px rgba(0,0,0,.2)}
+.seg button:not(.on):hover{background:rgba(127,127,127,.14)}
+.pills{display:flex;gap:6px;overflow-x:auto;scrollbar-width:none;min-width:0}
+.pills::-webkit-scrollbar{display:none}
+.pills button{flex:0 0 auto;border:1px solid var(--line);background:none;color:var(--muted);font:inherit;font-size:12.5px;font-weight:600;padding:4px 10px;border-radius:999px;cursor:pointer;white-space:nowrap}
+.pills button.on{border-color:var(--accent);color:var(--accent);background:color-mix(in srgb,var(--accent) 12%,transparent)}
+.pills button.all{border-style:dashed}
+.chip.sm{padding:5px 10px;font-size:12.5px}
+.menu{position:relative;flex:0 0 auto}
+.menu>summary{list-style:none;cursor:pointer}
+.menu>summary::-webkit-details-marker{display:none}
+.menuPop{position:absolute;right:0;top:calc(100% + 6px);z-index:20;display:flex;flex-direction:column;min-width:180px;padding:6px;border:1px solid var(--line);border-radius:12px;background:var(--panel-solid,var(--panel));box-shadow:var(--shadow)}
+.menuPop button{border:0;background:none;color:var(--fg);font:inherit;font-size:13.5px;text-align:left;padding:9px 10px;border-radius:8px;cursor:pointer}
+.menuPop button:hover{background:var(--chip)}
+@media (max-width:560px){.ctl{padding:6px 8px;gap:5px;border-radius:12px}.ctlRow{gap:6px}.ctlRow>.lbl{width:28px;font-size:11.5px;letter-spacing:0}.seg button{padding:6px 8px;font-size:12px}.pills button{padding:4px 8px;font-size:12px}}
