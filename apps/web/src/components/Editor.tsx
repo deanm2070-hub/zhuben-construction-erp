@@ -11,6 +11,7 @@ import { ProjectPane } from './ProjectPane';
 import { PropsPanel } from './PropsPanel';
 import { ReportPane } from './ReportPane';
 import { Takeoff } from './Takeoff';
+import { TrialLock } from './TrialLock';
 
 /** The six parts of a project, in working order. */
 export const MODULES = [
@@ -30,7 +31,7 @@ const hex = (c: number) => '#' + c.toString(16).padStart(6, '0');
 
 type SaveState = 'saved' | 'dirty' | 'saving' | 'error';
 
-export function Editor({ projectId, importNow, onExit }: { projectId: string; importNow: boolean; onExit: () => void }) {
+export function Editor({ projectId, importNow, trial = false, onExit }: { projectId: string; importNow: boolean; trial?: boolean; onExit: () => void }) {
   const viewRef = useRef<HTMLDivElement>(null);
   const labelRef = useRef<HTMLDivElement>(null);
   const viewer = useRef<Viewer | null>(null);
@@ -58,6 +59,7 @@ export function Editor({ projectId, importNow, onExit }: { projectId: string; im
   const [hidden, setHidden] = useState<Set<string>>(new Set());
   const [sel, setSel] = useState<ModelObject | null>(null);
   const readOnly = role === 'viewer';
+  const [lock, setLock] = useState(false);
   // the import dialog is for a new project only: a reload (or the 更新 button) must not bring it back over the model
   useEffect(() => { if (importNow) history.replaceState(null, '', `#/p/${projectId}`); }, []);
   const [underlay, setUnderlay] = useState(false);
@@ -287,7 +289,8 @@ export function Editor({ projectId, importNow, onExit }: { projectId: string; im
         )}
         {module !== '3d' && viewer.current && <div className="paneWrap">
           {module === 'import' && <ImportPane cad={viewer.current.cad} objects={viewer.current.objects} readOnly={readOnly} underlay={underlay}
-            onImport={() => setDialog('cad')} onUnderlay={onUnderlayFile} onTo3d={() => setModule('3d')} />}
+            trial={trial} onLocked={() => setLock(true)}
+            onImport={() => trial ? setLock(true) : setDialog('cad')} onUnderlay={f => trial ? setLock(true) : onUnderlayFile(f)} onTo3d={() => setModule('3d')} />}
           {module === 'qty' && t && pb && <Takeoff takeoff={t} pb={pb} pricing={pricing} project={name || '未命名專案'} settings={settings} readOnly={readOnly}
             subtitle={subtitle}
             onSettings={setSettings}
@@ -307,7 +310,8 @@ export function Editor({ projectId, importNow, onExit }: { projectId: string; im
         <span className="delta">{delta}</span>
       </div>
 
-      {dialog === 'cad' && viewer.current && (
+      {lock && <TrialLock onClose={() => setLock(false)} />}
+      {dialog === 'cad' && !trial && viewer.current && (
         <CadImport firstId={viewer.current.nextId()} onClose={() => setDialog('none')}
           onSource={f => { store.uploadSource(projectId, f).catch(() => showToast('原始檔上傳失敗，模型仍會儲存')); }}
           onBuilt={r => {

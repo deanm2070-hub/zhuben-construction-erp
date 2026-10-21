@@ -41,6 +41,10 @@ export interface Account {
   elsewhere: boolean;
 }
 
+/** Trial accounts try the software on the sample plan only; importing drawings needs a paid plan. */
+export const isTrial = (a: Account) => !a.admin && a.profile?.plan === 'trial';
+export const TRIAL_LOCK = '正式訂閱開通功能';
+
 export const OPEN_ACCOUNT: Account = { ready: false, admin: false, adminExists: true, profile: null, active: true, elsewhere: false };
 
 export async function loadAccount(userId: string): Promise<Account> {

@@ -5,7 +5,8 @@ import { emptyModel, store, type ProjectMeta } from '../lib/store';
 import { supabase } from '../lib/supabase';
 import { readProjectFile } from '../lib/files';
 import { VERSION } from '../lib/version';
-import { claimAdmin, PLANS, type Account } from '../lib/account';
+import { claimAdmin, isTrial, PLANS, TRIAL_LOCK, type Account } from '../lib/account';
+import { TrialLock } from './TrialLock';
 import { ProfileInfo } from './ProfileInfo';
 import { CATEGORIES } from './ProjectPane';
 
@@ -27,12 +28,15 @@ export function ProjectsPage({ email, account, onAccount, onOpen }: { email: str
   const [renaming, setRenaming] = useState<{ id: string; name: string } | null>(null);
   const [info, setInfo] = useState(false);
   const [view, setView] = useState<View>('home');
+  const trial = isTrial(account);
+  const [lock, setLock] = useState(false);
   const [q, setQ] = useState(''), [cat, setCat] = useState(''), [status, setStatus] = useState('');
 
   const refresh = () => store.list().then(setList).catch(e => setErr(String(e.message || e)));
   useEffect(() => { refresh(); store.me().then(setMe); }, []);
 
   const create = async (kind: 'sample' | 'blank' | 'cad') => {
+    if (trial && kind !== 'sample') { setLock(true); return; }
     try {
       const model = emptyModel();
       if (kind === 'sample') model.objects = sampleObjects();
@@ -90,10 +94,18 @@ export function ProjectsPage({ email, account, onAccount, onOpen }: { email: str
         </nav>
         <div className="sideActs">
           <span className="lbl">新增專案</span>
+          {trial ? <>
+            <button className="chip key" onClick={() => create('sample')}>＋ 範例平面（試用）</button>
+            <button className="chip off" onClick={() => setLock(true)}>🔒 匯入圖面開始</button>
+            <button className="chip off" onClick={() => setLock(true)}>🔒 空白專案</button>
+            <button className="chip off" onClick={() => setLock(true)}>🔒 開啟專案檔</button>
+            <span className="note">{TRIAL_LOCK}</span>
+          </> : <>
           <button className="chip key" onClick={() => create('cad')}>＋ 匯入圖面開始</button>
           <button className="chip" onClick={() => create('blank')}>空白專案</button>
           <button className="chip" onClick={() => create('sample')}>範例平面</button>
           <label className="chip tap">開啟專案檔<input id="project-file" className="tap-input" type="file" accept=".json,application/json" onChange={async e => { const f = e.target.files?.[0]; e.target.value = ''; if (!f) return; try { const { name, model } = await readProjectFile(f); onOpen(await store.create(name, model)); } catch (x) { setErr(String((x as Error).message || x)); } }} /></label>
+          </>}
         </div>
         <div className="sideFoot">
           {email && <span className="note">{email}{account.ready && !account.admin && account.profile && `・${PLANS[account.profile.plan] || account.profile.plan}${account.profile.expires_at ? ` 到期 ${account.profile.expires_at.slice(0, 10)}` : ''}`}</span>}
@@ -110,6 +122,7 @@ export function ProjectsPage({ email, account, onAccount, onOpen }: { email: str
         {!store.cloud && <div className="banner">目前是本機模式：專案存在這個瀏覽器裡。設定 Supabase 後即可登入並存到雲端（見 README）。</div>}
         {err && <p className="err">{err}</p>}
 
+        {trial && <div className="banner">試用帳號可以用「範例平面」體驗 3D、算量、報價與報表；匯入自己的圖檔：<b>{TRIAL_LOCK}</b>。<button className="chip key sm" onClick={() => setLock(true)}>如何開通</button></div>}
         {view === 'home' && <>
           <h1>總覽</h1>
           <div className="stats big">
@@ -120,7 +133,7 @@ export function ProjectsPage({ email, account, onAccount, onOpen }: { email: str
           </div>
           <div className="headRow"><h2>最近的專案</h2><button className="chip ghost" onClick={() => setView('mine')}>全部專案 →</button></div>
           {list === null ? <p className="note">載入中…</p> : list.length === 0
-            ? <p className="note">還沒有專案。按左邊「＋ 匯入圖面開始」，選 DWG／DXF／SketchUp 檔，或先開「範例平面」看看。</p>
+            ? <p className="note">{trial ? '還沒有專案。按左邊「＋ 範例平面（試用）」開始體驗。' : '還沒有專案。按左邊「＋ 匯入圖面開始」，選 DWG／DXF／SketchUp 檔，或先開「範例平面」看看。'}</p>
             : <div className="grid">{list.slice(0, 6).map(card)}</div>}
           <h2>工作流程</h2>
           <div className="flow">{FEATURES.map(([t, d], i) => <div key={t}><i>{i + 1}</i><b>{t}</b><span>{d}</span></div>)}</div>
@@ -138,6 +151,7 @@ export function ProjectsPage({ email, account, onAccount, onOpen }: { email: str
             : <div className="grid">{shown.map(card)}</div>}
         </>}
       </main>
+      {lock && <TrialLock onClose={() => setLock(false)} />}
       {info && email && <ProfileInfo email={email} account={account} onClose={() => setInfo(false)} />}
     </div>
   );

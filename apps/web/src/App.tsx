@@ -4,7 +4,7 @@ import { AdminPage } from './components/AdminPage';
 import { AuthPage } from './components/AuthPage';
 import { Editor } from './components/Editor';
 import { ProjectsPage } from './components/ProjectsPage';
-import { CLAIM_FLAG, claimDevice, heartbeat, LINE_ADD, LINE_ID, loadAccount, OPEN_ACCOUNT, type Account } from './lib/account';
+import { CLAIM_FLAG, claimDevice, heartbeat, LINE_ADD, LINE_ID, isTrial, loadAccount, OPEN_ACCOUNT, type Account } from './lib/account';
 import { supabase, supabaseConfigError } from './lib/supabase';
 import { watchUpdates } from './lib/update';
 
@@ -89,7 +89,7 @@ export function App() {
     if (account.elsewhere) return <Elsewhere email={session?.user.email ?? ''} />;
     if (!account.active) return <Expired email={session?.user.email ?? ''} profile={account.profile} />;
     if (route && 'admin' in route) return account.admin ? <AdminPage selfId={uid!} onBack={() => { location.hash = ''; }} /> : <ProjectsPage email={session?.user.email ?? null} account={account} onAccount={reloadAccount} onOpen={(id, importNow) => { location.hash = `#/p/${id}${importNow ? '/import' : ''}`; }} />;
-    if (route) return <Editor key={route.id} projectId={route.id} importNow={route.importNow} onExit={() => { location.hash = ''; }} />;
+    if (route) return <Editor key={route.id} projectId={route.id} importNow={route.importNow && !isTrial(account)} trial={isTrial(account)} onExit={() => { location.hash = ''; }} />;
     return <ProjectsPage email={session?.user.email ?? null} account={account} onAccount={reloadAccount} onOpen={(id, importNow) => { location.hash = `#/p/${id}${importNow ? '/import' : ''}`; }} />;
   }
 }

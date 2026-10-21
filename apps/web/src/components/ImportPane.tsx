@@ -1,30 +1,36 @@
 import { memberOf, MEMBERS, type CadData, type ModelObject } from '@cloud-modeler/core';
+import { TRIAL_LOCK } from '../lib/account';
 
 /** 圖面匯入: the ways in, what was recognised from the drawings, and the correction tools. */
-export function ImportPane({ cad, objects, readOnly, onImport, onUnderlay, underlay, onTo3d }: {
-  cad: CadData | null; objects: ModelObject[]; readOnly: boolean; underlay: boolean;
-  onImport: () => void; onUnderlay: (f: File) => void; onTo3d: () => void;
+export function ImportPane({ cad, objects, readOnly, trial, onImport, onUnderlay, onLocked, underlay, onTo3d }: {
+  cad: CadData | null; objects: ModelObject[]; readOnly: boolean; underlay: boolean; trial: boolean;
+  onImport: () => void; onUnderlay: (f: File) => void; onLocked: () => void; onTo3d: () => void;
 }) {
+  const pick = <i className={`chip ${trial ? '' : 'key'}`}>{trial ? `🔒 ${TRIAL_LOCK}` : '選擇檔案'}</i>;
   const count = new Map<string, number>();
   for (const o of objects) { const k = memberOf(o); count.set(k, (count.get(k) || 0) + 1); }
   const floors = cad?.floors || [];
   return (
     <div className="pane">
       <div className="paneHead"><div><h2>圖面匯入</h2><p className="note">建築圖與結構圖一起匯入，軟體自己辨識圖層、尺寸、軸線、樓層與構件，建出 3D 模型並計算數量。</p></div></div>
+      {trial && <div className="banner">試用帳號只能使用「範例平面」。匯入自己的圖檔：<b>{TRIAL_LOCK}</b>。<button className="chip key sm" onClick={onLocked}>如何開通</button></div>}
       <div className="cols3">
         <button className="card pickCard" disabled={readOnly} onClick={onImport}>
           <b>AutoCAD 圖面</b><span>DWG、DXF（可一次選多個檔：各層平面圖、結構平面圖、配筋圖、立面、剖面、門窗表）</span>
-          <i className="chip key">選擇檔案</i>
+          {pick}
         </button>
         <button className="card pickCard" disabled={readOnly} onClick={onImport}>
           <b>SketchUp／3D 模型</b><span>.skp（2013 以後）、.dae、.obj、.glb、.fbx：認出樓層、牆、門窗、柱、梁、板、樓梯</span>
-          <i className="chip key">選擇檔案</i>
+          {pick}
         </button>
-        <label className={`card pickCard tap ${readOnly ? 'off' : ''}`}>
+        {trial ? <button className="card pickCard" onClick={onLocked}>
+          <b>PDF／圖片底圖</b><span>PDF 第 1 頁或圖片鋪在地面，用「繪圖」工具描出牆、柱、樓板</span>
+          {pick}
+        </button> : <label className={`card pickCard tap ${readOnly ? 'off' : ''}`}>
           <b>{underlay ? '已鋪底圖' : 'PDF／圖片底圖'}</b><span>PDF 第 1 頁或圖片鋪在地面，用「繪圖」工具描出牆、柱、樓板</span>
           <i className="chip">選擇檔案</i>
           {!readOnly && <input id="underlay-file" className="tap-input" type="file" accept="image/*,application/pdf,.pdf" onChange={e => { const f = e.target.files?.[0]; e.target.value = ''; if (f) onUnderlay(f); }} />}
-        </label>
+        </label>}
       </div>
 
       <section className="card">
