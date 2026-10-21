@@ -1,6 +1,6 @@
 import { useEffect, useState } from 'react';
-import { createAccount, extend, handleTrialRequest, listProfiles, listTrialRequests, listUsage, newPassword, sendWelcome, type TrialRequest, loadSettings, PLANS, REFERRAL, runReminders, saveSetting, sendTestReminder, updateProfile, type Login, type Profile, type UsageDay } from '../lib/account';
-import { daysLeft, dueForReminder, REMIND_DAYS, reminderEmail, RENEW_HOW } from '../lib/reminder';
+import { createAccount, extend, handleTrialRequest, listProfiles, listTrialRequests, listUsage, newPassword, sendWelcome, type TrialRequest, loadSettings, PLANS, REFERRAL, TRIAL_DAYS, runReminders, saveSetting, sendTestReminder, updateProfile, type Login, type Profile, type UsageDay } from '../lib/account';
+import { daysLeft, dueForReminder, REMIND_DAYS, reminderEmail, RENEW_HOW, TRIAL_REMIND_DAYS } from '../lib/reminder';
 import { Modal } from './Modal';
 
 const day = (iso: string | null) => (iso ? iso.slice(0, 10) : '');
@@ -82,7 +82,7 @@ export function AdminPage({ selfId, onBack }: { selfId: string; onBack: () => vo
           <option value="">（無）</option>
           {(list || []).filter(x => x.id !== p.id).map(x => <option key={x.id} value={x.id}>{x.email}</option>)}
         </select></label>
-        {p.referred_by && <span>{p.referral_rewarded_at ? `已達成，推薦人已延長 ${REFERRAL.reward} 天（${day(p.referral_rewarded_at)}）` : `進度 ${Math.min(ok, REFERRAL.days)}/${REFERRAL.days} 天`}</span>}
+        {p.referred_by && <span>{p.referral_rewarded_at ? `已達成（${day(p.referral_rewarded_at)}）` : `進度 ${Math.min(ok, REFERRAL.days)}/${REFERRAL.days} 天`}</span>}
         {shares > 0 && <span>成功分享 {shares} 次</span>}
       </div>
     );
@@ -110,12 +110,12 @@ export function AdminPage({ selfId, onBack }: { selfId: string; onBack: () => vo
           <h1>管理員後台</h1>
           <button className="chip ghost" onClick={onBack}>← 我的專案</button>
         </div>
-        <p className="note">共 {list?.length ?? '…'} 個帳號，使用中 {active} 個。到期或停用的帳號登入後只會看到續約提示，打不開專案（資料仍保留，延長後就恢復）。新註冊的帳號自動有 14 天試用。</p>
+        <p className="note">共 {list?.length ?? '…'} 個帳號，使用中 {active} 個。到期或停用的帳號登入後只會看到續約提示，打不開專案（資料仍保留，延長後就恢復）。新開通的帳號自動有 {TRIAL_DAYS} 天試用。</p>
 
         <div className="card">
-          <h3>{REMIND_DAYS} 天內到期（續訂提醒信）</h3>
+          <h3>即將到期（續訂提醒信）</h3>
           {settings ? <>
-            <p className="note">每天早上 9 點，系統自動寄續訂提醒信給 {REMIND_DAYS} 天內到期的帳號（同一個到期日只寄一次；延長後下次到期前會再寄）。對方付款後在這裡延長即可。</p>
+            <p className="note">每天早上 9 點，系統自動寄續訂提醒信給 {REMIND_DAYS} 天內到期的帳號（試用帳號為到期前 {TRIAL_REMIND_DAYS} 天）（同一個到期日只寄一次；延長後下次到期前會再寄）。對方付款後在這裡延長即可。</p>
             <div className="kv">
               <label className="note">寄件人 <input id="mail-from" type="text" defaultValue={settings.mail_from || ''} onBlur={e => setting('mail_from', e.target.value.trim())} /></label>
               <label className="note">回覆信箱 <input id="reply-to" type="email" placeholder="客戶回信寄到這裡" defaultValue={settings.reply_to || ''} onBlur={e => setting('reply_to', e.target.value.trim())} /></label>
@@ -123,7 +123,7 @@ export function AdminPage({ selfId, onBack }: { selfId: string; onBack: () => vo
             <label className="note">續訂方式（信中顯示，可寫匯款帳號、電話、LINE）<textarea id="renew-how" rows={3} style={{ width: '100%' }} defaultValue={settings.renew_how || RENEW_HOW} onBlur={e => setting('renew_how', e.target.value.trim())} /></label>
             <div className="acts"><button className="chip" disabled={busy} onClick={() => act(async () => `已寄出 ${await runReminders()} 封提醒信`)}>立即執行提醒</button></div>
           </> : <p className="note">到期前 {REMIND_DAYS} 天，系統會寄續訂提醒信到該帳號的電子郵件。目前為模擬：按「預覽通知信」看信件內容，還不會真的寄出（在 Supabase 執行 0004_renewal_reminders.sql 後就會自動寄）。對方付款後在這裡延長即可。</p>}
-          {due.length === 0 ? <p className="note">目前沒有 {REMIND_DAYS} 天內到期的帳號。{list?.some(p => p.expires_at) ? '' : '（可先到下方任一帳號按「預覽通知信」看看信件）'}</p> : due.map(p => (
+          {due.length === 0 ? <p className="note">目前沒有即將到期的帳號。{list?.some(p => p.expires_at) ? '' : '（可先到下方任一帳號按「預覽通知信」看看信件）'}</p> : due.map(p => (
             <div className="kv" key={p.id}>
               <span><b>{p.email}</b>・剩 {daysLeft(p)} 天（{p.expires_at!.slice(0, 10)}）{settings && (p.reminded_at ? `・已寄提醒 ${day(p.reminded_at)}` : '・尚未寄提醒')}</span>
               <button className="chip" onClick={() => setPreview(p)}>預覽通知信</button>
@@ -135,11 +135,11 @@ export function AdminPage({ selfId, onBack }: { selfId: string; onBack: () => vo
 
         {requests && requests.length > 0 && <div className="card">
           <h3>試用申請（{requests.length}）</h3>
-          <p className="note">從登入頁送出的申請。按「開通」會把資料填到下方的新增帳號（試用 14 天、自動產生密碼），確認後按「建立帳號」，帳號密碼會寄到對方信箱。</p>
+          <p className="note">從登入頁送出的申請。按「開通」會把資料填到下方的新增帳號（試用 {TRIAL_DAYS} 天、自動產生密碼），確認後按「建立帳號」，帳號密碼會寄到對方信箱。</p>
           {requests.map(q => (
             <div className="kv" key={q.id}>
               <span><b>{q.email}</b>{q.ref_code && `・推薦碼 ${q.ref_code}`}・{new Date(q.created_at).toLocaleString('zh-TW')}{list?.some(p => (p.email || '').toLowerCase() === q.email) && '・已有帳號'}</span>
-              <button className="chip on" onClick={() => { setForm({ ...form, email: q.email, password: newPassword(), plan: 'trial', expires: day(new Date(Date.now() + 14 * 864e5).toISOString()), ref: q.ref_code || '', request: q.id }); document.getElementById('new-email')?.scrollIntoView({ behavior: 'smooth', block: 'center' }); }}>開通</button>
+              <button className="chip on" onClick={() => { setForm({ ...form, email: q.email, password: newPassword(), plan: 'trial', expires: day(new Date(Date.now() + TRIAL_DAYS * 864e5).toISOString()), ref: q.ref_code || '', request: q.id }); document.getElementById('new-email')?.scrollIntoView({ behavior: 'smooth', block: 'center' }); }}>開通</button>
               <button className="chip ghost" onClick={() => handleTrialRequest(q.id).then(() => listTrialRequests().then(setRequests)).catch(e => setErr(String(e.message || e)))}>略過</button>
             </div>
           ))}
@@ -150,7 +150,7 @@ export function AdminPage({ selfId, onBack }: { selfId: string; onBack: () => vo
           <div className="kv">
             <input id="new-email" type="email" placeholder="電子郵件" value={form.email} onChange={e => setForm({ ...form, email: e.target.value })} required />
             <input id="new-password" type="text" placeholder="初始密碼（至少 6 碼）" minLength={6} value={form.password} onChange={e => setForm({ ...form, password: e.target.value })} required />
-            <select id="new-plan" value={form.plan} onChange={e => { const plan = e.target.value; setForm({ ...form, plan, expires: plan === 'yearly' ? day(extend(null, 12)) : plan === 'monthly' ? day(extend(null, 1)) : plan === 'trial' ? day(new Date(Date.now() + 14 * 864e5).toISOString()) : '' }); }}>
+            <select id="new-plan" value={form.plan} onChange={e => { const plan = e.target.value; setForm({ ...form, plan, expires: plan === 'yearly' ? day(extend(null, 12)) : plan === 'monthly' ? day(extend(null, 1)) : plan === 'trial' ? day(new Date(Date.now() + TRIAL_DAYS * 864e5).toISOString()) : '' }); }}>
               {Object.entries(PLANS).map(([k, v]) => <option key={k} value={k}>{v}</option>)}
             </select>
             <input id="new-ref" type="text" placeholder="推薦碼或推薦人 email（選填）" value={form.ref} onChange={e => setForm({ ...form, ref: e.target.value })} />

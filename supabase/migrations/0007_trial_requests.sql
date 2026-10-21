@@ -70,5 +70,5 @@ begin
     || case when p.expires_at is null then '' else format('<tr><td style="padding:6px 0;color:#6b7280;width:96px">使用期限</td><td style="padding:6px 0;color:#111827;font-weight:600">%s</td></tr>', to_char(p.expires_at at time zone 'Asia/Taipei', 'YYYY-MM-DD')) end
     || '</table>'
     || format('<p style="margin:0 0 8px"><a href="%s" style="display:inline-block;background:#0f766e;color:#ffffff;text-decoration:none;font-weight:700;padding:10px 20px;border-radius:10px">登入築本算圖</a></p>', site)
-    || '<p style="margin:12px 0 0;font-size:13px;color:#6b7280">每個帳號同一時間只能在一台裝置使用。登入後在「我的專案」→「個人資訊」可取得分享連結，朋友用你的連結試用達標，你的帳號可延長 7 天。</p>'));
+    || '<p style="margin:12px 0 0;font-size:13px;color:#6b7280">每個帳號同一時間只能在一台裝置使用。登入後在「我的專案」→「個人資訊」可取得分享連結，朋友用你的連結試用達標，你的帳號可延長 7 天（限一次）。</p>'));
 end $$;

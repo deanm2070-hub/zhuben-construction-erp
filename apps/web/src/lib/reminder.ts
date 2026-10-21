@@ -2,13 +2,16 @@ import { PLANS, type Profile } from './account';
 
 /** how many days before the expiry date the renewal reminder goes out */
 export const REMIND_DAYS = 14;
+/** a trial lasts only 7 days, so its reminder goes out 2 days before the end */
+export const TRIAL_REMIND_DAYS = 2;
+export const remindDays = (p: Profile) => (p.plan === 'trial' ? TRIAL_REMIND_DAYS : REMIND_DAYS);
 
 const esc = (s: string) => s.replace(/[&<>"]/g, c => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;' }[c]!));
 export const daysLeft = (p: Profile, now = new Date()) => p.expires_at ? Math.ceil((new Date(p.expires_at).getTime() - now.getTime()) / 864e5) : Infinity;
 
 /** accounts whose expiry falls within the reminder window (and has not passed), soonest first */
 export function dueForReminder(list: Profile[], now = new Date()) {
-  return list.filter(p => !p.disabled && p.expires_at && daysLeft(p, now) > 0 && daysLeft(p, now) <= REMIND_DAYS)
+  return list.filter(p => !p.disabled && p.expires_at && daysLeft(p, now) > 0 && daysLeft(p, now) <= remindDays(p))
     .sort((a, b) => daysLeft(a, now) - daysLeft(b, now));
 }
 

@@ -32,7 +32,7 @@ export function ProfileInfo({ email, account, onClose }: { email: string; accoun
         {days !== null && <div><span>試用活動進度</span><b>{Math.min(days, REFERRAL.days)} / {REFERRAL.days} 天</b></div>}
       </div>
       {link && <>
-        <p className="note">分享給朋友：對方用你的連結申請試用，並在開通後 {REFERRAL.within} 天內有 {REFERRAL.days} 天、每天累計上線滿 {REFERRAL.minutes / 60} 小時，你的帳號就自動延長 {REFERRAL.reward} 天（每位朋友一次，可累積）。</p>
+        <p className="note">分享給朋友：對方用你的連結申請試用，並在開通後 {REFERRAL.within} 天內有 {REFERRAL.days} 天、每天累計上線滿 {REFERRAL.minutes / 60} 小時，你的帳號就自動延長 {REFERRAL.reward} 天（每個帳號限延長一次）。</p>
         <input id="share-link" type="text" readOnly value={link} onFocus={e => e.target.select()} />
         <div className="kv">
           <button className="chip" onClick={copy}>{copied ? '已複製' : '複製連結'}</button>

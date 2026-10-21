@@ -23,8 +23,10 @@ export const LINE_ID = '@870ufuor';
 export const LINE_ADD = `https://line.me/R/ti/p/${LINE_ID}`;
 /** opens a chat with the administrator with the message already typed */
 export const lineMessage = (text: string) => `https://line.me/R/oaMessage/${LINE_ID}/?${encodeURIComponent(text)}`;
-/** a referral counts once the new account has 3 days of at least 60 minutes online within its first 7 days */
+/** a referral counts once the new account has 3 days of at least 60 minutes online within its first 7 days; each account is extended for this only once */
 export const REFERRAL = { days: 3, minutes: 60, within: 7, reward: 7 };
+/** length of a new trial, in days */
+export const TRIAL_DAYS = 7;
 export const shareLink = (code: string) => `${location.origin}/?ref=${code}`;
 /** phones and tablets, where LINE links open the LINE app with the message typed; on computers they only show a QR code */
 export const isMobile = () => /Android|iPhone|iPad|iPod/i.test(navigator.userAgent) || (/Macintosh/.test(navigator.userAgent) && navigator.maxTouchPoints > 1);
