@@ -167,6 +167,12 @@ export async function requestTrial(email: string, ref: string) {
   if (error) throw error;
   if (!data) throw new Error('請確認電子郵件是否正確');
 }
+/** the link in the confirmation e-mail: returns the confirmed address, or null when the link is unknown */
+export async function verifyTrial(token: string) {
+  const { data, error } = await supabase!.rpc('verify_trial', { p_token: token });
+  if (error) throw error;
+  return data as string | null;
+}
 /** the same, while the page is leaving for LINE: the request still goes out */
 export function requestTrialBeacon(email: string, ref: string) {
   const url = import.meta.env.VITE_SUPABASE_URL as string | undefined, key = (import.meta.env.VITE_SUPABASE_ANON_KEY as string | undefined)?.trim().replace(/^['"]|['"]$/g, '');
@@ -180,8 +186,11 @@ export function requestTrialBeacon(email: string, ref: string) {
 
 export interface TrialRequest { id: number; email: string; ref_code: string | null; created_at: string; handled_at: string | null }
 export async function listTrialRequests(): Promise<TrialRequest[] | null> {
-  const { data, error } = await supabase!.from('trial_requests').select('*').is('handled_at', null).order('created_at', { ascending: false });
-  return error ? null : data as TrialRequest[];
+  // only requests whose e-mail has been confirmed (0009); before that migration, all of them
+  const q = () => supabase!.from('trial_requests').select('*').is('handled_at', null).order('created_at', { ascending: false });
+  let r = await q().not('verified_at', 'is', null);
+  if (r.error) r = await q();
+  return r.error ? null : r.data as TrialRequest[];
 }
 export async function handleTrialRequest(id: number) {
   const { error } = await supabase!.from('trial_requests').update({ handled_at: new Date().toISOString() }).eq('id', id);
