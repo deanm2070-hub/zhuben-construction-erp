@@ -47,6 +47,16 @@ export function Editor({ projectId, importNow, onExit }: { projectId: string; im
   const meta = useRef({ finishes, settings });
   meta.current = { finishes, settings };
 
+  const exportSkp = async () => {
+    showToast('正在產生 SketchUp 檔…');
+    try {
+      const { buildSkp } = await import('../lib/skpExport');
+      download(`${name || 'model'}.skp`, await buildSkp(v().exportParts()), 'application/vnd.sketchup.skp');
+      showToast('已匯出 .skp：每層、每類構件各一個標記（Tag），可在 SketchUp 分開顯示');
+    } catch (e) {
+      showToast(`匯出 .skp 失敗：${(e as Error).message}`);
+    }
+  };
   const showToast = useCallback((text: string) => {
     setToast({ text, show: true });
     clearTimeout(toastTimer.current);
@@ -162,7 +172,8 @@ export function Editor({ projectId, importNow, onExit }: { projectId: string; im
             ? <button className="chip" onClick={() => { v().setUnderlay(null); setUnderlay(false); }}>移除底圖</button>
             : <label className="chip tap">匯入 PDF／圖片底圖<input id="underlay-file" className="tap-input" type="file" accept="image/*,application/pdf,.pdf" onChange={e => { const f = e.target.files?.[0]; e.target.value = ''; if (f) onUnderlayFile(f); }} /></label>}
           <button className="chip key" onClick={() => setDialog('takeoff')}>工程數量</button>
-          <button className="chip" onClick={() => download(`${name || 'model'}.obj`, v().exportOBJ(name), 'text/plain')}>匯出 .OBJ（SketchUp）</button>
+          <button className="chip" onClick={exportSkp}>匯出 .SKP（SketchUp）</button>
+          <button className="chip" onClick={() => download(`${name || 'model'}.obj`, v().exportOBJ(name), 'text/plain')}>匯出 .OBJ</button>
           <button className="chip ghost" onClick={toggleTheme}>{darkNow ? '切換白底介面' : '切換黑底介面'}</button>
         </div>
         <div className="row wrap">

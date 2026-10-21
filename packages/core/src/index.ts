@@ -12,3 +12,4 @@ export * from './legend';
 export * from './stairs';
 export * from './rebar';
 export * from './meshImport';
+export * from './meshFaces';

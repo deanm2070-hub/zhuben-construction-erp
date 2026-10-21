@@ -944,6 +944,43 @@ export class Viewer {
     });
     return out;
   }
+  /**
+   * Everything in the model as world-space triangles (cm, Y up), one part per object or imported mesh, for writing
+   * other formats. Always the whole building, whichever floor is on screen.
+   */
+  exportParts() {
+    const prev = this.floor;
+    if (prev) { this.floor = null; this.rebuild(); }
+    this.scene.updateMatrixWorld(true);
+    const parts: { name: string; floor: string; layer: string; color: number; opacity: number; tris: Float32Array }[] = [];
+    const v = new THREE.Vector3();
+    const take = (m: THREE.Mesh, name: string, floor: string, layer: string) => {
+      const g = m.geometry, pos = g.attributes.position, idx = g.index, n = idx ? idx.count : pos.count;
+      if (!pos || n < 3) return;
+      const tris = new Float32Array(n * 3);
+      for (let i = 0; i < n; i++) {
+        v.fromBufferAttribute(pos, idx ? idx.getX(i) : i).applyMatrix4(m.matrixWorld);
+        tris[i * 3] = v.x; tris[i * 3 + 1] = v.y; tris[i * 3 + 2] = v.z;
+      }
+      const mat = (Array.isArray(m.material) ? m.material[0] : m.material) as THREE.MeshStandardMaterial;
+      parts.push({ name, floor, layer, color: mat?.color ? mat.color.getHex() : 0xd9d9d9, opacity: mat?.transparent ? mat.opacity : 1, tris });
+    };
+    this.objGroup.traverse(n => {
+      const m = n as THREE.Mesh;
+      if (!m.isMesh || !m.userData.id || !m.visible) return;
+      const o = this.byId(m.userData.id);
+      if (o) take(m, o.name, o.floor || '', o.layer);
+    });
+    let k = 0;
+    const meshes = (this.cad?.meshes || []);
+    for (const c of this.meshGroup.children) {
+      const m = c as THREE.Mesh;
+      if (!m.isMesh) continue;
+      take(m, 'SketchUp 物件', meshes[k++]?.floor || '', 'furniture');
+    }
+    if (prev) { this.floor = prev; this.rebuild(); }
+    return parts;
+  }
   /** Small JPEG of the current view for the project list. */
   thumbnail() {
     this.renderer.render(this.scene, this.camera);
