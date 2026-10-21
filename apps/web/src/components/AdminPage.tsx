@@ -1,5 +1,7 @@
 import { useEffect, useState } from 'react';
 import { createAccount, extend, listProfiles, PLANS, updateProfile, type Profile } from '../lib/account';
+import { daysLeft, dueForReminder, REMIND_DAYS, reminderEmail } from '../lib/reminder';
+import { Modal } from './Modal';
 
 const day = (iso: string | null) => (iso ? iso.slice(0, 10) : '');
 const status = (p: Profile) => p.disabled ? { t: '已停用', c: 'err' } : p.expires_at && new Date(p.expires_at) <= new Date() ? { t: '已到期', c: 'err' } : { t: '使用中', c: 'ok' };
@@ -12,6 +14,7 @@ export function AdminPage({ selfId, onBack }: { selfId: string; onBack: () => vo
   const [q, setQ] = useState('');
   const [form, setForm] = useState({ email: '', password: '', plan: 'monthly', expires: day(extend(null, 1)) });
   const [busy, setBusy] = useState(false);
+  const [preview, setPreview] = useState<Profile | null>(null);
 
   const refresh = () => listProfiles().then(setList).catch(e => setErr(String(e.message || e)));
   useEffect(() => { refresh(); }, []);
@@ -34,6 +37,8 @@ export function AdminPage({ selfId, onBack }: { selfId: string; onBack: () => vo
 
   const shown = (list || []).filter(p => !q || (p.email || '').includes(q) || (p.note || '').includes(q));
   const active = (list || []).filter(p => status(p).c === 'ok').length;
+  const due = dueForReminder(list || []);
+  const mail = preview && reminderEmail(preview);
 
   return (
     <div className="page">
@@ -43,6 +48,19 @@ export function AdminPage({ selfId, onBack }: { selfId: string; onBack: () => vo
           <button className="chip ghost" onClick={onBack}>← 我的專案</button>
         </div>
         <p className="note">共 {list?.length ?? '…'} 個帳號，使用中 {active} 個。到期或停用的帳號登入後只會看到續約提示，打不開專案（資料仍保留，延長後就恢復）。新註冊的帳號自動有 14 天試用。</p>
+
+        <div className="card">
+          <h3>{REMIND_DAYS} 天內到期（續訂提醒信）</h3>
+          <p className="note">到期前 {REMIND_DAYS} 天，系統會寄續訂提醒信到該帳號的電子郵件。目前為模擬：按「預覽通知信」看信件內容，還不會真的寄出。對方付款後在這裡延長即可。</p>
+          {due.length === 0 ? <p className="note">目前沒有 {REMIND_DAYS} 天內到期的帳號。{list?.some(p => p.expires_at) ? '' : '（可先到下方任一帳號按「預覽通知信」看看信件）'}</p> : due.map(p => (
+            <div className="kv" key={p.id}>
+              <span><b>{p.email}</b>・剩 {daysLeft(p)} 天（{p.expires_at!.slice(0, 10)}）</span>
+              <button className="chip" onClick={() => setPreview(p)}>預覽通知信</button>
+              <button className="chip" onClick={() => patch(p, { expires_at: extend(p.expires_at, 1), disabled: false }, '延長 1 個月')}>+1 個月</button>
+              <button className="chip" onClick={() => patch(p, { expires_at: extend(p.expires_at, 12), disabled: false }, '延長 1 年')}>+1 年</button>
+            </div>
+          ))}
+        </div>
 
         <form className="card" onSubmit={add}>
           <h3>新增帳號</h3>
@@ -79,6 +97,7 @@ export function AdminPage({ selfId, onBack }: { selfId: string; onBack: () => vo
                   <div className="acts">
                     <button className="chip" onClick={() => patch(p, { expires_at: extend(p.expires_at, 1), disabled: false }, '延長 1 個月')}>+1 個月</button>
                     <button className="chip" onClick={() => patch(p, { expires_at: extend(p.expires_at, 12), disabled: false }, '延長 1 年')}>+1 年</button>
+                    <button className="chip ghost" onClick={() => setPreview(p.expires_at ? p : { ...p, expires_at: new Date(Date.now() + REMIND_DAYS * 864e5).toISOString() })}>預覽通知信</button>
                     {!self && <button className={`chip ${p.disabled ? 'on' : 'ghost'}`} onClick={() => patch(p, { disabled: !p.disabled }, p.disabled ? '已恢復' : '已停用')}>{p.disabled ? '恢復' : '停用'}</button>}
                   </div>
                   <input id={`note-${p.id}`} type="text" placeholder="備註（公司、聯絡人、付款紀錄）" defaultValue={p.note || ''} onBlur={e => { if (e.target.value !== (p.note || '')) patch(p, { note: e.target.value || null }, '備註已存'); }} />
@@ -88,6 +107,12 @@ export function AdminPage({ selfId, onBack }: { selfId: string; onBack: () => vo
           </div>
         )}
       </div>
+      {mail && (
+        <Modal title="續訂提醒信（模擬，未寄出）" desc={<>收件人：{mail.to}<br />主旨：{mail.subject}</>} onClose={() => setPreview(null)}
+          actions={<button className="chip on" onClick={() => setPreview(null)}>關閉</button>}>
+          <iframe title="信件預覽" srcDoc={mail.html} style={{ width: '100%', height: 520, border: '1px solid var(--line)', borderRadius: 10, background: '#fff' }} />
+        </Modal>
+      )}
     </div>
   );
 }
