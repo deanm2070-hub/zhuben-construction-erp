@@ -13,11 +13,20 @@ function referralCode() {
   } catch { return q || ''; }
 }
 
+/** the 登入築本算圖 button in the account e-mail opens /#/login?email=…&pw=…: read once at start-up, then taken off the address bar */
+export const LOGIN_LINK = (() => {
+  const m = location.hash.match(/^#\/login\?(.*)$/);
+  if (!m) return null;
+  history.replaceState(null, '', location.pathname + location.search);
+  const q = new URLSearchParams(m[1]);
+  return { email: (q.get('email') || '').trim(), password: q.get('pw') || '' };
+})();
+
 export function AuthPage() {
-  const [email, setEmail] = useState('');
-  const [password, setPassword] = useState('');
+  const [email, setEmail] = useState(LOGIN_LINK?.email || '');
+  const [password, setPassword] = useState(LOGIN_LINK?.password || '');
   // new users start a trial with just their e-mail: the password is e-mailed to them
-  const [mode, setMode] = useState<'in' | 'trial'>(() => new URLSearchParams(location.search).get('ref') ? 'trial' : 'in');
+  const [mode, setMode] = useState<'in' | 'trial'>(() => !LOGIN_LINK && new URLSearchParams(location.search).get('ref') ? 'trial' : 'in');
   const [ref] = useState(referralCode);
   const [sent, setSent] = useState(false);
   // the applicant's address is checked as it is typed (form, typos, throw-away services, a domain that takes mail)
@@ -72,6 +81,7 @@ export function AuthPage() {
         <img src="/logo.png" alt="築本算圖" width={96} height={96} style={{ display: 'block', margin: '0 auto 8px' }} />
         <h1>築本算圖</h1>
         <p className="note">登入後，專案會存在雲端，換電腦也能繼續編輯。</p>
+        {LOGIN_LINK?.email && mode === 'in' && <p className="note" style={{ color: 'var(--accent)' }}>已帶入信裡的帳號和密碼，按「登入」即可。</p>}
         {verified && <p className="note" style={{ color: 'var(--accent)' }}>✓ 已確認 {verified}，試用申請已送到管理員。開通後帳號和密碼會寄到這個信箱。</p>}
         {mode === 'in' ? <>
           <input id="email" type="email" autoComplete="email" placeholder="電子郵件" value={email} onChange={e => setEmail(e.target.value)} required />

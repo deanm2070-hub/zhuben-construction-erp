@@ -1,5 +1,5 @@
 import { useEffect, useState } from 'react';
-import { createAccount, extend, handleTrialRequest, listProfiles, listTrialRequests, listUsage, newPassword, sendWelcome, type TrialRequest, loadSettings, PLANS, REFERRAL, TRIAL_DAYS, runReminders, saveSetting, sendTestReminder, updateProfile, type Login, type Profile, type UsageDay } from '../lib/account';
+import { createAccount, deleteTrialAccount, extend, handleTrialRequest, listProfiles, listTrialRequests, listUsage, newPassword, sendWelcome, type TrialRequest, loadSettings, PLANS, REFERRAL, TRIAL_DAYS, runReminders, saveSetting, sendTestReminder, updateProfile, type Login, type Profile, type UsageDay } from '../lib/account';
 import { daysLeft, dueForReminder, REMIND_DAYS, reminderEmail, RENEW_HOW, TRIAL_REMIND_DAYS } from '../lib/reminder';
 import { Modal } from './Modal';
 
@@ -23,6 +23,7 @@ export function AdminPage({ selfId, onBack }: { selfId: string; onBack: () => vo
   const [usage, setUsage] = useState<{ usage: UsageDay[]; logins: Login[] } | null>(null);
   const [busy, setBusy] = useState(false);
   const [preview, setPreview] = useState<Profile | null>(null);
+  const [confirmDel, setConfirmDel] = useState<string | null>(null);
   // null: the reminder migration (0004) has not been run, so mail is only simulated
   const [settings, setSettings] = useState<Record<string, string> | null>(null);
 
@@ -186,7 +187,11 @@ export function AdminPage({ selfId, onBack }: { selfId: string; onBack: () => vo
                     <button className="chip" onClick={() => patch(p, { expires_at: extend(p.expires_at, 12), disabled: false }, '延長 1 年')}>+1 年</button>
                     <button className="chip ghost" onClick={() => setPreview(p.expires_at ? p : { ...p, expires_at: new Date(Date.now() + REMIND_DAYS * 864e5).toISOString() })}>預覽通知信</button>
                     {!self && <button className={`chip ${p.disabled ? 'on' : 'ghost'}`} onClick={() => patch(p, { disabled: !p.disabled }, p.disabled ? '已恢復' : '已停用')}>{p.disabled ? '恢復' : '停用'}</button>}
+                    {!self && p.plan === 'trial' && (confirmDel === p.id
+                      ? <><button className="chip danger" disabled={busy} onClick={() => { setConfirmDel(null); act(async () => `已刪除試用帳號 ${await deleteTrialAccount(p.id)}（含專案與上線紀錄）`); }}>確定刪除帳號</button><button className="chip ghost" onClick={() => setConfirmDel(null)}>取消</button></>
+                      : <button className="chip ghost danger" onClick={() => setConfirmDel(p.id)}>刪除帳號</button>)}
                   </div>
+                  {confirmDel === p.id && <span className="err">刪除後帳號、專案、上線紀錄都會永久移除，無法復原；對方之後可以用同一個電子郵件重新申請試用。</span>}
                   <input id={`note-${p.id}`} type="text" placeholder="備註（公司、聯絡人、付款紀錄）" defaultValue={p.note || ''} onBlur={e => { if (e.target.value !== (p.note || '')) patch(p, { note: e.target.value || null }, '備註已存'); }} />
                 </div>
               );

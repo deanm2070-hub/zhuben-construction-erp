@@ -197,6 +197,12 @@ export async function sendWelcome(email: string, password: string) {
   const { error } = await supabase!.rpc('send_welcome', { p_email: email, p_password: password });
   if (error) throw error;
 }
+/** administrator: delete a trial account and everything in it (0012); returns its e-mail */
+export async function deleteTrialAccount(id: string) {
+  const { data, error } = await supabase!.rpc('delete_trial_account', { p_id: id });
+  if (error) throw new Error(error.code === 'PGRST202' ? '刪除帳號需要先更新資料庫：在 Supabase 的 SQL Editor 執行 supabase/migrations/0012_login_link_delete_trial.sql 一次' : error.message);
+  return data as string;
+}
 /** an easy-to-type password: no 0/O, 1/l/I */
 export function newPassword() {
   const c = 'abcdefghjkmnpqrstuvwxyz23456789';

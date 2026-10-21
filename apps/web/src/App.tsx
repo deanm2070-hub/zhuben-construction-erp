@@ -1,7 +1,7 @@
 import type { Session } from '@supabase/supabase-js';
 import { useEffect, useState } from 'react';
 import { AdminPage } from './components/AdminPage';
-import { AuthPage } from './components/AuthPage';
+import { AuthPage, LOGIN_LINK } from './components/AuthPage';
 import { Editor } from './components/Editor';
 import { ProjectsPage } from './components/ProjectsPage';
 import { CLAIM_FLAG, claimDevice, heartbeat, LINE_ADD, LINE_ID, isTrial, loadAccount, OPEN_ACCOUNT, type Account } from './lib/account';
@@ -54,7 +54,11 @@ export function App() {
 
   useEffect(() => {
     if (!supabase) return;
-    supabase.auth.getSession().then(({ data }) => setSession(data.session));
+    supabase.auth.getSession().then(({ data }) => {
+      // the e-mail's sign-in link is for another account than the one signed in on this device: show the sign-in page for it
+      if (data.session && LOGIN_LINK?.email && data.session.user.email?.toLowerCase() !== LOGIN_LINK.email.toLowerCase()) { supabase!.auth.signOut({ scope: 'local' }).finally(() => setSession(null)); return; }
+      setSession(data.session);
+    });
     const { data } = supabase.auth.onAuthStateChange((_e, s) => setSession(s));
     return () => data.subscription.unsubscribe();
   }, []);
