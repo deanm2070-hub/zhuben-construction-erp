@@ -5,7 +5,7 @@ import { AuthPage, LOGIN_LINK } from './components/AuthPage';
 import { Editor } from './components/Editor';
 import { ProjectsPage } from './components/ProjectsPage';
 import { CLAIM_FLAG, claimDevice, heartbeat, LINE_ADD, LINE_ID, isTrial, loadAccount, OPEN_ACCOUNT, type Account } from './lib/account';
-import { supabase, supabaseConfigError } from './lib/supabase';
+import { signOutHere, supabase, supabaseConfigError } from './lib/supabase';
 import { watchUpdates } from './lib/update';
 import { VERSION } from './lib/version';
 
@@ -115,7 +115,7 @@ function Expired({ email, profile }: { email: string; profile: Account['profile'
       <div className="kv">
         <a className="chip key" href={LINE_ADD} target="_blank" rel="noopener" style={{ textDecoration: 'none' }}>LINE 聯絡管理員 {LINE_ID}</a>
         <button className="chip on" onClick={() => location.reload()}>重新整理</button>
-        <button className="chip ghost" onClick={() => supabase!.auth.signOut()}>登出</button>
+        <button className="chip ghost" onClick={signOutHere}>登出</button>
       </div>
     </div></div>
   );
@@ -129,7 +129,7 @@ function Elsewhere({ email }: { email: string }) {
       <h1>帳號已在其他裝置登入</h1>
       <p className="note">{email} 剛剛在另一台裝置登入，每個帳號同一時間只能在一台裝置使用，所以這台已登出。要改在這台使用，請重新登入（另一台就會被登出）。尚未儲存的修改無法再存到雲端。</p>
       <div className="kv">
-        <button className="chip on" onClick={() => supabase!.auth.signOut({ scope: 'local' })}>在這台重新登入</button>
+        <button className="chip on" onClick={signOutHere}>在這台重新登入</button>
       </div>
     </div></div>
   );

@@ -2,7 +2,7 @@ import { InstallButton } from './InstallButton';
 import { PROJECT_STATUS, sampleObjects } from '@cloud-modeler/core';
 import { useEffect, useState } from 'react';
 import { emptyModel, store, type ProjectMeta } from '../lib/store';
-import { supabase } from '../lib/supabase';
+import { signOutHere, supabase } from '../lib/supabase';
 import { readProjectFile } from '../lib/files';
 import { VERSION } from '../lib/version';
 import { claimAdmin, isTrial, PLANS, TRIAL_LOCK, type Account } from '../lib/account';
@@ -112,7 +112,7 @@ export function ProjectsPage({ email, account, onAccount, onOpen }: { email: str
           <div className="kv tight">
             {email && account.ready && <button className="chip" onClick={() => setInfo(true)}>個人資訊</button>}
             <InstallButton />
-            {supabase && <button className="chip ghost" onClick={() => supabase!.auth.signOut()}>登出</button>}
+            {supabase && <button className="chip ghost" onClick={signOutHere}>登出</button>}
           </div>
         </div>
       </aside>

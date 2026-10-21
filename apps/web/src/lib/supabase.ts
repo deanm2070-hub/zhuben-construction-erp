@@ -26,3 +26,14 @@ if (rawUrl && rawKey) {
 export const supabase: SupabaseClient | null = client;
 /** Set when Supabase variables are present but unusable; the app shows it instead of a blank page. */
 export const supabaseConfigError: string | null = error;
+
+/**
+ * 登出 on this device only. Other devices signed in to the same account (an administrator on phone and Mac)
+ * stay signed in, and a failed network call (an expired token on a phone left in the background) can no longer
+ * keep the page signed in: the stored session is dropped and the page starts again at the sign-in screen.
+ */
+export async function signOutHere() {
+  try { await client?.auth.signOut({ scope: 'local' }); } catch { /* signed out below regardless */ }
+  try { for (const k of Object.keys(localStorage)) if (/^sb-.*-auth-token/.test(k)) localStorage.removeItem(k); } catch { /* private mode */ }
+  location.replace(location.pathname);
+}
