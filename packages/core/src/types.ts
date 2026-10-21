@@ -31,6 +31,8 @@ export interface BoxObject {
   stair?: StairInfo;
   /** structural members read from the structural plans: mark and the storey key of the plan (2F beams carry the 2F slab) */
   rc?: RcTag;
+  /** member kind chosen by hand in the 構件屬性 panel (柱, 梁, 樓板, 牆 …); wins over what the name and layer suggest */
+  member?: string;
 }
 
 export interface RcTag { kind: 'beam' | 'column'; mark: string; fl: string; b?: number; h?: number }

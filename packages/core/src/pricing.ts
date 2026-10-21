@@ -119,6 +119,7 @@ export function memberOfCalc(c: CalcRow): Member {
 export function memberOf(o: ModelObject): Member {
   if (isDoor(o)) return '門窗';
   if (!isBox(o)) return '其他';
+  if (o.member && (MEMBERS as readonly string[]).includes(o.member)) return o.member as Member;
   if (o.rc?.kind === 'column') return '柱';
   if (o.rc?.kind === 'beam' || /梁/.test(o.name)) return /^地梁/.test(o.name) ? '基礎' : '梁';
   if (o.stair || o.layer === 'stair' || /樓梯|踏階/.test(o.name)) return '樓梯';

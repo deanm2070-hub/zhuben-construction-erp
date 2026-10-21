@@ -1,8 +1,28 @@
 import { isDoor, memberOf, type BoxObject, type CadFloor, type ModelObject } from '@cloud-modeler/core';
 import { useEffect, useState } from 'react';
 
-type Kind = 'rc' | 'light' | 'column' | '';
-const kindOf = (o: BoxObject): Kind => o.layer !== 'wall' ? '' : o.rc?.kind === 'column' || memberOf(o) === '柱' ? 'column' : o.wall === 'light' ? 'light' : o.wall === 'rc' || Math.min(o.w, o.d) >= 18 ? 'rc' : 'light';
+/** what a part can be changed into in the panel, and the member kind each one counts as */
+const CATS = ['柱', '梁', '樓板', 'RC牆', '隔間牆', '樓梯', '欄杆', '設備', '其他'] as const;
+type Kind = typeof CATS[number];
+const kindOf = (o: BoxObject): Kind => {
+  const m = memberOf(o);
+  if (m === '牆') return o.wall === 'light' || (o.wall !== 'rc' && Math.min(o.w, o.d) < 18) ? '隔間牆' : 'RC牆';
+  if (m === '基礎') return o.rc?.kind === 'beam' ? '梁' : '樓板';
+  return (CATS as readonly string[]).includes(m) ? m as Kind : '其他';
+};
+/** the layer, structural tag and wall type that make a part count as the chosen kind */
+function asKind(k: Kind, o: BoxObject, name: string, floor: string, w: number, d: number): Partial<BoxObject> {
+  const fl = floor || o.floor || '1F', base = { rc: undefined, wall: undefined, member: k === 'RC牆' || k === '隔間牆' ? '牆' : k } as Partial<BoxObject>;
+  if (k === '柱') return { ...base, layer: 'wall', rc: { kind: 'column', mark: name, fl, b: Math.min(w, d), h: Math.max(w, d) } };
+  if (k === '梁') return { ...base, layer: 'slab', rc: { kind: 'beam', mark: name, fl } };
+  if (k === '樓板') return { ...base, layer: 'slab' };
+  if (k === 'RC牆') return { ...base, layer: 'wall', wall: 'rc' };
+  if (k === '隔間牆') return { ...base, layer: 'wall', wall: 'light' };
+  if (k === '樓梯') return { ...base, layer: 'stair' };
+  if (k === '欄杆') return { ...base, layer: 'rail' };
+  if (k === '設備') return { ...base, layer: 'cabinet' };
+  return { ...base, member: '其他' };
+}
 
 /** Properties of the selected part, editable: the manual correction of what the import recognised. */
 export function PropsPanel({ o, floors, readOnly, onApply, onDelete, onClose }: {
@@ -17,7 +37,7 @@ export function PropsPanel({ o, floors, readOnly, onApply, onDelete, onClose }: 
     h: String(Math.round(box ? box.h : (o.h || 210))),
     y: String(Math.round((box ? box.y : o.y) || 0) - (floors.find(f => f.key === o.floor)?.y || 0)),
     floor: o.floor || '',
-    kind: box ? kindOf(box) : '' as Kind,
+    kind: box ? kindOf(box) : '其他' as Kind,
   });
   const [f, setF] = useState(init);
   useEffect(() => { setF(init()); }, [o]); // eslint-disable-line react-hooks/exhaustive-deps
@@ -27,10 +47,7 @@ export function PropsPanel({ o, floors, readOnly, onApply, onDelete, onClose }: 
     if (box) {
       const patch: Partial<BoxObject> = { name: f.name.trim() || box.name, w: num(f.w, 1), d: num(f.d, 1), h: num(f.h, 1), y: num(f.y, -1000) + base };
       if (f.floor) patch.floor = f.floor;
-      if (box.layer === 'wall' && f.kind !== kindOf(box)) {
-        if (f.kind === 'column') patch.rc = { kind: 'column', mark: f.name || '柱', fl: f.floor || '1F', b: Math.min(num(f.w, 1), num(f.d, 1)), h: Math.max(num(f.w, 1), num(f.d, 1)) };
-        else { patch.rc = undefined; patch.wall = f.kind as 'rc' | 'light'; if (f.kind === 'rc' && !/RC|外牆/.test(patch.name!)) patch.name = `RC牆 ${patch.name}`; }
-      }
+      if (f.kind !== kindOf(box)) Object.assign(patch, asKind(f.kind, box, patch.name!, f.floor, patch.w!, patch.d!));
       onApply(patch as Partial<ModelObject>);
     } else {
       const d = o as Extract<ModelObject, { layer: 'door' }>, mid = (d.a + d.b) / 2, w = num(f.w, 10);
@@ -47,15 +64,15 @@ export function PropsPanel({ o, floors, readOnly, onApply, onDelete, onClose }: 
         onChange={e => setF({ ...f, name: e.target.value })}
         onKeyDown={e => { if (e.key === 'Enter') (e.target as HTMLInputElement).blur(); }}
         onBlur={() => { const n = f.name.trim(); if (n && n !== o.name) apply(); }} /></label>
-      {box?.layer === 'wall' && <label>類別<select id="prop-kind" value={f.kind} disabled={readOnly} onChange={e => setF({ ...f, kind: e.target.value as Kind })}>
-        <option value="rc">RC 牆（算混凝土、模板）</option><option value="light">隔間牆（算隔間面積）</option><option value="column">柱</option></select></label>}
+      {box && <label>構件類別<select id="prop-kind" value={f.kind} disabled={readOnly} onChange={e => setF({ ...f, kind: e.target.value as Kind })}>
+        {CATS.map(k => <option key={k} value={k}>{k}</option>)}</select></label>}
       {box ? <>{field('w', '寬')}{field('d', '深（厚）')}</> : field('w', '門窗寬')}
       {field('h', '高')}
       {field('y', '離樓板高')}
       {floors.length > 0 && <label>樓層<select id="prop-floor" value={f.floor} disabled={readOnly} onChange={e => setF({ ...f, floor: e.target.value })}>
         {!o.floor && <option value="">—</option>}{floors.map(x => <option key={x.key}>{x.key}</option>)}</select></label>}
       {!readOnly && <div className="kv"><button className="chip on" onClick={apply}>套用</button><button className="chip ghost danger" onClick={onDelete}>刪除</button></div>}
-      <p className="note">名稱改完按 Enter 或點別處就存好；尺寸改完按「套用」（或 Enter），可用「復原」回到上一步；工程數量會依新尺寸重算。</p>
+      <p className="note">名稱改完按 Enter 或點別處就存好；類別、尺寸改完按「套用」（或 Enter），可用「復原」回到上一步；工程數量會依新尺寸重算。</p>
     </aside>
   );
 }
