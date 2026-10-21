@@ -1,5 +1,5 @@
 import { useEffect, useState } from 'react';
-import { CLAIM_FLAG, isMobile, LINE_ADD, LINE_ID, lineMessage, requestTrial, requestTrialBeacon, verifyTrial } from '../lib/account';
+import { CLAIM_FLAG, LINE_ADD, LINE_ID, startTrial, verifyTrial } from '../lib/account';
 import { checkEmail } from '../lib/emailCheck';
 import { supabase } from '../lib/supabase';
 import { RELEASES, VERSION } from '../lib/version';
@@ -16,14 +16,12 @@ function referralCode() {
 export function AuthPage() {
   const [email, setEmail] = useState('');
   const [password, setPassword] = useState('');
-  // accounts are opened by the administrator after a trial request on LINE; there is no self sign-up
+  // new users start a trial with just their e-mail: the password is e-mailed to them
   const [mode, setMode] = useState<'in' | 'trial'>(() => new URLSearchParams(location.search).get('ref') ? 'trial' : 'in');
   const [ref] = useState(referralCode);
   const [sent, setSent] = useState(false);
-  const mobile = isMobile();
   // the applicant's address is checked as it is typed (form, typos, throw-away services, a domain that takes mail)
   const [checked, setChecked] = useState<{ email: string; ok: boolean; err?: string } | null>(null);
-  const okEmail = !!checked?.ok && checked.email === email.trim().toLowerCase();
   useEffect(() => {
     if (mode !== 'trial' || !email.trim()) { setChecked(null); return; }
     let live = true;
@@ -38,12 +36,18 @@ export function AuthPage() {
     history.replaceState(null, '', location.pathname);
     verifyTrial(token).then(e => e ? setVerified(e) : setMsg({ err: '這個確認連結無效或已過期，請重新申請' })).catch(x => setMsg({ err: String((x as Error).message || x) }));
   }, []);
-  // computers: the request goes straight to the administrator from here (LINE links only show a QR code there)
+  // the database opens a 7-day trial account and e-mails its random password to this address
   const sendRequest = async () => {
     setBusy(true); setMsg({});
     const c = await checkEmail(email);
     if (!c.ok) { setMsg({ err: c.err }); setBusy(false); return; }
-    try { await requestTrial(c.email, ref); setSent(true); } catch (x) { setMsg({ err: `送出失敗：${(x as Error).message}。也可以用手機加 LINE ${LINE_ID} 申請` }); }
+    try {
+      const st = await startTrial(c.email, ref);
+      if (st === 'created') setSent(true);
+      else if (st === 'exists') setMsg({ err: '這個電子郵件已經有帳號了，請直接登入；忘記密碼請用 LINE 聯絡管理員' });
+      else if (st === 'busy') setMsg({ err: '目前申請的人太多，請稍後再試' });
+      else setMsg({ err: '電子郵件無法使用，請確認是否正確' });
+    } catch (x) { setMsg({ err: `申請失敗：${(x as Error).message}。也可以用 LINE ${LINE_ID} 聯絡管理員` }); }
     setBusy(false);
   };
   const [msg, setMsg] = useState<{ err?: string; ok?: string }>({});
@@ -61,7 +65,6 @@ export function AuthPage() {
     if (error) try { sessionStorage.removeItem(CLAIM_FLAG); } catch { /* private mode */ }
     if (error) setMsg({ err: error.message === 'Invalid login credentials' ? '電子郵件或密碼不正確' : error.message });
   };
-  const request = `我想申請築本算圖試用\n電子郵件：${email.trim() || '（請填寫）'}${ref ? `\n推薦碼：${ref}` : ''}`;
 
   return (
     <div className="page">
@@ -78,28 +81,14 @@ export function AuthPage() {
         </> : <div className="trial">
           <h3>申請免費試用</h3>
           {sent ? <>
-            <p className="note">還差一步 ✉️<br />確認信已寄到 <b>{email.trim()}</b>，請打開信件按「確認電子郵件」，申請才會送到管理員（沒看到請找垃圾郵件匣）。管理員開通後，帳號和密碼也會寄到這個信箱。</p>
-            <button type="button" className="chip on" onClick={() => { setMode('in'); setSent(false); setMsg({}); }}>回到登入</button>
-          </> : mobile ? <>
-            <ol>
-              <li>填寫你的電子郵件</li>
-              <li>按「用 LINE 傳送申請」，會直接打開管理員 {LINE_ID} 的 LINE 對話並帶出寫好的訊息{ref && <>（含推薦碼 <b>{ref}</b>）</>}，按傳送即可</li>
-              <li>管理員開通後會回覆你的密碼，回到這頁登入就能開始試用</li>
-            </ol>
-            <input id="trial-email" type="email" autoComplete="email" placeholder="你的電子郵件" value={email} onChange={e => setEmail(e.target.value)} />
-            {checked && !checked.ok && checked.email === email.trim().toLowerCase() && <p className="err">{checked.err}</p>}
-            <a className={`chip on${okEmail ? '' : ' off'}`} href={okEmail ? lineMessage(request) : undefined} rel="noopener"
-              onClick={e => { if (!okEmail) { e.preventDefault(); setMsg({ err: checked?.err || '請先填寫正確的電子郵件' }); } else requestTrialBeacon(email.trim().toLowerCase(), ref); }}>用 LINE 傳送申請</a>
-            <p className="note">送出後，也請到信箱點確認信裡的「確認電子郵件」，管理員才能為你開通。</p>
+            <p className="note">✓ 試用帳號已開通！<br />密碼已寄到 <b>{email.trim()}</b>（沒看到請找垃圾郵件匣），用這個電子郵件和信裡的密碼登入，就可以開始 7 天免費試用。</p>
+            <button type="button" className="chip on" onClick={() => { setMode('in'); setSent(false); setPassword(''); setMsg({}); }}>前往登入</button>
           </> : <>
-            <ol>
-              <li>填寫你的電子郵件，按「送出申請」，申請會直接送到管理員{ref && <>（含推薦碼 <b>{ref}</b>）</>}</li>
-              <li>管理員開通後，帳號和密碼會寄到你的信箱，回到這頁登入就能開始試用</li>
-            </ol>
+            <p className="note">輸入你的電子郵件，按「申請免費試用」，系統會立刻開通 7 天試用帳號，並把密碼寄到這個信箱{ref && <>（推薦碼 <b>{ref}</b>）</>}。</p>
             <input id="trial-email" type="email" autoComplete="email" placeholder="你的電子郵件" value={email} onChange={e => setEmail(e.target.value)} onKeyDown={e => { if (e.key === 'Enter') { e.preventDefault(); sendRequest(); } }} />
             {checked && !checked.ok && checked.email === email.trim().toLowerCase() && <p className="err">{checked.err}</p>}
-            <button type="button" className="chip on" disabled={busy || (!!checked && !checked.ok)} onClick={sendRequest}>{busy ? '送出中…' : '送出申請'}</button>
-            <p className="note">有問題也可以用手機加 LINE <a href={LINE_ADD} target="_blank" rel="noopener">{LINE_ID}</a> 聯絡管理員。</p>
+            <button type="button" className="chip on" disabled={busy || (!!checked && !checked.ok && checked.email === email.trim().toLowerCase())} onClick={sendRequest}>{busy ? '開通中…' : '申請免費試用'}</button>
+            <p className="note">有問題可以用 LINE <a href={LINE_ADD} target="_blank" rel="noopener">{LINE_ID}</a> 聯絡管理員。</p>
           </>}
           {!sent && <button type="button" className="chip ghost" onClick={() => { setMode('in'); setMsg({}); }}>已有帳號？登入</button>}
         </div>}

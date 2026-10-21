@@ -21,15 +21,11 @@ export interface Profile {
 /** The administrator's LINE official account: trials are requested there. */
 export const LINE_ID = '@870ufuor';
 export const LINE_ADD = `https://line.me/R/ti/p/${LINE_ID}`;
-/** opens a chat with the administrator with the message already typed */
-export const lineMessage = (text: string) => `https://line.me/R/oaMessage/${LINE_ID}/?${encodeURIComponent(text)}`;
 /** a referral counts once the new account has 3 days of at least 60 minutes online within its first 7 days; each account is extended for this only once */
 export const REFERRAL = { days: 3, minutes: 60, within: 7, reward: 7 };
 /** length of a new trial, in days */
 export const TRIAL_DAYS = 7;
 export const shareLink = (code: string) => `${location.origin}/?ref=${code}`;
-/** phones and tablets, where LINE links open the LINE app with the message typed; on computers they only show a QR code */
-export const isMobile = () => /Android|iPhone|iPad|iPod/i.test(navigator.userAgent) || (/Macintosh/.test(navigator.userAgent) && navigator.maxTouchPoints > 1);
 
 export const PLANS: Record<string, string> = { trial: '試用', monthly: '月訂', yearly: '年訂', unlimited: '不限期' };
 
@@ -167,21 +163,17 @@ export async function requestTrial(email: string, ref: string) {
   if (error) throw error;
   if (!data) throw new Error('請確認電子郵件是否正確');
 }
+/** opens a 7-day trial account for this address and e-mails it a random password (0010) */
+export async function startTrial(email: string, ref: string): Promise<'created' | 'exists' | 'invalid' | 'busy'> {
+  const { data, error } = await supabase!.rpc('start_trial', { p_email: email, p_ref: ref || null });
+  if (error) throw error;
+  return (data as { status: 'created' | 'exists' | 'invalid' | 'busy' }).status;
+}
 /** the link in the confirmation e-mail: returns the confirmed address, or null when the link is unknown */
 export async function verifyTrial(token: string) {
   const { data, error } = await supabase!.rpc('verify_trial', { p_token: token });
   if (error) throw error;
   return data as string | null;
-}
-/** the same, while the page is leaving for LINE: the request still goes out */
-export function requestTrialBeacon(email: string, ref: string) {
-  const url = import.meta.env.VITE_SUPABASE_URL as string | undefined, key = (import.meta.env.VITE_SUPABASE_ANON_KEY as string | undefined)?.trim().replace(/^['"]|['"]$/g, '');
-  if (!url || !key) return;
-  fetch(`${normalizeSupabaseUrl(url)}/rest/v1/rpc/request_trial`, {
-    method: 'POST', keepalive: true,
-    headers: { apikey: key, Authorization: `Bearer ${key}`, 'Content-Type': 'application/json' },
-    body: JSON.stringify({ p_email: email, p_ref: ref || null }),
-  }).catch(() => {});
 }
 
 export interface TrialRequest { id: number; email: string; ref_code: string | null; created_at: string; handled_at: string | null }
