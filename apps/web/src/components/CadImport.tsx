@@ -44,11 +44,11 @@ export function CadImport({ firstId, onBuilt, onSource, onClose }: {
     setSt({ s: 'layers', name, dxf, map, unit: guessUnits(dxf), wallH: WALL_H });
   };
 
-  /** A drawing set with several floor plans goes to the whole-building step, a single plan to layer mapping. */
+  /** A drawing set (several floor plans, or a plan with its elevations / sections / schedule) goes to the whole-building step, a lone plan to layer mapping. */
   const route = (dxf: DxfDrawing, name: string) => {
     if (!dxf.segs.length) return setSt({ s: 'error', msg: '讀不到任何線條。請確認圖面畫在模型空間。' });
     const a = analyzeBuilding(dxf);
-    if (a && a.storeys.length >= 2) return setSt({ s: 'building', name, dxf, a });
+    if (a && (a.storeys.length >= 2 || (a.storeys.length === 1 && (a.schedule.length > 0 || a.views.some(v => v.kind !== 'plan'))))) return setSt({ s: 'building', name, dxf, a });
     toLayers(dxf, name);
   };
   const fromText = (text: string, name: string) => {

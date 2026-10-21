@@ -184,3 +184,23 @@ describe('mergeDrawings', () => {
     expect(both.objects.filter(o => o.layer === 'wall').length).toBe(one.objects.filter(o => o.layer === 'wall').length);
   });
 });
+
+describe('door / window schedule in a grid of cells', () => {
+  it('reads the size beside the code, the material row and the sill dimension standing on F.L.', async () => {
+    const { parseSchedule } = await import('../src/building');
+    const d: DxfDrawing = { segs: [], polys: [], texts: [], arcs: [], layers: new Map(), units: 5, version: 'AC1027', blockCount: 0, inserts: 0, dims: [] };
+    const text = (x: number, y: number, s: string, h = 25) => d.texts.push({ layer: 'T', x, y, s, h });
+    // W1: 160*130, sill 90 (dimension 0→90 under the 90→220 window height)
+    text(1000, 2000, 'W1'); text(1060, 2005, '160*130', 20);
+    text(1010, 1470, 'F.L.', 10); text(1080, 1450, '鋁推窗', 10);
+    d.dims!.push({ layer: 'D', a: [1020, 1470], b: [1020, 1560], v: 90 }, { layer: 'D', a: [1020, 1560], b: [1020, 1690], v: 130 });
+    // a corner window written piece by piece; the "+" splits the two legs
+    text(2000, 2000, 'W10'); text(2050, 2003, '鋁推窗(80*180)鋁窗(85*180+278*180)', 20);
+    // a finish legend has the same shape but is not an opening
+    text(3000, 2000, 'F1'); text(3060, 2000, '80*80拋光石英磚', 20);
+    const s = parseSchedule(d);
+    expect(s.find(i => i.code === 'W1')).toMatchObject({ w: 160, h: 130, sill: 90, name: '鋁推窗', kind: 'window' });
+    expect(s.find(i => i.code === 'W10')).toMatchObject({ w: 443, h: 180, legs: [165, 278] });
+    expect(s.find(i => i.code === 'F1')).toBeUndefined();
+  });
+});

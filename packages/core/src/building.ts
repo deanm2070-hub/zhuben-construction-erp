@@ -93,22 +93,48 @@ export function findViews(d: DxfDrawing): SheetView[] {
   // each file of a merged set has its own title size and sheet spacing
   if (d.parts && d.parts.length > 1) return d.parts.flatMap(p => findViews({ ...d, parts: undefined, texts: d.texts.filter(t => t.x >= p.x0 - 1 && t.x <= p.x1 + 1) }));
   const bare = (x: string) => x.replace(/\s/g, '').replace(/[(（][^)）]*[)）]$/, '');
-  const cand = d.texts.filter(t => TITLE_RE.test(bare(t.s)) && t.s.length <= 24);
+  // notes that end in 平面圖 (「開啟方向依平面圖」「*相關檢討同二層平面圖」) and lists naming several views are not titles
+  const all = d.texts.filter(t => TITLE_RE.test(bare(t.s)) && t.s.length <= 24 && !/[、，,。；;：:*＊]|依|詳|見|參|同/.test(t.s));
+  const SHEET_CODE = /^[A-Z]{1,2}\d{0,2}-\d{1,3}[A-Z]?$/;
+  const cand = all.filter(t => {
+    const h = t.h || 0;
+    if (!h) return true;
+    // a column of view names (drawing index, title block): another name of the same size right above or below it
+    if (all.some(o => o !== t && Math.abs(o.x - t.x) < h * 2 && Math.abs(o.y - t.y) < h * 3.5 && Math.abs(o.y - t.y) > h * 0.3 && (o.h || 0) > h * 0.75 && (o.h || 0) < h / 0.75)) return false;
+    // a row of the drawing index: the sheet number on its left
+    if (d.texts.some(o => SHEET_CODE.test(o.s.trim()) && o.x < t.x && t.x - o.x < h * 15 && Math.abs(o.y - t.y) < h * 0.6)) return false;
+    return true;
+  });
   if (!cand.length) return [];
   // titles come in several sizes (index sheet, sheet names, view labels): use the size that names the most views
   const hs = [...new Set(cand.map(t => t.h || 0))];
   const near = (h: number) => cand.filter(t => (t.h || 0) >= h * 0.7 && (t.h || 0) <= h / 0.7 || !h).length;
   const hMax = hs.length > 1 ? hs.reduce((b, h) => near(h) > near(b) || (near(h) === near(b) && h > b) ? h : b, hs[0]) : hs[0];
-  const titles = cand.filter(t => !hMax || (t.h || 0) >= hMax * 0.7 && (t.h || 0) <= hMax / 0.7 || /門窗[表圖]$/.test(t.s.replace(/\s/g, '')))
-    .filter((t, i, a) => a.findIndex(o => o.s === t.s && Math.hypot(o.x - t.x, o.y - t.y) < (hMax || 1)) === i);
+  const sized = (hm: number) => cand.filter(t => !hm || (t.h || 0) >= hm * 0.7 && (t.h || 0) <= hm / 0.7 || /門窗[表圖]$/.test(t.s.replace(/\s/g, '')));
+  const views = viewsOf(sized(hMax), hMax, bare);
+  // plans of other storeys titled in another size (a set whose sheets each use their own lettering): add the storeys still missing
+  const have = new Set(views.flatMap(v => v.floors));
+  const rest = cand.filter(t => !sized(hMax).includes(t));
+  while (rest.length) {
+    const h0 = rest[0].h || 0, grp = rest.filter(t => (t.h || 0) >= h0 * 0.7 && (t.h || 0) <= h0 / 0.7);
+    for (const t of grp) rest.splice(rest.indexOf(t), 1);
+    const add = viewsOf(grp, h0, bare).filter(v => v.kind === 'plan' && v.floors.length && v.floors.some(f => !have.has(f)));
+    views.push(...add);
+    for (const v of add) v.floors.forEach(f => have.add(f));
+  }
+  return views;
+}
+
+function viewsOf(titles0: DxfText[], hMax: number, bare: (s: string) => string): SheetView[] {
+  const titles = titles0.filter((t, i, a) => a.findIndex(o => o.s === t.s && Math.hypot(o.x - t.x, o.y - t.y) < (hMax || 1)) === i);
   const gaps: number[] = [];
   for (const t of titles) {
     let best = Infinity;
     for (const o of titles) if (o !== t && o.x > t.x && Math.abs(o.y - t.y) < (hMax || 10) * 2) best = Math.min(best, o.x - t.x);
     if (isFinite(best)) gaps.push(best);
   }
-  // sheets often skip a slot, so the typical view width is the smaller spacings
-  const w = quantile(gaps, 0.25) || (hMax ? hMax * 30 : 3000);
+  // sheets often skip a slot, so the typical view width is the smaller spacings; a lone title: about 55 times its letter height
+  const w = quantile(gaps, 0.25) || (hMax ? hMax * (titles.length > 1 ? 30 : 55) : 3000);
   const STRUCT = /結構平面圖$/;
   return titles.filter(t => STRUCT.test(bare(t.s)) || !SKIP_RE.test(t.s)).map(t => {
     const s = bare(t.s);
@@ -158,9 +184,47 @@ export function parseSchedule(d: DxfDrawing): ScheduleItem[] {
   // table layout: codes across the header row, each column giving "W x H", then the name, below it
   // a corner window is written as one size per leg: 210x200+196.5x200
   const PURE = /^(\d+(?:\.\d+)?)\s*[xX×*]\s*(\d+(?:\.\d+)?)(?:\s*\+\s*(\d+(?:\.\d+)?)\s*[xX×*]\s*\d+(?:\.\d+)?)?$/;
+  const CODE = /^(?:DW|SD|AW|W|D|AD|F)\d{1,3}[A-Z]?$/;
+  const PAIR = /(\d+(?:\.\d+)?)\s*[xX×*]\s*(\d+(?:\.\d+)?)/g;
+  // grid layout: each cell headed by the code with its size written beside it on the same line ("D1 120*250",
+  // or "W10 鋁推窗(80*180)鋁窗(85*180+278*180)" for a window of several pieces), the cell's elevation below with
+  // stacked vertical dimensions (sill, then height) standing on the F.L. line, and the material row (鋁推窗, 防火門) under it
   for (const c of d.texts) {
     const cd = c.s.trim();
-    if (!/^(?:DW|SD|AW|W|D|AD|F)\d{1,3}[A-Z]?$/.test(cd) || items.some(i => i.code === cd)) continue;
+    if (!CODE.test(cd) || items.some(i => i.code === cd)) continue;
+    const h = c.h || 20;
+    const side = d.texts.filter(t => t !== c && Math.abs(t.y - c.y) < h * 0.6 && t.x > c.x && t.x - c.x < h * 6 && /\d\s*[xX×*]\s*\d/.test(t.s) && !CODE.test(t.s.trim()))
+      .sort((a, b) => a.x - b.x)[0];
+    if (!side) continue;
+    // "+" joins the legs of a corner window; the pieces of one leg sit side by side
+    const legs = side.s.split('+').map(part => [...part.matchAll(PAIR)].reduce((n, m) => n + +m[1], 0)).filter(n => n > 0);
+    const pairs = [...side.s.matchAll(PAIR)];
+    if (!pairs.length || pairs.some(m => +m[1] > 2000 || +m[2] > 1000)) continue;
+    const H = Math.max(...pairs.map(m => +m[2])), W = legs.reduce((a, b) => a + b, 0);
+    const fl = d.texts.filter(t => /^F\.?L\.?$/i.test(t.s.trim()) && t.y < c.y && c.y - t.y < h * 36 && t.x > c.x - h * 3 && t.x < c.x + h * 4)
+      .sort((a, b) => b.y - a.y)[0];
+    const floorY = fl ? fl.y : c.y - h * 36;
+    const own = side.s.replace(PAIR, '').replace(/[()（）+\s\d.]/g, '');
+    // a finish legend (F1 80*80拋光石英磚) is not an opening
+    if (own && !/[門窗]/.test(own)) continue;
+    const mat = d.texts.filter(t => t.y < floorY + h && floorY - t.y < h * 6 && Math.abs(t.x - (c.x + side.x) / 2) < h * 8 && /[門窗]/.test(t.s) && !/[:：、]|門窗[表圖]/.test(t.s))
+      .sort((a, b) => b.y - a.y || Math.abs(a.x - c.x) - Math.abs(b.x - c.x))[0]?.s.trim() || '';
+    const label = /[門窗]/.test(own) ? own : mat;
+    const type = openingType(cd, label), kind = isDoorType(type) ? 'door' : 'window';
+    let sill = kind === 'door' || type === 'french' ? 0 : 90;
+    if (sill && fl && d.dims?.length) {
+      const lo = (m: { a: Pt; b: Pt }) => Math.min(m.a[1], m.b[1]), hi = (m: { a: Pt; b: Pt }) => Math.max(m.a[1], m.b[1]);
+      const vert = d.dims.filter(m => Math.abs(m.a[0] - m.b[0]) < h * 0.2 && m.a[0] > c.x - h && m.a[0] < c.x + h * 14 && lo(m) > fl.y - h && hi(m) < c.y);
+      // the dimension standing on the floor line with another stacked on top of it
+      const st = vert.filter(m => Math.abs(lo(m) - fl.y) < h * 0.6 && vert.some(q => q !== m && Math.abs(q.a[0] - m.a[0]) < h * 0.5 && Math.abs(lo(q) - hi(m)) < h * 0.3))
+        .sort((a, b) => Math.abs(a.a[0] - c.x) - Math.abs(b.a[0] - c.x))[0];
+      if (st) sill = Math.round(st.v);
+    }
+    items.push({ code: cd, w: W, h: H, name: openingName(cd, label), sill, kind, type, ...(legs.length === 2 ? { legs } : {}) });
+  }
+  for (const c of d.texts) {
+    const cd = c.s.trim();
+    if (!CODE.test(cd) || items.some(i => i.code === cd)) continue;
     const h = c.h || 20;
     const size = d.texts.map(t => ({ t, m: PURE.exec(t.s.trim()) })).filter(o => o.m && o.t.y < c.y && c.y - o.t.y < h * 80 && o.t.x > c.x - h * 14 && o.t.x < c.x + h * 3)
       .sort((a, b) => b.t.y - a.t.y)[0];
@@ -238,7 +302,9 @@ export function analyzeBuilding(d: DxfDrawing, defaultH = WALL_H): BuildingAnaly
   extraWall = new Set(wallLayers); scaleNow = scale;
   // when two files both have a plan of a storey (architectural and structural), the one with the most wall lines wins
   const walls = (v: SheetView) => d.segs.filter(s => isWallLayer(s.layer) && inBox(v.box, s.a[0], s.a[1]) && inBox(v.box, s.b[0], s.b[1])).length;
-  const plans = planViews.map(v => ({ v, n: walls(v) })).sort((a, b) => b.n - a.n).map(p => p.v);
+  // a site plan that also shows the ground floor (全區暨一層平面圖) only when there is no plan of the building alone
+  const site = (v: SheetView) => /全區|總平面|配置/.test(v.title) ? 1 : 0;
+  const plans = planViews.map(v => ({ v, n: walls(v) })).sort((a, b) => site(a.v) - site(b.v) || b.n - a.n).map(p => p.v);
   const levels = readLevels(d, views, scale);
   const schedule = parseSchedule(d);
   const pm = d.texts.map(t => /女兒牆[^0-9]{0,6}(\d{2,3})\s*(㎝|cm|公分)/i.exec(t.s)).find(Boolean);
@@ -316,11 +382,25 @@ const isWallLayer = (l: string) => guessLayerKind(l) === 'wall' || /^COL/i.test(
 function learnWalls(d: DxfDrawing, plans: SheetView[]): { scale: number; wallLayers: string[] } {
   const header = UNIT_SCALE[guessUnits(d)] || 1;
   const named = plans.some(v => d.segs.some(s => isWallLayer(s.layer) && inBox(v.box, s.a[0], s.a[1]) && inBox(v.box, s.b[0], s.b[1])));
-  if (named) return { scale: header, wallLayers: [] };
-  const byLayer = new Map<string, DxfSeg[]>();
+  const byLayer = new Map<string, DxfSeg[]>(), namedSegs: DxfSeg[] = [];
   for (const v of plans) for (const sg of d.segs) {
-    if (!inBox(v.box, sg.a[0], sg.a[1]) || !inBox(v.box, sg.b[0], sg.b[1]) || guessLayerKind(sg.layer) !== 'line' || /TEXT|AREA|PEN|DIM|圖框|TOIL|DOOR|DW|STAIR|SYM|AID|PAVE|變更/i.test(sg.layer)) continue;
+    if (!inBox(v.box, sg.a[0], sg.a[1]) || !inBox(v.box, sg.b[0], sg.b[1])) continue;
+    if (isWallLayer(sg.layer)) namedSegs.push(sg);
+    if (guessLayerKind(sg.layer) !== 'line' || /TEXT|AREA|PEN|DIM|圖框|TOIL|DOOR|DW|STAIR|SYM|AID|PAVE|變更|WIN|窗|門|FURN|家具|衛浴|PLUM|FIX|曲線|等高|CONT|TOPO|地形|地界|ROAD|道路/i.test(sg.layer)) continue;
     (byLayer.get(sg.layer) || byLayer.set(sg.layer, []).get(sg.layer)!).push(sg);
+  }
+  const pairedLen = (ss: DxfSeg[], k: number) => pairWalls(ss.map(sg => ({ x1: sg.a[0] * k, z1: sg.a[1] * k, x2: sg.b[0] * k, z2: sg.b[1] * k }))).filter(x => !x.single && x.t >= 8 && x.t <= 40);
+  if (named) {
+    // a layer named WALL can hold only a few pieces (window frames) while the walls themselves are on layer 0: learn those too when they pair up into more wall than the named layers
+    const namedLen = pairedLen(namedSegs, header).reduce((n, x) => n + Math.hypot(x.bx - x.ax, x.bz - x.az), 0);
+    const extra: string[] = [];
+    let total = 0;
+    for (const [l, ss] of byLayer) {
+      if (ss.length < 8) continue;
+      const w = pairedLen(ss, header), len = w.reduce((n, x) => n + Math.hypot(x.bx - x.ax, x.bz - x.az), 0);
+      if (len >= 1000 && w.length >= 6) { extra.push(l); total += len; }
+    }
+    return { scale: header, wallLayers: total > namedLen * 2 ? extra : [] };
   }
   let best = { scale: header, layers: [] as string[], total: 0 };
   for (const k of [header, 1, 0.1, 10]) {
@@ -340,7 +420,78 @@ function learnWalls(d: DxfDrawing, plans: SheetView[]): { scale: number; wallLay
 
 const isOpenLayer = (l: string) => /OPEN|DOOR|WIN|門|窗|^DW$/i.test(l) && !/編號|TAG|TEXT|-T$/i.test(l);
 
-interface PlanGeo { segs: DxfSeg[]; ox: number; oy: number; gx: number[]; gy: number[] }
+interface PlanGeo { segs: DxfSeg[]; ox: number; oy: number; gx: number[]; gy: number[]; /** origin taken from grid bubbles on that axis */ ax?: boolean; ay?: boolean }
+
+/** Lines with a parallel partner 5–45 cm away overlapping it by at least a third: the two faces of a wall. `u` = drawing units per cm. */
+function pairedOnly(ws: DxfSeg[], u: number): DxfSeg[] {
+  const L = ws.map(s => {
+    const dx = s.b[0] - s.a[0], dy = s.b[1] - s.a[1], len = Math.hypot(dx, dy);
+    return { s, len, ux: dx / (len || 1), uy: dy / (len || 1) };
+  });
+  const ok = new Set<number>();
+  for (let i = 0; i < L.length; i++) {
+    const p = L[i];
+    if (p.len < 30 * u) continue;
+    for (let j = i + 1; j < L.length; j++) {
+      const q = L[j];
+      if (q.len < 30 * u || Math.abs(p.ux * q.uy - p.uy * q.ux) > 0.02) continue;
+      const ox = q.s.a[0] - p.s.a[0], oy = q.s.a[1] - p.s.a[1], dist = Math.abs(ox * p.uy - oy * p.ux);
+      if (dist < 5 * u || dist > 45 * u) continue;
+      const t0 = ox * p.ux + oy * p.uy, t1 = (q.s.b[0] - p.s.a[0]) * p.ux + (q.s.b[1] - p.s.a[1]) * p.uy;
+      const ov = Math.min(p.len, Math.max(t0, t1)) - Math.max(0, Math.min(t0, t1));
+      if (ov > Math.min(p.len, q.len) / 3) { ok.add(i); ok.add(j); }
+    }
+  }
+  return ws.filter((_, i) => ok.has(i));
+}
+
+/**
+ * Plans without grid bubbles are stacked by their wall outline. The corner of the drawn lines is easily thrown off
+ * by steps, planters or an axis line, so each such plan is slid onto the ground-floor plan where the most of its
+ * wall faces land on that plan's wall faces, trying each corner of the two outlines.
+ */
+function alignOutlines(gs: PlanGeo[], S: number) {
+  const ref = gs[0];
+  if (!ref || gs.length < 2) return;
+  const u = 1 / S, cell = 20 * u;
+  const facesOf = (g: PlanGeo) => {
+    const ws = g.segs.filter(q => isWallLayer(q.layer)), pr = pairedOnly(ws, u);
+    return pr.length >= 8 ? pr : ws;
+  };
+  const sample = (ss: DxfSeg[], ox: number, oy: number) => {
+    const pts: Pt[] = [];
+    for (const q of ss) {
+      const n = Math.max(1, Math.ceil(Math.hypot(q.b[0] - q.a[0], q.b[1] - q.a[1]) / cell));
+      for (let i = 0; i <= n; i++) pts.push([q.a[0] + (q.b[0] - q.a[0]) * i / n - ox, q.a[1] + (q.b[1] - q.a[1]) * i / n - oy]);
+    }
+    return pts;
+  };
+  const box = (pts: Pt[]) => ({ x0: minOf(pts.map(p => p[0])), x1: maxOf(pts.map(p => p[0])), y0: minOf(pts.map(p => p[1])), y1: maxOf(pts.map(p => p[1])) });
+  const rp = sample(facesOf(ref), ref.ox, ref.oy);
+  if (rp.length < 20) return;
+  const grid = new Set(rp.map(p => `${Math.round(p[0] / cell)},${Math.round(p[1] / cell)}`)), rb = box(rp);
+  const score = (pts: Pt[], dx: number, dy: number) => {
+    let n = 0;
+    for (const p of pts) {
+      const i = Math.round((p[0] + dx) / cell), j = Math.round((p[1] + dy) / cell);
+      if (grid.has(`${i},${j}`) || grid.has(`${i + 1},${j}`) || grid.has(`${i - 1},${j}`) || grid.has(`${i},${j + 1}`) || grid.has(`${i},${j - 1}`)) n++;
+    }
+    return n;
+  };
+  for (const g of gs.slice(1)) {
+    const fx = !!(g.ax && ref.ax), fy = !!(g.ay && ref.ay);
+    if (g === ref || (fx && fy)) continue;
+    const pts = sample(facesOf(g), g.ox, g.oy);
+    if (pts.length < 20) continue;
+    const b = box(pts);
+    let best = { n: score(pts, 0, 0), dx: 0, dy: 0 };
+    for (const dx of fx ? [0] : [rb.x0 - b.x0, rb.x1 - b.x1]) for (const dy of fy ? [0] : [rb.y0 - b.y0, rb.y1 - b.y1]) {
+      const n = score(pts, dx, dy);
+      if (n > best.n * 1.1) best = { n, dx, dy };
+    }
+    g.ox -= best.dx; g.oy -= best.dy;
+  }
+}
 
 /** Plan geometry and the origin used to stack floors: the first numbered grid line and grid line A when the plan has grid bubbles. */
 /**
@@ -349,8 +500,12 @@ interface PlanGeo { segs: DxfSeg[]; ox: number; oy: number; gx: number[]; gy: nu
  * Everything outside that area (with a 2 m margin for balconies and canopies) is left out.
  */
 export function buildingArea(segs: DxfSeg[], gap: number): { x0: number; y0: number; x1: number; y1: number; dropped: number } | null {
-  const ws = segs.filter(s => isWallLayer(s.layer));
+  let ws = segs.filter(s => isWallLayer(s.layer));
   if (ws.length < 20) return null;
+  // on a catch-all layer (walls drawn on "0" with the site, contours and sheet frame) only lines with a parallel
+  // partner a wall thickness away say where the building is
+  const paired = pairedOnly(ws, gap / 400), byPairs = paired.length >= 20 && paired.length < ws.length * 0.8;
+  if (byPairs) ws = paired;
   const cell = (v: number) => Math.floor(v / gap), key = (i: number, j: number) => `${i},${j}`;
   const parent = ws.map((_, i) => i), find = (i: number): number => parent[i] === i ? i : (parent[i] = find(parent[i]));
   const at = new Map<string, number>();
@@ -364,17 +519,27 @@ export function buildingArea(segs: DxfSeg[], gap: number): { x0: number; y0: num
       at.set(key(ci, cj), i);
     }
   });
-  const groups = new Map<number, { n: number; x0: number; y0: number; x1: number; y1: number }>();
+  // the building's walls run square to one another: long lines along the drawing's main direction weigh most
+  // (a ladder, hatching or a winding road gives many short or slanting lines)
+  const ang = (q: DxfSeg) => ((Math.atan2(q.b[1] - q.a[1], q.b[0] - q.a[0]) * 180 / Math.PI) % 90 + 90) % 90;
+  const hist = new Array(90).fill(0);
+  for (const q of ws) hist[Math.round(ang(q)) % 90] += Math.hypot(q.b[0] - q.a[0], q.b[1] - q.a[1]);
+  const dom = hist.indexOf(Math.max(...hist)), long = gap / 4;
+  const weight = (q: DxfSeg) => {
+    const len = Math.hypot(q.b[0] - q.a[0], q.b[1] - q.a[1]), da = Math.abs(ang(q) - dom);
+    return len >= long && Math.min(da, 90 - da) < 2 ? len : 0;
+  };
+  const groups = new Map<number, { n: number; w: number; x0: number; y0: number; x1: number; y1: number }>();
   ws.forEach((s, i) => {
-    const r = find(i), g = groups.get(r) || { n: 0, x0: Infinity, y0: Infinity, x1: -Infinity, y1: -Infinity };
-    g.n++; g.x0 = Math.min(g.x0, s.a[0], s.b[0]); g.x1 = Math.max(g.x1, s.a[0], s.b[0]); g.y0 = Math.min(g.y0, s.a[1], s.b[1]); g.y1 = Math.max(g.y1, s.a[1], s.b[1]);
+    const r = find(i), g = groups.get(r) || { n: 0, w: 0, x0: Infinity, y0: Infinity, x1: -Infinity, y1: -Infinity };
+    g.n++; g.w += byPairs ? weight(s) : 1; g.x0 = Math.min(g.x0, s.a[0], s.b[0]); g.x1 = Math.max(g.x1, s.a[0], s.b[0]); g.y0 = Math.min(g.y0, s.a[1], s.b[1]); g.y1 = Math.max(g.y1, s.a[1], s.b[1]);
     groups.set(r, g);
   });
-  const all = [...groups.values()].sort((p, q) => q.n - p.n), main = all[0];
-  const keep = all.filter(g => g === main || g.n >= main.n * 0.2
+  const all = [...groups.values()].sort((p, q) => q.w - p.w), main = all[0];
+  const keep = all.filter(g => g === main || g.w >= main.w * 0.2
     || (g.x0 <= main.x1 + gap && g.x1 >= main.x0 - gap && g.y0 <= main.y1 + gap && g.y1 >= main.y0 - gap));
   const area = { x0: minOf(keep.map(g => g.x0)), y0: minOf(keep.map(g => g.y0)), x1: maxOf(keep.map(g => g.x1)), y1: maxOf(keep.map(g => g.y1)), dropped: ws.length - keep.reduce((n, g) => n + g.n, 0) };
-  return area.dropped ? area : null;
+  return area.dropped || byPairs ? area : null;
 }
 
 function planGeo(d: DxfDrawing, v: SheetView): PlanGeo {
@@ -385,9 +550,28 @@ function planGeo(d: DxfDrawing, v: SheetView): PlanGeo {
   const nums = grid.filter(t => /^\d{1,2}$/.test(t.s)).sort((a, b) => +a.s - +b.s);
   const lets = grid.filter(t => /^[A-Z]$/.test(t.s)).sort((a, b) => a.s.localeCompare(b.s));
   const gx = [...new Set(nums.map(t => Math.round(t.x)))], gy = [...new Set(lets.map(t => Math.round(t.y)))];
-  if (nums.length && lets.length) return { segs, ox: nums[0].x, oy: lets[0].y, gx, gy };
+  if (nums.length && lets.length) return { segs, ox: nums[0].x, oy: lets[0].y, gx, gy, ax: true, ay: true };
   const ws = segs.filter(s => isWallLayer(s.layer));
-  return { segs, ox: minOf(ws.flatMap(s => [s.a[0], s.b[0]])), oy: maxOf(ws.flatMap(s => [s.a[1], s.b[1]])), gx, gy };
+  // X1 X2 … / Y1 Y2 … grid bubbles on any layer (also "X" with the number as a separate text beside it)
+  const xy = (axis: 'X' | 'Y') => {
+    const out: { n: number; x: number; y: number }[] = [];
+    for (const t of d.texts) {
+      if (!inBox(v.box, t.x, t.y)) continue;
+      const m = new RegExp(`^${axis}\\s*-?(\\d{1,2})$`).exec(t.s.trim());
+      if (m) { out.push({ n: +m[1], x: t.x, y: t.y }); continue; }
+      if (t.s.trim() !== axis) continue;
+      const h = t.h || 20, dg = d.texts.find(o => /^\d{1,2}$/.test(o.s.trim()) && o.x > t.x && o.x - t.x < h * 1.5 && Math.abs(o.y - t.y) < h);
+      if (dg) out.push({ n: +dg.s.trim(), x: t.x, y: t.y });
+    }
+    return out.sort((a, b) => a.n - b.n);
+  };
+  const bx = xy('X'), by = xy('Y');
+  return {
+    segs, gx, gy,
+    ox: bx.length >= 2 ? bx[0].x : minOf(ws.flatMap(s => [s.a[0], s.b[0]])),
+    oy: by.length >= 2 ? by[0].y : maxOf(ws.flatMap(s => [s.a[1], s.b[1]])),
+    ax: bx.length >= 2, ay: by.length >= 2,
+  };
 }
 
 /** Slab thickness used for the 3D floor plates, cm. */
@@ -967,15 +1151,18 @@ export function buildBuilding(d: DxfDrawing, a: BuildingAnalysis, name: string, 
   const unmatchedTags: BuildReport['unmatchedTags'] = [], stairList: BuildReport['stairs'] = [];
   let projectionLabels = 0;
   const geos = new Map(a.plans.map(p => [p, planGeo(d, p)]));
+  // the plans the storeys are built from (a site plan repeating the ground floor is not one of them)
+  const used = new Set(a.storeys.map(st => a.plans.find(p => p.floors.includes(st.key))));
+  alignOutlines(a.storeys.map(st => geos.get(a.plans.find(p => p.floors.includes(st.key))!)!), S);
   let minX = Infinity, maxY = -Infinity, maxX = -Infinity, minY = Infinity;
-  for (const [, g] of geos) for (const s of g.segs) if (isWallLayer(s.layer)) for (const p of [s.a, s.b]) {
+  for (const [p, g] of geos) if (used.has(p)) for (const s of g.segs) if (isWallLayer(s.layer)) for (const p of [s.a, s.b]) {
     minX = Math.min(minX, p[0] - g.ox); maxX = Math.max(maxX, p[0] - g.ox); minY = Math.min(minY, p[1] - g.oy); maxY = Math.max(maxY, p[1] - g.oy);
   }
   const W = (maxX - minX) * S, D = (maxY - minY) * S;
   const codes = new Map(a.schedule.map(i => [i.code, i]));
   // tags written on the plans per code (a corner window counts once per leg); openings without a tag are given the codes still short of this
   const taggedN = new Map<string, number>(), builtCount = new Map<string, number>(), guessedN = new Map<string, number>();
-  for (const p of a.plans) {
+  for (const p of a.plans.filter(p => used.has(p))) {
     const seen: { c: string; x: number; y: number }[] = [];
     for (const t of d.texts) {
       const c = t.s.trim();
