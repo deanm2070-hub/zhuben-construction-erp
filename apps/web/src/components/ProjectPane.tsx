@@ -99,7 +99,7 @@ export function ProjectPane({ projectId, owner, name, role, info, versions, pb, 
 
       <section className="card">
         <h3>原始圖檔</h3>
-        {files === null ? <p className="note">載入中…</p> : !files.length ? <p className="note">{store.cloud ? '還沒有上傳的圖檔。在「圖面匯入」匯入的 DWG、DXF、PDF、SketchUp 檔會自動備份在這裡。' : '本機模式不保存原始圖檔。'}</p> :
+        {files === null ? <p className="note">載入中…</p> : !files.length ? <p className="note">{store.cloud ? '還沒有上傳的圖檔。在「圖面匯入」匯入的 DWG、DXF、SketchUp 檔會自動備份在這裡。' : '本機模式不保存原始圖檔。'}</p> :
           <ul className="files">{files.map(f => <li key={f.path}><span title={f.name}>{f.name}</span><small>{size(f.size)}・{f.at ? new Date(f.at).toLocaleDateString('zh-TW') : ''}</small>
             <button className="chip ghost sm" onClick={async () => { try { const a = document.createElement('a'); a.href = await store.sourceUrl(f.path); a.rel = 'noopener'; a.click(); } catch (e) { toast((e as Error).message); } }}>下載</button></li>)}</ul>}
       </section>

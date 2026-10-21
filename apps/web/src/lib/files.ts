@@ -1,33 +1,6 @@
 import type { ProjectModel } from '@cloud-modeler/core';
 import { REBAR_KINDS, REBAR_STD, rebarSummary, type Takeoff } from '@cloud-modeler/core';
-import * as pdfjs from 'pdfjs-dist';
-import workerUrl from 'pdfjs-dist/build/pdf.worker.min.mjs?url';
 import * as XLSX from 'xlsx';
-
-pdfjs.GlobalWorkerOptions.workerSrc = workerUrl;
-
-/** Renders page 1 of a PDF to a canvas about 2400 px on its long side. */
-export async function pdfFirstPage(file: File) {
-  const doc = await pdfjs.getDocument({ data: new Uint8Array(await file.arrayBuffer()) }).promise;
-  const page = await doc.getPage(1), v0 = page.getViewport({ scale: 1 });
-  const vp = page.getViewport({ scale: Math.min(4, 2400 / Math.max(v0.width, v0.height)) });
-  const cv = document.createElement('canvas');
-  cv.width = vp.width; cv.height = vp.height;
-  const ctx = cv.getContext('2d')!;
-  ctx.fillStyle = '#fff';
-  ctx.fillRect(0, 0, cv.width, cv.height);
-  await page.render({ canvasContext: ctx, viewport: vp }).promise;
-  return { canvas: cv, pages: doc.numPages };
-}
-
-export function loadImage(file: File) {
-  return new Promise<HTMLImageElement>((ok, no) => {
-    const img = new Image();
-    img.onload = () => ok(img);
-    img.onerror = () => no(new Error('圖片讀取失敗'));
-    img.src = URL.createObjectURL(file);
-  });
-}
 
 export function download(name: string, data: BlobPart, type: string) {
   const a = document.createElement('a');

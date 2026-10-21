@@ -1,7 +1,7 @@
 import { computeBuildingTakeoff, computeTakeoff, DEFAULT_SETTINGS, memberOf, MEMBERS, priceBudget, withPricing, type CalcVersion, type FinishChoice, type ModelObject, type Pricing, type ProjectInfo, type TakeoffSettings } from '@cloud-modeler/core';
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { DRAW_KINDS, TOOL_HINT, Viewer, type DrawKind, type RenderMode, type SceneKey, type Tool } from '../engine/Viewer';
-import { download, loadImage, pdfFirstPage, PROJECT_EXT, projectFile } from '../lib/files';
+import { download, PROJECT_EXT, projectFile } from '../lib/files';
 import { store, type Role } from '../lib/store';
 import { BudgetPane } from './BudgetPane';
 import { CadImport } from './CadImport';
@@ -15,7 +15,7 @@ import { TrialLock } from './TrialLock';
 
 /** The six parts of a project, in working order. */
 export const MODULES = [
-  ['import', '圖面匯入', 'DWG／DXF／SKP／PDF'],
+  ['import', '圖面匯入', 'DWG／DXF／SKP'],
   ['3d', '3D 模型', '檢視與校正'],
   ['qty', '工程數量', '混凝土、模板、鋼筋…'],
   ['budget', '預算報價', '單價、複價、總價'],
@@ -62,7 +62,6 @@ export function Editor({ projectId, importNow, trial = false, onExit }: { projec
   const [lock, setLock] = useState(false);
   // the import dialog is for a new project only: a reload (or the 更新 button) must not bring it back over the model
   useEffect(() => { if (importNow) history.replaceState(null, '', `#/p/${projectId}`); }, []);
-  const [underlay, setUnderlay] = useState(false);
   const [floor, setFloor] = useState<string | null>(null);
   const [finishes, setFinishes] = useState<Record<string, Partial<FinishChoice>>>({});
   const [settings, setSettings] = useState<TakeoffSettings>(DEFAULT_SETTINGS);
@@ -161,24 +160,6 @@ export function Editor({ projectId, importNow, trial = false, onExit }: { projec
     document.documentElement.dataset.theme = dark ? 'light' : 'dark';
     v().themeChanged();
     bump(n => n + 1);
-  };
-
-  const onUnderlayFile = async (f: File) => {
-    try {
-      if (f.type === 'application/pdf' || /\.pdf$/i.test(f.name)) {
-        const { canvas, pages } = await pdfFirstPage(f);
-        v().setUnderlay(canvas);
-        showToast(`PDF 第 1 頁已鋪在地面${pages > 1 ? `（共 ${pages} 頁）` : ''}，可用「畫牆/櫃」描圖`);
-      } else {
-        v().setUnderlay(await loadImage(f));
-        showToast('底圖已鋪在地面，可用「畫牆/櫃」描圖');
-      }
-      store.uploadSource(projectId, f).catch(() => {});
-      setUnderlay(true);
-      setModule('3d');
-      v().goScene('top'); setScene('top');
-      chooseTool('draw');
-    } catch { showToast('檔案讀取失敗，請確認 PDF 沒有加密'); }
   };
 
   const takeoffNow = () => {
@@ -288,9 +269,9 @@ export function Editor({ projectId, importNow, trial = false, onExit }: { projec
             onClose={() => v().selectId(null)} />
         )}
         {module !== '3d' && viewer.current && <div className="paneWrap">
-          {module === 'import' && <ImportPane cad={viewer.current.cad} objects={viewer.current.objects} readOnly={readOnly} underlay={underlay}
+          {module === 'import' && <ImportPane cad={viewer.current.cad} objects={viewer.current.objects} readOnly={readOnly}
             trial={trial} onLocked={() => setLock(true)}
-            onImport={() => trial ? setLock(true) : setDialog('cad')} onUnderlay={f => trial ? setLock(true) : onUnderlayFile(f)} onTo3d={() => setModule('3d')} />}
+            onImport={() => trial ? setLock(true) : setDialog('cad')} onTo3d={() => setModule('3d')} />}
           {module === 'qty' && t && pb && <Takeoff takeoff={t} pb={pb} pricing={pricing} project={name || '未命名專案'} settings={settings} readOnly={readOnly}
             subtitle={subtitle}
             onSettings={setSettings}
