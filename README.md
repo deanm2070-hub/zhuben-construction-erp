@@ -28,7 +28,8 @@ npm run build
 ### 1. Supabase（帳號、資料庫、檔案）
 
 1. 在 supabase.com 建立專案。
-2. 在 SQL Editor 執行 `supabase/migrations/0001_projects.sql`（或使用 `supabase db push`）。
+2. 在 SQL Editor 依序執行 `supabase/migrations/0001_projects.sql`、`0002_subscriptions.sql`（或使用 `supabase db push`）。
+   0002 加入訂閱控管：每個帳號有方案與到期日，第一個在「我的專案」按「把這個帳號設為管理員」的帳號成為管理員，可在「管理員後台」新增帳號、延長、停用。到期或停用的帳號由資料庫權限（RLS）擋住，打不開專案。
 3. Authentication → Providers 啟用 Email。
 4. 記下 Project URL 與 anon key。
 

@@ -1,12 +1,15 @@
 import type { Session } from '@supabase/supabase-js';
 import { useEffect, useState } from 'react';
+import { AdminPage } from './components/AdminPage';
 import { AuthPage } from './components/AuthPage';
 import { Editor } from './components/Editor';
 import { ProjectsPage } from './components/ProjectsPage';
+import { loadAccount, OPEN_ACCOUNT, type Account } from './lib/account';
 import { supabase, supabaseConfigError } from './lib/supabase';
 import { watchUpdates } from './lib/update';
 
 const readRoute = () => {
+  if (location.hash === '#/admin') return { admin: true as const };
   const m = location.hash.match(/^#\/p\/([\w-]+)(\/import)?$/);
   return m ? { id: m[1], importNow: !!m[2] } : null;
 };
@@ -15,6 +18,10 @@ export function App() {
   const [session, setSession] = useState<Session | null | undefined>(supabase ? undefined : null);
   const [route, setRoute] = useState(readRoute);
   const [update, setUpdate] = useState<string | null>(null);
+  const [account, setAccount] = useState<Account | null>(supabase ? null : OPEN_ACCOUNT);
+  const uid = session?.user.id;
+  const reloadAccount = () => { if (uid) loadAccount(uid).then(setAccount).catch(() => setAccount(OPEN_ACCOUNT)); };
+  useEffect(() => { setAccount(supabase ? null : OPEN_ACCOUNT); reloadAccount(); }, [uid]);
 
   useEffect(() => {
     if (!supabase) return;
@@ -49,7 +56,25 @@ export function App() {
     }
     if (supabase && session === undefined) return <div className="page"><div className="wrap"><p className="note">載入中…</p></div></div>;
     if (supabase && !session) return <AuthPage />;
+    if (!account) return <div className="page"><div className="wrap"><p className="note">載入中…</p></div></div>;
+    if (!account.active) return <Expired email={session?.user.email ?? ''} profile={account.profile} />;
+    if (route && 'admin' in route) return account.admin ? <AdminPage selfId={uid!} onBack={() => { location.hash = ''; }} /> : <ProjectsPage email={session?.user.email ?? null} account={account} onAccount={reloadAccount} onOpen={(id, importNow) => { location.hash = `#/p/${id}${importNow ? '/import' : ''}`; }} />;
     if (route) return <Editor key={route.id} projectId={route.id} importNow={route.importNow} onExit={() => { location.hash = ''; }} />;
-    return <ProjectsPage email={session?.user.email ?? null} onOpen={(id, importNow) => { location.hash = `#/p/${id}${importNow ? '/import' : ''}`; }} />;
+    return <ProjectsPage email={session?.user.email ?? null} account={account} onAccount={reloadAccount} onOpen={(id, importNow) => { location.hash = `#/p/${id}${importNow ? '/import' : ''}`; }} />;
   }
+}
+
+/** Signed in, but the subscription has ended or the account is disabled. */
+function Expired({ email, profile }: { email: string; profile: Account['profile'] }) {
+  return (
+    <div className="page"><div className="wrap" style={{ maxWidth: 520 }}>
+      <img src="/logo.png" alt="築量雲" width={72} height={72} />
+      <h1>{profile?.disabled ? '帳號已停用' : profile ? '訂閱已到期' : '帳號尚未開通'}</h1>
+      <p className="note">{email}{profile?.expires_at && !profile.disabled ? `，到期日 ${profile.expires_at.slice(0, 10)}` : ''}。請聯絡管理員續約或開通，完成後重新整理此頁即可繼續使用；你的專案都還保留著。</p>
+      <div className="kv">
+        <button className="chip on" onClick={() => location.reload()}>重新整理</button>
+        <button className="chip ghost" onClick={() => supabase!.auth.signOut()}>登出</button>
+      </div>
+    </div></div>
+  );
 }

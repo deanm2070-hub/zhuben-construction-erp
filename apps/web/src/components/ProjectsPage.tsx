@@ -5,8 +5,9 @@ import { emptyModel, store, type ProjectMeta } from '../lib/store';
 import { supabase } from '../lib/supabase';
 import { readProjectFile } from '../lib/files';
 import { VERSION } from '../lib/version';
+import { claimAdmin, PLANS, type Account } from '../lib/account';
 
-export function ProjectsPage({ email, onOpen }: { email: string | null; onOpen: (id: string, importNow?: boolean) => void }) {
+export function ProjectsPage({ email, account, onAccount, onOpen }: { email: string | null; account: Account; onAccount: () => void; onOpen: (id: string, importNow?: boolean) => void }) {
   const [list, setList] = useState<ProjectMeta[] | null>(null);
   const [err, setErr] = useState('');
   const [confirmId, setConfirmId] = useState<string | null>(null);
@@ -33,10 +34,12 @@ export function ProjectsPage({ email, onOpen }: { email: string | null; onOpen: 
           <h1><img src="/logo.png" alt="" width={32} height={32} style={{ verticalAlign: 'middle', marginRight: 8 }} />我的專案 <small className="ver">{VERSION}</small></h1>
           <div className="kv">
             <InstallButton />
-            {email && <span className="note">{email}</span>}
+            {email && <span className="note">{email}{account.ready && !account.admin && account.profile && `・${PLANS[account.profile.plan] || account.profile.plan}${account.profile.expires_at ? ` 到期 ${account.profile.expires_at.slice(0, 10)}` : ''}`}</span>}
+            {account.admin && <button className="chip key" onClick={() => { location.hash = '#/admin'; }}>管理員後台</button>}
             {supabase && <button className="chip ghost" onClick={() => supabase!.auth.signOut()}>登出</button>}
           </div>
         </div>
+        {account.ready && !account.adminExists && <div className="banner">還沒有管理員。<button className="chip on" onClick={async () => { try { if (await claimAdmin()) onAccount(); } catch (e) { setErr(String((e as Error).message || e)); } }}>把這個帳號設為管理員</button>（只有第一個按的帳號會成為管理員）</div>}
         {!store.cloud && <div className="banner">目前是本機模式：專案存在這個瀏覽器裡。設定 Supabase 後即可登入並存到雲端（見 README）。</div>}
         <div className="kv">
           <button className="chip key" onClick={() => create('cad')}>從 AutoCAD／SketchUp／PDF 開始</button>

@@ -1,0 +1,93 @@
+import { useEffect, useState } from 'react';
+import { createAccount, extend, listProfiles, PLANS, updateProfile, type Profile } from '../lib/account';
+
+const day = (iso: string | null) => (iso ? iso.slice(0, 10) : '');
+const status = (p: Profile) => p.disabled ? { t: '已停用', c: 'err' } : p.expires_at && new Date(p.expires_at) <= new Date() ? { t: '已到期', c: 'err' } : { t: '使用中', c: 'ok' };
+
+/** 管理員後台: every account with its plan and expiry; add accounts, extend, disable. */
+export function AdminPage({ selfId, onBack }: { selfId: string; onBack: () => void }) {
+  const [list, setList] = useState<Profile[] | null>(null);
+  const [err, setErr] = useState('');
+  const [msg, setMsg] = useState('');
+  const [q, setQ] = useState('');
+  const [form, setForm] = useState({ email: '', password: '', plan: 'monthly', expires: day(extend(null, 1)) });
+  const [busy, setBusy] = useState(false);
+
+  const refresh = () => listProfiles().then(setList).catch(e => setErr(String(e.message || e)));
+  useEffect(() => { refresh(); }, []);
+
+  const patch = async (p: Profile, change: Parameters<typeof updateProfile>[1], done: string) => {
+    setErr(''); setMsg('');
+    try { await updateProfile(p.id, change); setMsg(`${p.email}：${done}`); refresh(); } catch (e) { setErr(String((e as Error).message || e)); }
+  };
+  const add = async (e: React.FormEvent) => {
+    e.preventDefault();
+    setBusy(true); setErr(''); setMsg('');
+    try {
+      const r = await createAccount(form.email.trim(), form.password, form.plan, form.plan === 'unlimited' || !form.expires ? null : new Date(`${form.expires}T23:59:59`).toISOString());
+      setMsg(`已建立 ${form.email}${r.confirm ? '，對方需先到信箱點啟用連結才能登入' : ''}`);
+      setForm({ ...form, email: '', password: '' });
+      refresh();
+    } catch (x) { setErr(String((x as Error).message || x)); }
+    setBusy(false);
+  };
+
+  const shown = (list || []).filter(p => !q || (p.email || '').includes(q) || (p.note || '').includes(q));
+  const active = (list || []).filter(p => status(p).c === 'ok').length;
+
+  return (
+    <div className="page">
+      <div className="wrap">
+        <div className="head">
+          <h1>管理員後台</h1>
+          <button className="chip ghost" onClick={onBack}>← 我的專案</button>
+        </div>
+        <p className="note">共 {list?.length ?? '…'} 個帳號，使用中 {active} 個。到期或停用的帳號登入後只會看到續約提示，打不開專案（資料仍保留，延長後就恢復）。新註冊的帳號自動有 14 天試用。</p>
+
+        <form className="card" onSubmit={add}>
+          <h3>新增帳號</h3>
+          <div className="kv">
+            <input id="new-email" type="email" placeholder="電子郵件" value={form.email} onChange={e => setForm({ ...form, email: e.target.value })} required />
+            <input id="new-password" type="text" placeholder="初始密碼（至少 6 碼）" minLength={6} value={form.password} onChange={e => setForm({ ...form, password: e.target.value })} required />
+            <select id="new-plan" value={form.plan} onChange={e => { const plan = e.target.value; setForm({ ...form, plan, expires: plan === 'yearly' ? day(extend(null, 12)) : plan === 'monthly' ? day(extend(null, 1)) : plan === 'trial' ? day(new Date(Date.now() + 14 * 864e5).toISOString()) : '' }); }}>
+              {Object.entries(PLANS).map(([k, v]) => <option key={k} value={k}>{v}</option>)}
+            </select>
+            {form.plan !== 'unlimited' && <label className="note">到期日 <input id="new-expires" type="date" value={form.expires} onChange={e => setForm({ ...form, expires: e.target.value })} required /></label>}
+            <button className="chip on" disabled={busy}>{busy ? '建立中…' : '建立帳號'}</button>
+          </div>
+        </form>
+
+        {err && <p className="err">{err}</p>}
+        {msg && <p className="note">{msg}</p>}
+        <input id="admin-search" type="search" placeholder="搜尋電子郵件或備註" value={q} onChange={e => setQ(e.target.value)} />
+
+        {list === null ? <p className="note">載入中…</p> : (
+          <div className="grid">
+            {shown.map(p => {
+              const s = status(p), self = p.id === selfId;
+              return (
+                <div className="card" key={p.id}>
+                  <h3 title={p.email || ''}>{p.email}{self && '（你）'}</h3>
+                  <span className={s.c === 'err' ? 'err' : 'meta'}>{s.t}・{PLANS[p.plan] || p.plan}・{p.expires_at ? `到期 ${day(p.expires_at)}` : '不限期'}</span>
+                  <span className="meta">建立於 {day(p.created_at)}</span>
+                  <div className="kv">
+                    <select id={`plan-${p.id}`} value={p.plan} onChange={e => patch(p, { plan: e.target.value, ...(e.target.value === 'unlimited' ? { expires_at: null } : {}) }, `方案改為${PLANS[e.target.value]}`)}>
+                      {Object.entries(PLANS).map(([k, v]) => <option key={k} value={k}>{v}</option>)}
+                    </select>
+                    <input id={`exp-${p.id}`} type="date" value={day(p.expires_at)} onChange={e => patch(p, { expires_at: e.target.value ? new Date(`${e.target.value}T23:59:59`).toISOString() : null }, `到期日改為 ${e.target.value || '不限期'}`)} />
+                  </div>
+                  <div className="acts">
+                    <button className="chip" onClick={() => patch(p, { expires_at: extend(p.expires_at, 1), disabled: false }, '延長 1 個月')}>+1 個月</button>
+                    <button className="chip" onClick={() => patch(p, { expires_at: extend(p.expires_at, 12), disabled: false }, '延長 1 年')}>+1 年</button>
+                    {!self && <button className={`chip ${p.disabled ? 'on' : 'ghost'}`} onClick={() => patch(p, { disabled: !p.disabled }, p.disabled ? '已恢復' : '已停用')}>{p.disabled ? '恢復' : '停用'}</button>}
+                  </div>
+                  <input id={`note-${p.id}`} type="text" placeholder="備註（公司、聯絡人、付款紀錄）" defaultValue={p.note || ''} onBlur={e => { if (e.target.value !== (p.note || '')) patch(p, { note: e.target.value || null }, '備註已存'); }} />
+                </div>
+              );
+            })}
+          </div>
+        )}
+      </div>
+    </div>
+  );
+}
