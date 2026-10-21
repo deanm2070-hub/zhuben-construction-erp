@@ -2,14 +2,70 @@ import type { ProjectModel } from '@cloud-modeler/core';
 import { REBAR_KINDS, REBAR_STD, rebarSummary, type Takeoff } from '@cloud-modeler/core';
 import * as XLSX from 'xlsx';
 
-export function download(name: string, data: BlobPart, type: string) {
+type SavePicker = (o: { suggestedName: string; types?: { description: string; accept: Record<string, string[]> }[] }) => Promise<{ name: string; createWritable: () => Promise<{ write: (b: Blob) => Promise<void>; close: () => Promise<void> }> }>;
+const isPhone = () => /iPhone|iPad|iPod|Android/i.test(navigator.userAgent) || (navigator.maxTouchPoints > 1 && /Mac/.test(navigator.platform));
+const isIOS = () => /iPhone|iPad|iPod/i.test(navigator.userAgent) || (navigator.maxTouchPoints > 1 && /Mac/.test(navigator.platform));
+
+/** a notice at the bottom of the screen saying where the file went */
+function saved(html: string) {
+  document.querySelector('.saveNote')?.remove();
+  const d = document.createElement('div');
+  d.className = 'saveNote';
+  d.setAttribute('role', 'status');
+  d.innerHTML = `<span>${html}</span><button type="button" aria-label="關閉">✕</button>`;
+  d.querySelector('button')!.onclick = () => d.remove();
+  document.body.appendChild(d);
+  setTimeout(() => d.remove(), 12000);
+}
+const esc = (s: string) => s.replace(/[&<>"]/g, c => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;' }[c]!));
+
+/**
+ * Saves a file and tells where it went. Computers with a save dialog (Chrome, Edge, the installed app) ask
+ * where to save; phones open the share sheet (「儲存到檔案」 on iPhone, a folder or app on Android); otherwise
+ * the browser downloads it to its download folder. data may be a function that makes the file, so the save
+ * dialog opens right away (while the tap still counts) and the file is made after a place is chosen.
+ */
+export async function download(name: string, data: BlobPart | (() => Promise<BlobPart>), type: string): Promise<boolean> {
+  const make = async () => new Blob([typeof data === 'function' ? await data() : data], { type });
+  const ext = name.includes('.') ? name.slice(name.lastIndexOf('.')) : '';
+  const picker = (window as unknown as { showSaveFilePicker?: SavePicker }).showSaveFilePicker;
+  if (picker && !isPhone()) {
+    try {
+      const h = await picker({ suggestedName: name, types: ext ? [{ description: `${ext.slice(1).toUpperCase()} 檔`, accept: { [type || 'application/octet-stream']: [ext] } }] : undefined });
+      const w = await h.createWritable();
+      await w.write(await make());
+      await w.close();
+      saved(`✓ 已存成 <b>${esc(h.name)}</b>，在你剛才選的資料夾`);
+      return true;
+    } catch (e) {
+      if ((e as Error).name === 'AbortError') return false;  // closed the dialog: nothing saved
+      // no permission or no user gesture any more: fall through to a plain download
+    }
+  }
+  const blob = await make();
+  if (isPhone() && navigator.canShare) {
+    const file = new File([blob], name, { type });
+    if (navigator.canShare({ files: [file] })) {
+      try {
+        await navigator.share({ files: [file], title: name });
+        saved(isIOS() ? `✓ 已送出 <b>${esc(name)}</b>：選「儲存到檔案」的，可在「檔案」App 你選的資料夾找到` : `✓ 已送出 <b>${esc(name)}</b> 到你選的位置`);
+        return true;
+      } catch (e) {
+        if ((e as Error).name === 'AbortError') return false;
+      }
+    }
+  }
   const a = document.createElement('a');
-  a.href = URL.createObjectURL(new Blob([data], { type }));
+  a.href = URL.createObjectURL(blob);
   a.download = name;
   document.body.appendChild(a);
   a.click();
   a.remove();
   setTimeout(() => URL.revokeObjectURL(a.href), 1000);
+  saved(isIOS() ? `✓ 已下載 <b>${esc(name)}</b>：在「檔案」App →「下載項目」`
+    : /Android/i.test(navigator.userAgent) ? `✓ 已下載 <b>${esc(name)}</b>：在「檔案」→「下載」(Download) 資料夾`
+    : `✓ 已下載 <b>${esc(name)}</b>：在瀏覽器的「下載」資料夾（按 Ctrl+J／⌘⇧J 可打開下載清單）`);
+  return true;
 }
 
 /** Workbook with the same three views as the takeoff dialog, columns matching the 工程預算書 template. */

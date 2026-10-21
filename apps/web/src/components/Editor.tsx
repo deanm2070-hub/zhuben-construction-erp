@@ -84,11 +84,11 @@ export function Editor({ projectId, importNow, trial = false, onExit }: { projec
   roRef.current = readOnly;
 
   const exportSkp = async () => {
-    showToast('正在產生 SketchUp 檔…');
     try {
-      const { buildSkp } = await import('../lib/skpExport');
-      download(`${name || 'model'}.skp`, await buildSkp(v().exportParts()), 'application/vnd.sketchup.skp');
-      showToast('已匯出 .skp：每層、每類構件各一個標記（Tag），可在 SketchUp 分開顯示');
+      const parts = v().exportParts();
+      // the save dialog opens first, then the file is made
+      if (await download(`${name || 'model'}.skp`, async () => (await import('../lib/skpExport')).buildSkp(parts), 'application/vnd.sketchup.skp'))
+        showToast('已匯出 .skp：每層、每類構件各一個標記（Tag），可在 SketchUp 分開顯示');
     } catch (e) {
       showToast(`匯出 .skp 失敗：${(e as Error).message}`);
     }
