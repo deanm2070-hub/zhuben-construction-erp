@@ -4,10 +4,12 @@ import {
 } from '@cloud-modeler/core';
 import * as THREE from 'three';
 import { OrbitControls } from 'three/examples/jsm/controls/OrbitControls.js';
+import { RoomEnvironment } from 'three/examples/jsm/environments/RoomEnvironment.js';
 
-export type RenderMode = 'mat' | 'layer' | 'white' | 'xray' | 'wire';
+/** mat: automatic rendering (lit materials, sky, soft shadows); persp: the same look from eye level */
+export type RenderMode = 'mat' | 'persp' | 'layer' | 'white' | 'wire';
 export type Tool = 'orbit' | 'pan' | 'select' | 'measure' | 'push' | 'move' | 'draw' | 'paint' | 'flip' | 'del' | 'walk';
-export type SceneKey = 'sw' | 'ne' | 'top' | 'hall';
+export type SceneKey = 'sw' | 'ne' | 'top' | 'hall' | 'eye';
 export type DrawKind = 'wall' | 'rc' | 'rail' | 'column' | 'slab' | 'tall' | 'low';
 /** what each drawing tool makes: thickness of a line-drawn part (0: drawn as a rectangle), default height, cm */
 export const DRAW_KINDS: Record<DrawKind, { label: string; thick: number; h: number; layer: BoxObject['layer']; color: number }> = {
@@ -47,9 +49,9 @@ export const TOOL_HINT: Record<Tool, string> = {
   orbit: '旋轉：拖曳旋轉視角，滾輪或雙指縮放。點構件可查看尺寸。',
   pan: '平移：拖曳移動畫面。',
   select: '構件：點選牆、櫃、家具或門，查看名稱與尺寸。按 Delete 可刪除。',
-  measure: '捲尺：依序點兩個點量距離。開啟磁吸時會吸附到構件角點。',
+  measure: '捲尺：依序點兩個點量距離。',
   push: '推拉：按住構件上下拖曳，改變高度。',
-  move: '移動：按住構件拖曳。磁吸開啟時會貼齊相鄰構件邊緣。',
+  move: '移動：按住構件拖曳。',
   draw: '繪圖：選工具列的種類（牆、RC牆、欄杆、柱、樓板、櫃），在地面拖曳。牆與欄杆依拖曳方向決定走向，可改厚度與高度。',
   paint: '油漆桶：選一個顏色，再點構件上色。',
   flip: '改門向：點門片，依序切換四種開門方向。',
@@ -74,7 +76,8 @@ export class Viewer {
   floor: string | null = null;
   mode: RenderMode = 'mat';
   tool: Tool = 'orbit';
-  magnet = true;
+  /** snapping to 5 cm and to neighbouring parts (switched off: the user removed 磁吸貼合) */
+  magnet = false;
   showLabels = true;
   sectionOn = false;
   sectionH = 140;
@@ -92,6 +95,10 @@ export class Viewer {
   private camera = new THREE.PerspectiveCamera(40, 1, 5, 40000);
   private controls: OrbitControls;
   private sun = new THREE.DirectionalLight(0xfff4e0, 0.75);
+  private hemi = new THREE.HemisphereLight(0xffffff, 0x9aa6b8, 2.2);
+  private env: THREE.Texture | null = null;
+  private sky: THREE.Texture | null = null;
+  private groundMesh: THREE.Mesh | null = null;
   private grid: THREE.GridHelper | null = null;
   private floorGroup = new THREE.Group();
   private objGroup = new THREE.Group();
@@ -138,7 +145,7 @@ export class Viewer {
     this.controls.enableDamping = true;
     this.controls.dampingFactor = 0.12;
     this.controls.maxPolarAngle = Math.PI / 2 - 0.02;
-    this.scene.add(new THREE.HemisphereLight(0xffffff, 0x9aa6b8, 2.2));
+    this.scene.add(this.hemi);
     this.sun.intensity = 2.2;
     this.sun.castShadow = true;
     this.sun.shadow.mapSize.set(phone ? 1024 : 2048, phone ? 1024 : 2048);
@@ -267,7 +274,60 @@ export class Viewer {
   }
 
   /* ---------- settings ---------- */
-  setMode(m: RenderMode) { this.mode = m; this.rebuild(); }
+  setMode(m: RenderMode) { this.mode = m; this.rebuild(); this.applyLook(); }
+  /** automatic rendering: both the rendered and the eye-level perspective modes */
+  private get real() { return this.mode === 'mat' || this.mode === 'persp'; }
+  /** Lighting, sky and ground for the rendered look; the plain modes keep the flat canvas and grid. */
+  private applyLook() {
+    const r = this.real;
+    this.renderer.toneMapping = r ? THREE.ACESFilmicToneMapping : THREE.NoToneMapping;
+    this.renderer.toneMappingExposure = 0.95;
+    if (r && !this.env) {
+      const pm = new THREE.PMREMGenerator(this.renderer);
+      this.env = pm.fromScene(new RoomEnvironment(), 0.04).texture;
+      pm.dispose();
+    }
+    if (r && !this.sky) {
+      const c = document.createElement('canvas');
+      c.width = 2; c.height = 256;
+      const g = c.getContext('2d')!, grad = g.createLinearGradient(0, 0, 0, 256);
+      grad.addColorStop(0, '#8fb7e3'); grad.addColorStop(0.55, '#d7e6f3'); grad.addColorStop(1, '#eef2f2');
+      g.fillStyle = grad; g.fillRect(0, 0, 2, 256);
+      this.sky = new THREE.CanvasTexture(c);
+      this.sky.colorSpace = THREE.SRGBColorSpace;
+    }
+    this.scene.environment = r ? this.env : null;
+    this.scene.environmentIntensity = 0.35;
+    this.scene.background = r ? this.sky : cssColor('--canvas');
+    this.hemi.intensity = r ? 0.45 : 2.2;
+    this.sun.intensity = r ? 2.4 : 2.2;
+    if (this.grid) this.grid.visible = !r;
+    if (r && !this.groundMesh) {
+      this.groundMesh = new THREE.Mesh(new THREE.PlaneGeometry(1, 1), new THREE.MeshStandardMaterial({ color: 0xaeb5a2, roughness: 1 }));
+      this.groundMesh.rotation.x = -Math.PI / 2;
+      this.groundMesh.receiveShadow = true;
+      this.groundMesh.raycast = () => {};
+      this.scene.add(this.groundMesh);
+    }
+    if (this.groundMesh) {
+      const gs = Math.max(6000, Math.max(this.bounds.W, this.bounds.D) * 6);
+      this.groundMesh.scale.set(gs, gs, 1);
+      this.groundMesh.position.set(this.center.x, -2, this.center.z);
+      this.groundMesh.visible = r;
+    }
+    this.invalidate();
+  }
+  /** physically based look of a part in the rendered modes, by what it is */
+  private realMat(o: ModelObject) {
+    const L = o.layer, n = o.name || '';
+    if (L === 'glass' && !/欄杆/.test(n)) return new THREE.MeshPhysicalMaterial({ color: 0xcfe6f2, roughness: 0.04, metalness: 0.1, transparent: true, opacity: 0.32, depthWrite: false, envMapIntensity: 1.6 });
+    if (L === 'rail' || L === 'glass') return new THREE.MeshStandardMaterial({ color: o.color, roughness: 0.35, metalness: 0.6 });
+    if (L === 'door') return new THREE.MeshStandardMaterial({ color: o.color, roughness: 0.55, metalness: 0.05 });
+    if (L === 'cabinet' || L === 'furniture') return new THREE.MeshStandardMaterial({ color: o.color, roughness: 0.6 });
+    if (L === 'bath') return new THREE.MeshStandardMaterial({ color: o.color, roughness: 0.25, metalness: 0.05 });
+    if (L === 'slab' || L === 'stair') return new THREE.MeshStandardMaterial({ color: o.color, roughness: 0.85 });
+    return new THREE.MeshStandardMaterial({ color: o.color, roughness: 0.9 });
+  }
   setMagnet(on: boolean) { this.magnet = on; }
   setShowLabels(on: boolean) { this.showLabels = on; }
   setSection(on: boolean, h = this.sectionH) {
@@ -305,10 +365,9 @@ export class Viewer {
   private matFor(o: ModelObject): THREE.Material {
     const glass = o.layer === 'glass';
     const m = this.mode;
-    if (m === 'mat') return new THREE.MeshStandardMaterial({ color: o.color, roughness: glass ? 0.1 : 0.75, transparent: glass, opacity: glass ? 0.35 : 1, depthWrite: !glass });
+    if (this.real) return this.realMat(o);
     if (m === 'layer') return new THREE.MeshLambertMaterial({ color: LAYER_COLORS[o.layer].color, transparent: glass, opacity: glass ? 0.45 : 1 });
     if (m === 'white') return new THREE.MeshLambertMaterial({ color: 0xfbfbfa, transparent: glass, opacity: glass ? 0.4 : 1 });
-    if (m === 'xray') return new THREE.MeshLambertMaterial({ color: o.color, transparent: true, opacity: 0.16, depthWrite: false });
     const b = new THREE.MeshBasicMaterial();
     b.visible = false;
     return b;
@@ -316,14 +375,15 @@ export class Viewer {
   private edgeMat() {
     const dark = isDarkTheme();
     if (this.mode === 'wire') return new THREE.LineBasicMaterial({ color: dark ? 0x7fb0ff : 0x1f6feb });
-    if (this.mode === 'xray') return new THREE.LineBasicMaterial({ color: dark ? 0x9fb6d6 : 0x334155, transparent: true, opacity: 0.7 });
     return new THREE.LineBasicMaterial({ color: 0x1b2230, transparent: true, opacity: 0.55 });
   }
   private boxMesh(w: number, h: number, d: number, o: ModelObject) {
     const g = new THREE.BoxGeometry(w, h, d);
     const m = new THREE.Mesh(g, this.matFor(o));
-    m.castShadow = this.mode === 'mat' || this.mode === 'white' || this.mode === 'layer';
+    m.castShadow = this.real || this.mode === 'white' || this.mode === 'layer';
     m.receiveShadow = true;
+    // the rendered look has no drawn outlines
+    if (this.real) return m;
     const e = new THREE.LineSegments(new THREE.EdgesGeometry(g), this.edgeMat());
     e.raycast = () => {};
     m.add(e);
@@ -433,11 +493,13 @@ export class Viewer {
       g.translate(0, 0, -wid / 2);
       if (so.axis === 'z') g.rotateY(-Math.PI / 2);
       const m = new THREE.Mesh(g, this.matFor(o));
-      m.castShadow = this.mode === 'mat' || this.mode === 'white' || this.mode === 'layer';
+      m.castShadow = this.real || this.mode === 'white' || this.mode === 'layer';
       m.receiveShadow = true;
-      const e = new THREE.LineSegments(new THREE.EdgesGeometry(g, 20), this.edgeMat());
-      e.raycast = () => {};
-      m.add(e);
+      if (!this.real) {
+        const e = new THREE.LineSegments(new THREE.EdgesGeometry(g, 20), this.edgeMat());
+        e.raycast = () => {};
+        m.add(e);
+      }
       m.position.set(o.x, 0, o.z);
       m.userData.id = o.id;
       return m;
@@ -458,8 +520,8 @@ export class Viewer {
     const floorTint = (f: THREE.Mesh, base: number) => {
       const mat = f.material as THREE.MeshStandardMaterial;
       mat.color.setHex(this.mode === 'white' ? 0xf4f4f2 : this.mode === 'layer' ? 0xe9ecf0 : base);
-      mat.transparent = this.mode === 'xray';
-      mat.opacity = this.mode === 'xray' ? 0.35 : 1;
+      mat.transparent = false;
+      mat.opacity = 1;
     };
     for (const f of this.floorGroup.children as THREE.Mesh[]) { floorTint(f, f.userData.baseColor); f.visible = this.mode !== 'wire' && !this.cad; }
     if (this.cadFloor) { floorTint(this.cadFloor, 0xe2cfae); this.cadFloor.visible = this.mode !== 'wire'; }
@@ -508,13 +570,14 @@ export class Viewer {
       const glass = (cm.opacity ?? 1) < 1;
       const mat = this.matFor({ layer: glass ? 'glass' : 'furniture', color: cm.color } as ModelObject);
       mat.side = THREE.DoubleSide;
-      if (glass && this.mode === 'mat') (mat as THREE.MeshStandardMaterial).opacity = Math.max(0.2, cm.opacity!);
+      if (glass && this.real) (mat as THREE.MeshStandardMaterial).opacity = Math.max(0.2, cm.opacity!);
       const m = new THREE.Mesh(g, mat);
-      m.castShadow = this.mode === 'mat' || this.mode === 'white' || this.mode === 'layer';
+      m.castShadow = this.real || this.mode === 'white' || this.mode === 'layer';
       m.receiveShadow = true;
       m.raycast = () => {};
       this.meshGroup.add(m);
       // SketchUp-style outlines: only creases, not the triangulation
+      if (this.real) continue;
       const e = new THREE.LineSegments(new THREE.EdgesGeometry(g, 25), this.edgeMat());
       e.raycast = () => {};
       this.meshGroup.add(e);
@@ -563,7 +626,7 @@ export class Viewer {
     this.grid = new THREE.GridHelper(gs, Math.min(400, gs / 50), cssColor('--grid1'), cssColor('--grid2'));
     this.grid.position.set(this.center.x, -1, this.center.z);
     this.scene.add(this.grid);
-    this.scene.background = cssColor('--canvas');
+    this.applyLook();
   }
   private fitSun() {
     const s = Math.max(this.bounds.W, this.bounds.D, this.height * 1.4) / 1180, c = this.center;
@@ -618,6 +681,11 @@ export class Viewer {
     if (k === 'sw') return { pos: [c.x - 1050 * s, 1250 * s, c.z + 1250 * s], fov: 40 };
     if (k === 'ne') return { pos: [c.x + 1050 * s, 1250 * s, c.z - 1250 * s], fov: 40 };
     if (k === 'top') return { pos: [c.x, 9500 * s, c.z + 1], fov: 8.5 };
+    if (k === 'eye') {
+      // two-point perspective from a person standing outside the south-west corner: eye height, level view
+      const b = this.floor ? this.floorBase : 0, d = Math.max(this.bounds.W, this.bounds.D) * 0.7 + this.height * 0.6;
+      return { pos: [c.x - d * 0.62, b + 160, c.z + d * 0.78], target: [c.x, b + 160 + this.height * 0.12, c.z], fov: 55 };
+    }
     if (this.cad) { const b = this.floorBase; return { pos: [c.x, 170 + b, c.z + this.bounds.D * 0.42], target: [c.x, 120 + b, c.z - this.bounds.D * 0.1], fov: 60 }; }
     return { pos: [560, 300, 860], target: [540, 140, 250], fov: 55 };
   }
@@ -814,9 +882,8 @@ export class Viewer {
       if (m) {
         m.geometry.dispose();
         m.geometry = new THREE.BoxGeometry(d.o.w, nh, d.o.d);
-        const edge = m.children[0] as THREE.LineSegments;
-        edge.geometry.dispose();
-        edge.geometry = new THREE.EdgesGeometry(m.geometry);
+        const edge = m.children[0] as THREE.LineSegments | undefined;
+        if (edge) { edge.geometry.dispose(); edge.geometry = new THREE.EdgesGeometry(m.geometry); }
         m.position.y = d.o.y + nh / 2;
       }
       this.selBox?.update();
@@ -896,7 +963,7 @@ export class Viewer {
     if (tool === 'paint') {
       this.snapshot();
       h.o.color = this.paintColor;
-      if (this.mode !== 'mat') { this.mode = 'mat'; this.ev.toast('已切回「材質＋邊線」以顯示顏色'); }
+      if (!this.real) { this.mode = 'mat'; this.applyLook(); this.ev.toast('已切回「自動渲染」以顯示顏色'); }
       this.rebuild();
       this.commit();
       this.ev.info(`已上色：${h.o.name}`);

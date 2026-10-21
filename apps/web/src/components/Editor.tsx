@@ -24,7 +24,7 @@ export const MODULES = [
 ] as const;
 type Module = typeof MODULES[number][0];
 
-const MODES: [RenderMode, string][] = [['mat', '材質＋邊線'], ['layer', '圖層分色'], ['white', '純白白模'], ['xray', 'X光透視'], ['wire', '線框']];
+const MODES: [RenderMode, string][] = [['mat', '自動渲染'], ['persp', '透視圖'], ['layer', '圖層分色'], ['white', '純白白模'], ['wire', '線框']];
 const SCENES: [SceneKey, string][] = [['sw', '西南等角全覽'], ['top', '正交平面俯視（2D/3D）'], ['hall', '走道與門向特寫'], ['ne', '東北等角']];
 const PALETTE = [0xeeebe5, 0xc98a4b, 0x6b4f3a, 0x2f6fd6, 0x41557a, 0x6f7d93, 0x16a34a, 0xdc2626, 0xf5b83d, 0x1d2533];
 const hex = (c: number) => '#' + c.toString(16).padStart(6, '0');
@@ -40,7 +40,6 @@ export function Editor({ projectId, importNow, trial = false, onExit }: { projec
   const [mode, setMode] = useState<RenderMode>('mat');
   const [tool, setTool] = useState<Tool>('orbit');
   const [scene, setScene] = useState<SceneKey>('sw');
-  const [magnet, setMagnet] = useState(true);
   const [labels, setLabels] = useState(true);
   const [section, setSection] = useState({ on: false, h: 140 });
   const [drawKind, setDrawKind] = useState<DrawKind>('wall');
@@ -203,9 +202,8 @@ export function Editor({ projectId, importNow, trial = false, onExit }: { projec
         </nav>
         {module === '3d' && <>
           <div className="row wrap">
-            {MODES.map(([k, l]) => <button key={k} className={`chip ${mode === k ? 'on' : ''}`} onClick={() => { v().setMode(k); setMode(k); }}>{l}</button>)}
+            {MODES.map(([k, l]) => <button key={k} className={`chip ${mode === k ? 'on' : ''}`} onClick={() => { v().setMode(k); setMode(k); if (k === 'persp') { v().goScene('eye'); setScene('eye'); if (tool === 'walk') setTool('orbit'); v().setShowLabels(false); setLabels(false); } }}>{l}</button>)}
             <span className="sep" />
-            <button className={`chip ${magnet ? 'on' : ''}`} onClick={() => { v().setMagnet(!magnet); setMagnet(!magnet); showToast(magnet ? '磁吸貼合：關' : '磁吸貼合：開'); }}>磁吸貼合</button>
             <button className="chip" onClick={() => { v().setShowLabels(!labels); setLabels(!labels); }}>{labels ? '隱藏標籤' : '顯示標籤'}</button>
             <span className="sep" />
             <button className="chip" onClick={exportSkp}>匯出 .SKP</button>
