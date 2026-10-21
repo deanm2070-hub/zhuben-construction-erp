@@ -24,7 +24,7 @@ export const MODULES = [
 ] as const;
 type Module = typeof MODULES[number][0];
 
-const MODES: [RenderMode, string][] = [['mat', '自動渲染'], ['persp', '透視圖'], ['layer', '圖層分色'], ['white', '純白白模'], ['wire', '線框']];
+const MODES: [RenderMode, string][] = [['mat', '自動渲染'], ['layer', '圖層分色'], ['white', '純白'], ['wire', '線框']];
 const SCENES: [SceneKey, string][] = [['front', '正立面'], ['bird', '鳥瞰圖'], ['side', '側向立面']];
 const PALETTE = [0xeeebe5, 0xc98a4b, 0x6b4f3a, 0x2f6fd6, 0x41557a, 0x6f7d93, 0x16a34a, 0xdc2626, 0xf5b83d, 0x1d2533];
 const hex = (c: number) => '#' + c.toString(16).padStart(6, '0');
@@ -211,7 +211,7 @@ export function Editor({ projectId, importNow, trial = false, onExit }: { projec
           <div className="ctlRow">
             <span className="lbl">顯示</span>
             <div className="seg" role="group" aria-label="顯示方式">
-              {MODES.map(([k, l]) => <button key={k} className={mode === k ? 'on' : ''} aria-pressed={mode === k} onClick={() => { v().setMode(k); setMode(k); if (k === 'persp') { v().goScene('eye'); setScene('eye'); if (tool === 'walk') setTool('orbit'); v().setShowLabels(false); setLabels(false); } }}>{l}</button>)}
+              {MODES.map(([k, l]) => <button key={k} className={mode === k ? 'on' : ''} aria-pressed={mode === k} onClick={() => { v().setMode(k); setMode(k); }}>{l}</button>)}
             </div>
           </div>
           <div className="ctlRow">

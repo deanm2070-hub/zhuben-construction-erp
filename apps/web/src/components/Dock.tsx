@@ -21,7 +21,7 @@ const Icon = ({ k }: { k: string }) => <svg viewBox="0 0 24 24" aria-hidden="tru
 
 const GROUPS: [string, string, string, string][][] = [
   [['orbit', '旋轉', '旋轉視角', ''], ['pan', '平移', '平移視角', ''], ['select', '構件', '選取構件，查看尺寸', ''], ['measure', '捲尺', '捲尺：點兩點量距離', '']],
-  [['push', '推拉', '推拉：上下拖曳改變高度', 'edit'], ['move', '移動', '移動構件', 'edit'], ['draw', '繪圖', '畫牆、RC牆、欄杆、柱、樓板、櫃', 'edit'], ['paint', '油漆桶', '點構件換顏色', 'edit'], ['flip', '改門向', '點門片切換開門方向', 'edit'], ['del', '刪除', '點構件刪除', 'danger']],
+  [['push', '推拉', '推拉：頂面上下拖曳改高度，側面左右拖曳改長度', 'edit'], ['move', '移動', '移動構件', 'edit'], ['draw', '繪圖', '畫牆、RC牆、欄杆、柱、樓板、櫃', 'edit'], ['paint', '油漆桶', '點構件換顏色', 'edit'], ['flip', '改門向', '點門片切換開門方向', 'edit'], ['del', '刪除', '點構件刪除', 'danger']],
 ];
 
 export function Dock({ tool, section, onTool, onUndo, onSection, onHome }: { tool: Tool; section: boolean; onTool: (t: Tool) => void; onUndo: () => void; onSection: () => void; onHome: () => void }) {

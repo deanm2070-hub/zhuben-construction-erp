@@ -55,7 +55,7 @@ export const TOOL_HINT: Record<Tool, string> = {
   pan: '平移：拖曳移動畫面。',
   select: '構件：點選牆、櫃、家具或門，查看名稱與尺寸。按 Delete 可刪除。',
   measure: '捲尺：依序點兩個點量距離。',
-  push: '推拉：按住構件上下拖曳，改變高度。',
+  push: '推拉：按住構件頂面上下拖曳改高度；按住側面左右拖曳，把那一面往外拉長或往內縮短。',
   move: '移動：按住構件拖曳。',
   draw: '繪圖：選工具列的種類（牆、RC牆、欄杆、柱、樓板、櫃），在地面拖曳。牆與欄杆依拖曳方向決定走向，可改厚度與高度。',
   paint: '油漆桶：選一個顏色，再點構件上色。',
@@ -69,7 +69,9 @@ type Drag =
   | { kind: 'look'; x: number; y: number }
   | { kind: 'draw'; p0: { x: number; z: number }; preview?: THREE.Mesh; box?: Omit<BoxObject, 'id'> }
   | { kind: 'move'; o: BoxObject; sx: number; sz: number; p0: THREE.Vector3 | null; lastHit?: BoxObject | null }
-  | { kind: 'push'; o: BoxObject; sh: number; y0: number; scale: number };
+  | { kind: 'push'; o: BoxObject; sh: number; y0: number; scale: number }
+  /** push / pull on a side face: that face moves along its outward direction, the opposite face stays */
+  | { kind: 'pushSide'; o: BoxObject; axis: 'w' | 'd'; s0: number; x0: number; z0: number; dir: THREE.Vector3; plane: THREE.Plane; p0: THREE.Vector3 };
 
 const isDarkTheme = () => getComputedStyle(document.documentElement).colorScheme.includes('dark');
 const cssColor = (name: string) => new THREE.Color(getComputedStyle(document.documentElement).getPropertyValue(name).trim() || '#e9edf2');
@@ -806,9 +808,18 @@ export class Viewer {
       if (!(h.object as THREE.Mesh).isMesh || !h.object.userData.id) continue;
       if (this.sectionPlane && this.sectionPlane.distanceToPoint(h.point) < 0) continue;
       const o = this.byId(h.object.userData.id);
-      if (o) return { o, point: h.point };
+      if (o) return { o, point: h.point, normal: h.face?.normal.clone() };
     }
     return null;
+  }
+  /** a top or bottom face is pushed up and down (height); a side face is pulled sideways (length or width) */
+  private pushDrag(o: BoxObject, point: THREE.Vector3, normal: THREE.Vector3 | undefined, e: PointerEvent): NonNullable<typeof this.drag> {
+    if (!normal || Math.abs(normal.y) > 0.5) return { kind: 'push', o, sh: o.h, y0: e.clientY, scale: this.camera.position.distanceTo(this.controls.target) / 700 };
+    const axis = Math.abs(normal.x) >= Math.abs(normal.z) ? 'w' : 'd';
+    const local = axis === 'w' ? new THREE.Vector3(Math.sign(normal.x), 0, 0) : new THREE.Vector3(0, 0, Math.sign(normal.z));
+    const dir = local.applyAxisAngle(new THREE.Vector3(0, 1, 0), o.rot || 0);
+    const plane = new THREE.Plane(new THREE.Vector3(0, 1, 0), -point.y);
+    return { kind: 'pushSide', o, axis, s0: o[axis], x0: o.x, z0: o.z, dir, plane, p0: point.clone() };
   }
   private hitGround(e: PointerEvent) {
     this.setRay(e);
@@ -873,7 +884,7 @@ export class Viewer {
   private cancelDrag() {
     const d = this.drag;
     if (d && d.kind === 'draw' && d.preview) this.helperGroup.remove(d.preview);
-    if (d && (d.kind === 'move' || d.kind === 'push')) this.history.pop();
+    if (d && (d.kind === 'move' || d.kind === 'push' || d.kind === 'pushSide')) this.history.pop();
     this.drag = null;
     this.controls.enabled = this.tool !== 'walk';
     this.rebuild();
@@ -909,7 +920,7 @@ export class Viewer {
       this.snapshot();
       this.drag = tool === 'move'
         ? { kind: 'move', o: h.o, sx: h.o.x, sz: h.o.z, p0: this.hitGround(e) }
-        : { kind: 'push', o: h.o, sh: h.o.h, y0: e.clientY, scale: this.camera.position.distanceTo(this.controls.target) / 700 };
+        : this.pushDrag(h.o, h.point, h.normal, e);
       this.take(e);
     }
   }
@@ -948,6 +959,25 @@ export class Viewer {
       }
       this.selBox?.update();
       this.ev.info(`推拉 ${d.o.name}｜高度 ${nh} cm（原 ${d.sh} cm）`);
+    }
+    if (d.kind === 'pushSide') {
+      this.setRay(e);
+      const p = new THREE.Vector3();
+      if (!this.ray.ray.intersectPlane(d.plane, p)) return;
+      const step = this.magnet ? 5 : 1;
+      const ns = Math.max(2, Math.round((d.s0 + p.sub(d.p0).dot(d.dir)) / step) * step), moved = ns - d.s0;
+      d.o[d.axis] = ns;
+      d.o.x = d.x0 + d.dir.x * moved / 2; d.o.z = d.z0 + d.dir.z * moved / 2;
+      const m = this.meshOf(d.o.id);
+      if (m) {
+        m.geometry.dispose();
+        m.geometry = new THREE.BoxGeometry(d.o.w, d.o.h, d.o.d);
+        const edge = m.children[0] as THREE.LineSegments | undefined;
+        if (edge) { edge.geometry.dispose(); edge.geometry = new THREE.EdgesGeometry(m.geometry); }
+        m.position.set(d.o.x, d.o.y + d.o.h / 2, d.o.z);
+      }
+      this.selBox?.update();
+      this.ev.info(`推拉 ${d.o.name}｜${d.axis === 'w' ? '長' : '寬'} ${ns} cm（原 ${d.s0} cm）`);
     }
     if (d.kind === 'draw') {
       const p = this.hitGround(e);
@@ -1000,6 +1030,9 @@ export class Viewer {
         this.rebuild();
       } else if (d.kind === 'push') {
         if (d.o.h === d.sh) this.history.pop(); else this.commit();
+        this.rebuild();
+      } else if (d.kind === 'pushSide') {
+        if (d.o[d.axis] === d.s0) this.history.pop(); else this.commit();
         this.rebuild();
       }
       this.drag = null;
