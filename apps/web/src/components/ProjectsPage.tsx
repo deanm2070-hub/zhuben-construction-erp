@@ -6,12 +6,14 @@ import { supabase } from '../lib/supabase';
 import { readProjectFile } from '../lib/files';
 import { VERSION } from '../lib/version';
 import { claimAdmin, PLANS, type Account } from '../lib/account';
+import { ProfileInfo } from './ProfileInfo';
 
 export function ProjectsPage({ email, account, onAccount, onOpen }: { email: string | null; account: Account; onAccount: () => void; onOpen: (id: string, importNow?: boolean) => void }) {
   const [list, setList] = useState<ProjectMeta[] | null>(null);
   const [err, setErr] = useState('');
   const [confirmId, setConfirmId] = useState<string | null>(null);
   const [renaming, setRenaming] = useState<{ id: string; name: string } | null>(null);
+  const [info, setInfo] = useState(false);
 
   const refresh = () => store.list().then(setList).catch(e => setErr(String(e.message || e)));
   useEffect(() => { refresh(); }, []);
@@ -35,6 +37,7 @@ export function ProjectsPage({ email, account, onAccount, onOpen }: { email: str
           <div className="kv">
             <InstallButton />
             {email && <span className="note">{email}{account.ready && !account.admin && account.profile && `・${PLANS[account.profile.plan] || account.profile.plan}${account.profile.expires_at ? ` 到期 ${account.profile.expires_at.slice(0, 10)}` : ''}`}</span>}
+            {email && account.ready && <button className="chip" onClick={() => setInfo(true)}>個人資訊</button>}
             {account.admin && <button className="chip key" onClick={() => { location.hash = '#/admin'; }}>管理員後台</button>}
             {supabase && <button className="chip ghost" onClick={() => supabase!.auth.signOut()}>登出</button>}
           </div>
@@ -72,6 +75,7 @@ export function ProjectsPage({ email, account, onAccount, onOpen }: { email: str
           </div>
         )}
       </div>
+      {info && email && <ProfileInfo email={email} account={account} onClose={() => setInfo(false)} />}
     </div>
   );
 }

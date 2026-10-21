@@ -4,7 +4,7 @@ import { AdminPage } from './components/AdminPage';
 import { AuthPage } from './components/AuthPage';
 import { Editor } from './components/Editor';
 import { ProjectsPage } from './components/ProjectsPage';
-import { CLAIM_FLAG, claimDevice, loadAccount, OPEN_ACCOUNT, type Account } from './lib/account';
+import { CLAIM_FLAG, claimDevice, heartbeat, LINE_ADD, LINE_ID, loadAccount, OPEN_ACCOUNT, type Account } from './lib/account';
 import { supabase, supabaseConfigError } from './lib/supabase';
 import { watchUpdates } from './lib/update';
 
@@ -37,6 +37,20 @@ export function App() {
     document.addEventListener('visibilitychange', check);
     return () => { clearInterval(t); document.removeEventListener('visibilitychange', check); };
   }, [uid]);
+
+  // minutes online: one per minute while the app is in front and has been used in the last 10 minutes
+  const using = !!uid && !!account?.ready && account.active;
+  useEffect(() => {
+    if (!using) return;
+    let last = Date.now();
+    const touch = () => { last = Date.now(); };
+    const evs = ['pointerdown', 'pointermove', 'keydown', 'wheel', 'touchstart'] as const;
+    evs.forEach(e => addEventListener(e, touch, { passive: true }));
+    const t = setInterval(() => {
+      if (document.visibilityState === 'visible' && Date.now() - last < 10 * 60000) heartbeat().catch(() => {});
+    }, 60000);
+    return () => { clearInterval(t); evs.forEach(e => removeEventListener(e, touch)); };
+  }, [using]);
 
   useEffect(() => {
     if (!supabase) return;
@@ -88,6 +102,7 @@ function Expired({ email, profile }: { email: string; profile: Account['profile'
       <h1>{profile?.disabled ? '帳號已停用' : profile ? '訂閱已到期' : '帳號尚未開通'}</h1>
       <p className="note">{email}{profile?.expires_at && !profile.disabled ? `，到期日 ${profile.expires_at.slice(0, 10)}` : ''}。請聯絡管理員續約或開通，完成後重新整理此頁即可繼續使用；你的專案都還保留著。</p>
       <div className="kv">
+        <a className="chip key" href={LINE_ADD} target="_blank" rel="noopener" style={{ textDecoration: 'none' }}>LINE 聯絡管理員 {LINE_ID}</a>
         <button className="chip on" onClick={() => location.reload()}>重新整理</button>
         <button className="chip ghost" onClick={() => supabase!.auth.signOut()}>登出</button>
       </div>

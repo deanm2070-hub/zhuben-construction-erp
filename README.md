@@ -28,10 +28,11 @@ npm run build
 ### 1. Supabase（帳號、資料庫、檔案）
 
 1. 在 supabase.com 建立專案。
-2. 在 SQL Editor 依序執行 `supabase/migrations/0001_projects.sql`、`0002_subscriptions.sql`、`0003_single_device.sql`、`0004_renewal_reminders.sql`（或使用 `supabase db push`）。
+2. 在 SQL Editor 依序執行 `supabase/migrations/0001_projects.sql`、`0002_subscriptions.sql`、`0003_single_device.sql`、`0004_renewal_reminders.sql`、`0005_trial_referrals.sql`（或使用 `supabase db push`）。
    0002 加入訂閱控管：每個帳號有方案與到期日，第一個在「我的專案」按「把這個帳號設為管理員」的帳號成為管理員，可在「管理員後台」新增帳號、延長、停用。到期或停用的帳號由資料庫權限（RLS）擋住，打不開專案。
    `0003_single_device.sql`：一個帳號同時只能在一台裝置使用，後登入的裝置接手，先前的裝置被登出（管理員不受限）。
    `0004_renewal_reminders.sql`：每天台灣時間 9 點，資料庫透過 Resend（resend.com）寄續訂提醒信給 14 天內到期的帳號（同一到期日只寄一次）。寄信前先在 SQL Editor 單獨執行 `select vault.create_secret('你的 Resend API 金鑰', 'resend_api_key');`，金鑰加密存在 Supabase Vault，不放在程式或網站。寄件人、回覆信箱、續訂方式在管理員後台設定；Resend 未驗證網域前只能從 onboarding@resend.dev 寄到 Resend 註冊信箱。
+   `0005_trial_referrals.sql`：試用改由管理員開通（登入頁連到 LINE @870ufuor），分享碼與推薦人、每日上線分鐘數與登入紀錄；被推薦的帳號開通後 7 天內有 3 天各上線滿 60 分鐘，推薦人自動延長 7 天。
 3. Authentication → Providers 啟用 Email。
 4. 記下 Project URL 與 anon key。
 

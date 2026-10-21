@@ -1,9 +1,13 @@
 import { useEffect, useState } from 'react';
-import { createAccount, extend, listProfiles, loadSettings, PLANS, runReminders, saveSetting, sendTestReminder, updateProfile, type Profile } from '../lib/account';
+import { createAccount, extend, listProfiles, listUsage, loadSettings, PLANS, REFERRAL, runReminders, saveSetting, sendTestReminder, updateProfile, type Login, type Profile, type UsageDay } from '../lib/account';
 import { daysLeft, dueForReminder, REMIND_DAYS, reminderEmail, RENEW_HOW } from '../lib/reminder';
 import { Modal } from './Modal';
 
 const day = (iso: string | null) => (iso ? iso.slice(0, 10) : '');
+const time = (iso: string) => new Date(iso).toLocaleTimeString('zh-TW', { hour: '2-digit', minute: '2-digit', hour12: false });
+const when = (iso: string) => `${new Date(iso).toLocaleDateString('zh-TW')} ${time(iso)}`;
+const hm = (m: number) => (m >= 60 ? `${Math.floor(m / 60)} 小時 ${m % 60} 分` : `${m} 分`);
+const taipeiDay = (d = new Date()) => new Date(d.getTime() + 8 * 3600e3).toISOString().slice(0, 10);
 const status = (p: Profile) => p.disabled ? { t: '已停用', c: 'err' } : p.expires_at && new Date(p.expires_at) <= new Date() ? { t: '已到期', c: 'err' } : { t: '使用中', c: 'ok' };
 
 /** 管理員後台: every account with its plan and expiry; add accounts, extend, disable. */
@@ -12,14 +16,16 @@ export function AdminPage({ selfId, onBack }: { selfId: string; onBack: () => vo
   const [err, setErr] = useState('');
   const [msg, setMsg] = useState('');
   const [q, setQ] = useState('');
-  const [form, setForm] = useState({ email: '', password: '', plan: 'monthly', expires: day(extend(null, 1)) });
+  const [form, setForm] = useState({ email: '', password: '', plan: 'monthly', expires: day(extend(null, 1)), ref: '' });
+  // null: the usage migration (0005) has not been run
+  const [usage, setUsage] = useState<{ usage: UsageDay[]; logins: Login[] } | null>(null);
   const [busy, setBusy] = useState(false);
   const [preview, setPreview] = useState<Profile | null>(null);
   // null: the reminder migration (0004) has not been run, so mail is only simulated
   const [settings, setSettings] = useState<Record<string, string> | null>(null);
 
   const refresh = () => listProfiles().then(setList).catch(e => setErr(String(e.message || e)));
-  useEffect(() => { refresh(); loadSettings().then(setSettings); }, []);
+  useEffect(() => { refresh(); loadSettings().then(setSettings); listUsage().then(setUsage); }, []);
 
   const act = async (f: () => Promise<string>) => {
     setErr(''); setMsg(''); setBusy(true);
@@ -40,9 +46,13 @@ export function AdminPage({ selfId, onBack }: { selfId: string; onBack: () => vo
     e.preventDefault();
     setBusy(true); setErr(''); setMsg('');
     try {
-      const r = await createAccount(form.email.trim(), form.password, form.plan, form.plan === 'unlimited' || !form.expires ? null : new Date(`${form.expires}T23:59:59`).toISOString());
-      setMsg(`已建立 ${form.email}${r.confirm ? '，對方需先到信箱點啟用連結才能登入' : ''}`);
-      setForm({ ...form, email: '', password: '' });
+      // the referrer, by share code or e-mail
+      const key = form.ref.trim().toLowerCase();
+      const referrer = key ? (list || []).find(p => p.ref_code === key || (p.email || '').toLowerCase() === key) : null;
+      if (key && !referrer) throw new Error(`找不到推薦碼或帳號「${form.ref.trim()}」`);
+      const r = await createAccount(form.email.trim(), form.password, form.plan, form.plan === 'unlimited' || !form.expires ? null : new Date(`${form.expires}T23:59:59`).toISOString(), referrer?.id ?? null);
+      setMsg(`已建立 ${form.email}${referrer ? `（推薦人 ${referrer.email}）` : ''}${r.confirm ? '，對方需先到信箱點啟用連結才能登入' : ''}`);
+      setForm({ ...form, email: '', password: '', ref: '' });
       refresh();
     } catch (x) { setErr(String((x as Error).message || x)); }
     setBusy(false);
@@ -52,6 +62,39 @@ export function AdminPage({ selfId, onBack }: { selfId: string; onBack: () => vo
   const active = (list || []).filter(p => status(p).c === 'ok').length;
   const due = dueForReminder(list || []);
   const mail = preview && reminderEmail(preview, settings?.site_url || location.origin, new Date(), settings?.renew_how || RENEW_HOW);
+
+  const byId = new Map((list || []).map(p => [p.id, p]));
+  /** who referred this account and whether the reward has been given; the referrer can be set or changed here */
+  const referral = (p: Profile) => {
+    if (!usage && !p.ref_code) return null;
+    const ok = usage ? usage.usage.filter(u => u.user_id === p.id && u.minutes >= REFERRAL.minutes && u.day >= taipeiDay(new Date(p.created_at)) && u.day < taipeiDay(new Date(new Date(p.created_at).getTime() + REFERRAL.within * 864e5))).length : 0;
+    const shares = (list || []).filter(x => x.referred_by === p.id && x.referral_rewarded_at).length;
+    return (
+      <div className="kv note">
+        <label>推薦人 <select id={`ref-${p.id}`} value={p.referred_by || ''} onChange={e => patch(p, { referred_by: e.target.value || null }, e.target.value ? `推薦人改為 ${byId.get(e.target.value)?.email}` : '已移除推薦人')}>
+          <option value="">（無）</option>
+          {(list || []).filter(x => x.id !== p.id).map(x => <option key={x.id} value={x.id}>{x.email}</option>)}
+        </select></label>
+        {p.referred_by && <span>{p.referral_rewarded_at ? `已達成，推薦人已延長 ${REFERRAL.reward} 天（${day(p.referral_rewarded_at)}）` : `進度 ${Math.min(ok, REFERRAL.days)}/${REFERRAL.days} 天`}</span>}
+        {shares > 0 && <span>成功分享 {shares} 次</span>}
+      </div>
+    );
+  };
+  /** sign-ins and minutes online per day */
+  const online = (p: Profile) => {
+    const days = usage!.usage.filter(u => u.user_id === p.id), logins = usage!.logins.filter(l => l.user_id === p.id);
+    const today = days.find(u => u.day === taipeiDay())?.minutes ?? 0;
+    const week = days.filter(u => u.day > taipeiDay(new Date(Date.now() - 7 * 864e5))).reduce((s, u) => s + u.minutes, 0);
+    return (
+      <details className="usage">
+        <summary>今天上線 {hm(today)}・近 7 天 {hm(week)}{logins[0] ? `・最近登入 ${when(logins[0].at)}` : days[0] ? `・最近上線 ${when(days[0].last_seen)}` : '・30 天內沒有上線'}</summary>
+        {days.length > 0 && <table><thead><tr><th>日期</th><th>上線時段</th><th>累計</th></tr></thead><tbody>
+          {days.map(u => <tr key={u.day}><td>{u.day.slice(5).replace('-', '/')}</td><td>{time(u.first_seen)}–{time(u.last_seen)}</td><td>{hm(u.minutes)}</td></tr>)}
+        </tbody></table>}
+        {logins.length > 0 && <p className="note">登入時間：{logins.slice(0, 20).map(l => when(l.at)).join('、')}{logins.length > 20 ? ' …' : ''}</p>}
+      </details>
+    );
+  };
 
   return (
     <div className="page">
@@ -91,6 +134,7 @@ export function AdminPage({ selfId, onBack }: { selfId: string; onBack: () => vo
             <select id="new-plan" value={form.plan} onChange={e => { const plan = e.target.value; setForm({ ...form, plan, expires: plan === 'yearly' ? day(extend(null, 12)) : plan === 'monthly' ? day(extend(null, 1)) : plan === 'trial' ? day(new Date(Date.now() + 14 * 864e5).toISOString()) : '' }); }}>
               {Object.entries(PLANS).map(([k, v]) => <option key={k} value={k}>{v}</option>)}
             </select>
+            <input id="new-ref" type="text" placeholder="推薦碼或推薦人 email（選填）" value={form.ref} onChange={e => setForm({ ...form, ref: e.target.value })} />
             {form.plan !== 'unlimited' && <label className="note">到期日 <input id="new-expires" type="date" value={form.expires} onChange={e => setForm({ ...form, expires: e.target.value })} required /></label>}
             <button className="chip on" disabled={busy}>{busy ? '建立中…' : '建立帳號'}</button>
           </div>
@@ -108,7 +152,9 @@ export function AdminPage({ selfId, onBack }: { selfId: string; onBack: () => vo
                 <div className="card" key={p.id}>
                   <h3 title={p.email || ''}>{p.email}{self && '（你）'}</h3>
                   <span className={s.c === 'err' ? 'err' : 'meta'}>{s.t}・{PLANS[p.plan] || p.plan}・{p.expires_at ? `到期 ${day(p.expires_at)}` : '不限期'}</span>
-                  <span className="meta">建立於 {day(p.created_at)}</span>
+                  <span className="meta">建立於 {day(p.created_at)}{p.ref_code && `・推薦碼 ${p.ref_code}`}</span>
+                  {referral(p)}
+                  {usage && online(p)}
                   <div className="kv">
                     <select id={`plan-${p.id}`} value={p.plan} onChange={e => patch(p, { plan: e.target.value, ...(e.target.value === 'unlimited' ? { expires_at: null } : {}) }, `方案改為${PLANS[e.target.value]}`)}>
                       {Object.entries(PLANS).map(([k, v]) => <option key={k} value={k}>{v}</option>)}

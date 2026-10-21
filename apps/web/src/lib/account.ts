@@ -12,7 +12,20 @@ export interface Profile {
   created_at: string;
   /** when the last renewal reminder e-mail went out (0004_renewal_reminders.sql) */
   reminded_at?: string | null;
+  /** share code in the account's share link, the account that referred it, and when that referral was rewarded (0005) */
+  ref_code?: string | null;
+  referred_by?: string | null;
+  referral_rewarded_at?: string | null;
 }
+
+/** The administrator's LINE official account: trials are requested there. */
+export const LINE_ID = '@870ufuor';
+export const LINE_ADD = `https://line.me/R/ti/p/${LINE_ID}`;
+/** opens a chat with the administrator with the message already typed */
+export const lineMessage = (text: string) => `https://line.me/R/oaMessage/${LINE_ID}/?${encodeURIComponent(text)}`;
+/** a referral counts once the new account has 3 days of at least 60 minutes online within its first 7 days */
+export const REFERRAL = { days: 3, minutes: 60, within: 7, reward: 7 };
+export const shareLink = (code: string) => `${location.origin}/?ref=${code}`;
 
 export const PLANS: Record<string, string> = { trial: '試用', monthly: '月訂', yearly: '年訂', unlimited: '不限期' };
 
@@ -57,7 +70,7 @@ export async function listProfiles(): Promise<Profile[]> {
   return data as Profile[];
 }
 
-export async function updateProfile(id: string, patch: Partial<Pick<Profile, 'plan' | 'expires_at' | 'disabled' | 'note'>>) {
+export async function updateProfile(id: string, patch: Partial<Pick<Profile, 'plan' | 'expires_at' | 'disabled' | 'note' | 'referred_by'>>) {
   const { error } = await supabase!.from('profiles').update(patch).eq('id', id);
   if (error) throw error;
 }
@@ -67,7 +80,7 @@ export async function updateProfile(id: string, patch: Partial<Pick<Profile, 'pl
  * the database trigger creates its profile, which is then given the chosen plan. If e-mail confirmation is on in
  * Supabase, the new user still has to click the link in the e-mail before signing in.
  */
-export async function createAccount(email: string, password: string, plan: string, expiresAt: string | null) {
+export async function createAccount(email: string, password: string, plan: string, expiresAt: string | null, referredBy: string | null = null) {
   const url = import.meta.env.VITE_SUPABASE_URL as string, key = (import.meta.env.VITE_SUPABASE_ANON_KEY as string).trim().replace(/^['"]|['"]$/g, '');
   const side = createClient(normalizeSupabaseUrl(url), key, { auth: { persistSession: false, autoRefreshToken: false, storageKey: 'zl-admin-create' } });
   const { data, error } = await side.auth.signUp({ email, password, options: { emailRedirectTo: location.origin } });
@@ -75,7 +88,7 @@ export async function createAccount(email: string, password: string, plan: strin
   const id = data.user?.id;
   // an address that already has an account comes back without identities and no new user
   if (!id || (data.user?.identities && data.user.identities.length === 0)) throw new Error('這個電子郵件已經有帳號');
-  await updateProfile(id, { plan, expires_at: expiresAt });
+  await updateProfile(id, { plan, expires_at: expiresAt, ...(referredBy ? { referred_by: referredBy } : {}) });
   return { id, confirm: !data.session };
 }
 
@@ -117,4 +130,29 @@ export async function runReminders() {
   const { data, error } = await supabase!.rpc('run_renewal_reminders');
   if (error) throw error;
   return data as number;
+}
+
+/** one minute of use, sent once a minute while the app is open, in front and in use (0005; ignored before it is run) */
+export async function heartbeat() {
+  if (supabase) await supabase.rpc('heartbeat');
+}
+
+/** how many of the accounts this one referred have earned the reward, and how many are still within their 7 days */
+export async function myReferrals(): Promise<{ rewarded: number; pending: number } | null> {
+  const { data, error } = await supabase!.rpc('my_referrals');
+  return error ? null : data;
+}
+
+export interface UsageDay { user_id: string; day: string; minutes: number; first_seen: string; last_seen: string }
+export interface Login { user_id: string; at: string }
+
+/** the administrator's view: minutes online per account and day, and sign-in times, for the last `days` days */
+export async function listUsage(days = 30): Promise<{ usage: UsageDay[]; logins: Login[] } | null> {
+  const since = new Date(Date.now() - days * 864e5);
+  const [u, l] = await Promise.all([
+    supabase!.from('usage_days').select('*').gte('day', since.toISOString().slice(0, 10)).order('day', { ascending: false }),
+    supabase!.from('logins').select('user_id, at').gte('at', since.toISOString()).order('at', { ascending: false }).limit(2000),
+  ]);
+  if (u.error || l.error) return null;
+  return { usage: u.data as UsageDay[], logins: l.data as Login[] };
 }
