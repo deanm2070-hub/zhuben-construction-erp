@@ -10,7 +10,7 @@ const GROUPS: Record<string, [GroupBy, string]> = { floor: ['floor', '樓層'], 
 
 function toTsv(t: T, tab: string) {
   if (GROUPS[tab]) return [`${GROUPS[tab][1]}\t工程項目\t數量\t單位`, ...groupQuantities(t.calc, GROUPS[tab][0]).flatMap(g => g.rows.map(r => `${g.key}\t${r.item}\t${r.q}\t${r.unit}`))].join('\n');
-  if (tab === 'budget') return ['項次\t名稱及規格\t單位\t數量\t單價\t總價\t備註', ...t.budget.map(b => b.sec ? (b.sec.includes('、') ? b.sec.replace('、', '、\t') : `\t${b.sec}`) : `${b.i}\t${b.name}\t${b.unit}\t${b.q}\t\t\t${b.note || ''}`)].join('\n');
+  if (tab === 'budget') return ['項次\t名稱及規格\t單位\t數量\t單價\t總價\t備註', ...t.budget.map(b => b.sec ? (b.sec.includes('、') ? b.sec.replace('、', '、\t') : `\t${b.sec}`) : `${b.i}\t${b.name}\t${b.unit}\t${b.tpl ? '' : b.q}\t\t\t${b.note || ''}`)].join('\n');
   if (tab === 'detail') return t.groups.map(g => [g.title, '樓層\t空間名稱\t合計\t單位', ...g.rows.map(r => `${r.fl}\t${r.name}\t${r.q}\t${g.unit}`), `以上項目總計 = ${g.total} ${g.unit}`].join('\n')).join('\n\n');
   if (tab === 'rebar') return ['樓層\t構件\t編號\t鋼筋位置\t號數\t單支長(m)\t支數\t總長(m)\t重量(kg)\t計算式', ...(t.rebar?.rows || []).map(r => `${r.fl}\t${r.kind}\t${r.mark}\t${r.part}\t#${r.s}\t${r.len / 100}\t${r.n}\t${r2(r.len * r.n / 100)}\t${r.kg}\t${r.expr}`)].join('\n');
   if (tab === 'rebarSum') {
@@ -85,7 +85,7 @@ export function Takeoff({ takeoff: t, pb, pricing, project, subtitle, settings, 
         <thead><tr><th>項次</th><th>名稱及規格</th><th>單位</th><th className="num">數量</th><th>計算依據</th></tr></thead>
         <tbody>{t.budget.map((b, i) => b.sec
           ? <tr className="total" key={i}><td colSpan={5}>{b.sec}</td></tr>
-          : <tr key={i}><td className="num">{b.i}</td><td>{b.name}</td><td>{b.unit}</td><td className="num">{f2(b.q)}</td><td className="note">{b.note}</td></tr>)}</tbody>
+          : <tr key={i} className={b.tpl ? 'tplRow' : ''}><td className="num">{b.i}</td><td>{b.name}</td><td>{b.unit}</td><td className="num">{b.tpl ? '' : f2(b.q)}</td><td className="note">{b.note}</td></tr>)}</tbody>
       </table></div>}
       {tab === 'calc' && <>
         <div className="kv">

@@ -2,7 +2,8 @@ import { isBox, isDoor, type ModelObject } from './types';
 import type { BudgetLine, CalcRow } from './takeoff';
 
 /** Unit prices of one budget line, NT$ per unit; waste is a percentage added to the quantity. */
-export interface PriceRate { mat?: number; lab?: number; eq?: number; waste?: number; note?: string }
+/** qty: a quantity typed in by hand, used instead of the model's (for items the model gives none or gets wrong) */
+export interface PriceRate { mat?: number; lab?: number; eq?: number; waste?: number; note?: string; qty?: number }
 /** A line typed in by hand: an item the model does not measure (or a correction to one). */
 export interface CustomLine extends PriceRate { id: string; sec: string; name: string; unit: string; q: number }
 export interface QuoteInfo { company?: string; client?: string; site?: string; date?: string; valid?: string; contact?: string; terms?: string }
@@ -28,6 +29,8 @@ export interface PricedLine {
   key: string; i: number; name: string; unit: string;
   /** quantity from the model (lump-sum items such as 另計 count as 1) and with waste added */
   q: number; qw: number; waste: number; lump: boolean;
+  /** the model's quantity when a hand-typed one replaces it, and whether the line is a blank template item */
+  q0?: number; manual?: boolean; tpl?: boolean;
   mat: number; lab: number; eq: number;
   /** unit price and line total */
   up: number; matT: number; labT: number; eqT: number; total: number;
@@ -46,17 +49,19 @@ export interface PricedBudget {
 export function priceBudget(budget: BudgetLine[], P: Pricing): PricedBudget {
   const sections: PricedSection[] = [];
   let cur: PricedSection | null = null;
-  const line = (sec: string, i: number, name: string, unit: string, q0: number | string | undefined, note: string, rate: PriceRate, custom?: CustomLine): PricedLine => {
-    const lump = typeof q0 !== 'number';
-    const q = lump ? 1 : q0 as number, waste = rate.waste || 0, qw = r2(q * (1 + waste / 100));
+  const line = (sec: string, i: number, name: string, unit: string, q0: number | string | undefined, note: string, rate: PriceRate, custom?: CustomLine, tpl?: boolean): PricedLine => {
+    const manual = !custom && rate.qty != null && rate.qty > 0;
+    // a blank template item sold as 式 is priced as 1 式 until a quantity is typed in
+    const lump = !manual && (typeof q0 !== 'number' || (!!tpl && unit === '式'));
+    const q = manual ? rate.qty! : lump ? 1 : q0 as number, waste = rate.waste || 0, qw = r2(q * (1 + waste / 100));
     const mat = rate.mat || 0, lab = rate.lab || 0, eq = rate.eq || 0;
     const matT = r0(qw * mat), labT = r0(qw * lab), eqT = r0(qw * eq);
-    return { key: custom ? `custom|${custom.id}` : budgetKey(sec, name, unit), i, name, unit, q, qw, waste, lump, mat, lab, eq, up: r2(mat + lab + eq), matT, labT, eqT, total: matT + labT + eqT, note: rate.note || note, custom };
+    return { key: custom ? `custom|${custom.id}` : budgetKey(sec, name, unit), i, name, unit, q, qw, waste, lump, mat, lab, eq, up: r2(mat + lab + eq), matT, labT, eqT, total: matT + labT + eqT, note: rate.note || (manual ? `手動數量（模型 ${typeof q0 === 'number' && q0 ? q0 : '未算出'}）` : note), custom, tpl, manual, q0: typeof q0 === 'number' ? q0 : undefined };
   };
   for (const b of budget) {
     if (b.sec) { cur = { sec: b.sec, lines: [], mat: 0, lab: 0, eq: 0, total: 0 }; sections.push(cur); continue; }
     if (!cur) continue;
-    cur.lines.push(line(cur.sec, b.i || cur.lines.length + 1, b.name || '', b.unit || '', b.q, b.note || '', P.rates[budgetKey(cur.sec, b.name || '', b.unit || '')] || {}));
+    cur.lines.push(line(cur.sec, b.i || cur.lines.length + 1, b.name || '', b.unit || '', b.q, b.note || '', P.rates[budgetKey(cur.sec, b.name || '', b.unit || '')] || {}, undefined, b.tpl));
   }
   for (const c of P.custom) {
     let s = sections.find(x => x.sec === c.sec);
@@ -84,7 +89,7 @@ export function carryRates(from: Pricing, budget: BudgetLine[]): Record<string, 
   for (const b of budget) {
     if (b.sec) { sec = b.sec; continue; }
     const r = byName.get(`${b.name}|${b.unit}`);
-    if (r) out[budgetKey(sec, b.name || '', b.unit || '')] = { ...r };
+    if (r) { const { qty: _, ...price } = r; out[budgetKey(sec, b.name || '', b.unit || '')] = price; }
   }
   return out;
 }

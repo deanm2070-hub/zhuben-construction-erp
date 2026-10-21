@@ -62,7 +62,7 @@ function section(key: ReportKey, c: ReportCtx): string {
   if (key === 'boq') {
     return table(['項次', '名稱及規格', '單位', '數量', '計算依據'], t.budget.map(b => b.sec
       ? `<tr class="sec"><td colspan="5">${esc(b.sec)}</td></tr>`
-      : `<tr>${td(b.i)}${td(b.name)}${td(b.unit)}${td(b.q, true)}${td(b.note)}</tr>`));
+      : `<tr>${td(b.i)}${td(b.name)}${td(b.unit)}${td(b.tpl ? '' : b.q, true)}${td(b.note)}</tr>`));
   }
   if (key === 'floor' || key === 'member' || key === 'area') {
     return groupQuantities(t.calc, key).map(g => `<h3>${esc(GROUP_TITLE[key])}：${esc(g.key)}</h3>${table(['工程項目', '數量', '單位', '筆數'], g.rows.map(r => `<tr>${td(r.item)}${td(r.q, true)}${td(r.unit)}${td(r.n, true)}</tr>`))}`).join('');
@@ -180,7 +180,7 @@ export function reportWorkbook(keys: ReportKey[], c: ReportCtx) {
       if (q.terms) rows.push([], ['附註', q.terms]);
       ws = sheet(rows, [6, 40, 6, 10, 7, 10, 10, 12, 10, 12, 10, 12, 14, 30]);
     } else if (k === 'boq') {
-      ws = sheet([[`${c.project}  工程數量表`], [], ['項次', '名稱及規格', '單位', '數量', '計算依據'], ...t.budget.map(b => b.sec ? [b.sec] : [b.i!, b.name!, b.unit!, b.q!, b.note || ''])], [6, 48, 6, 12, 36]);
+      ws = sheet([[`${c.project}  工程數量表`], [], ['項次', '名稱及規格', '單位', '數量', '計算依據'], ...t.budget.map(b => b.sec ? [b.sec] : [b.i!, b.name!, b.unit!, b.tpl ? '' : b.q!, b.note || ''])], [6, 48, 6, 12, 36]);
     } else if (k === 'floor' || k === 'member' || k === 'area') {
       const rows: Cell[][] = [[`${c.project}  ${title}`], [], [GROUP_TITLE[k], '工程項目', '數量', '單位', '筆數']];
       for (const g of groupQuantities(t.calc, k)) for (const r of g.rows) rows.push([g.key, r.item, r.q, r.unit, r.n]);

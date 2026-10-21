@@ -238,6 +238,9 @@ textarea{font:13px var(--font);padding:6px 8px;border-radius:8px;border:1px soli
 .fees .grand b{font:800 24px var(--mono);color:var(--tot)}
 .numin{font:13px var(--mono)!important;text-align:right;padding:4px 6px!important}
 .numin.in-mat{border-color:var(--mat)!important}.numin.in-lab{border-color:var(--lab)!important}.numin.in-eq{border-color:var(--eq)!important}
+.numin.in-man{border-color:#e08a00!important;color:#b36b00;font-weight:600}
+.boq tr.tplRow td.desc{color:var(--muted)}
+.tbl tr.tplRow td{color:var(--muted)}
 .boq th.h-mat{background:var(--mat);color:#fff}.boq th.h-lab{background:var(--lab);color:#fff}.boq th.h-eq{background:var(--eq);color:#fff}.boq th.h-tot{background:var(--tot);color:#fff}
 .boq td{padding:4px 8px}
 .boq td.desc{white-space:normal;min-width:220px;max-width:380px}

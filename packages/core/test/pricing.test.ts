@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { budgetKey, carryRates, computeTakeoff, CONCRETE, DEFAULT_SETTINGS, diffVersion, groupQuantities, memberOf, priceBudget, SAMPLE_D, SAMPLE_ROOMS, SAMPLE_W, sampleObjects, SEC, snapshotVersion, withPricing } from '../src';
+import { budgetKey, budgetOf, carryRates, computeTakeoff, CONCRETE, DEFAULT_SETTINGS, diffVersion, groupQuantities, memberOf, priceBudget, SAMPLE_D, SAMPLE_ROOMS, SAMPLE_W, sampleObjects, SEC, snapshotVersion, withPricing } from '../src';
 
 const t = computeTakeoff({
   objects: sampleObjects(), bounds: { W: SAMPLE_W, D: SAMPLE_D },
@@ -53,5 +53,29 @@ describe('grouping quantities', () => {
     const kinds = new Set(sampleObjects().map(memberOf));
     expect(kinds.has('牆')).toBe(true);
     expect(kinds.has('門窗')).toBe(true);
+  });
+});
+
+describe('報價單範本工項', () => {
+  it('lists template items the model gives no quantity for, and covers combined items', () => {
+    const b = budgetOf([
+      { sec: SEC.finish, item: 'F2A-地坪1:3水泥砂漿打底+80*80cm拋光石英磚', unit: '㎡', q: 10, fl: '1F', where: '', expr: '' },
+      { sec: SEC.rc, item: '鋼筋（SD420＋SD280）', unit: '噸', q: 2, fl: '1F', where: '', expr: '' },
+    ] as any);
+    const names = b.filter(l => !l.sec).map(l => l.name);
+    expect(names).toContain('T頭續接器');
+    expect(names).toContain('RH-300*300*10*15');
+    expect(names).not.toContain('F2A-地坪80*80cm拋光石英磚-材料');
+    expect(names).not.toContain('SD420高拉力鋼筋(#6以上.含#6)');
+    expect(b.find(l => l.name === 'T頭續接器')).toMatchObject({ q: 0, tpl: true });
+  });
+  it('uses a hand-typed quantity, and prices a blank 式 item as 1 式', () => {
+    const b = budgetOf([]);
+    const P = withPricing({ rates: { [budgetKey(SEC.rc, 'T頭續接器', '個')]: { qty: 40, mat: 50 }, [budgetKey(SEC.temp, '臨時廁所', '式')]: { mat: 3000 } } });
+    const pb = priceBudget(b, P);
+    const all = pb.sections.flatMap(s => s.lines);
+    expect(all.find(l => l.name === 'T頭續接器')).toMatchObject({ q: 40, manual: true, total: 2000 });
+    expect(all.find(l => l.name === '臨時廁所')).toMatchObject({ q: 1, lump: true, total: 3000 });
+    expect(all.find(l => l.name === '安全圍籬')!.total).toBe(0);
   });
 });

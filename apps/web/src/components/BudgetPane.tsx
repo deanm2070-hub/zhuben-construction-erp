@@ -9,10 +9,10 @@ const f0 = (v: number) => v ? Math.round(v).toLocaleString('zh-TW') : '–';
 const XLSX_TYPE = 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet';
 
 /** A number box that lets the field be cleared while typing and commits numbers only. */
-function Num({ id, value, onChange, disabled, w = 76, cls = '' }: { id: string; value?: number; onChange: (v: number | undefined) => void; disabled?: boolean; w?: number; cls?: string }) {
+function Num({ id, value, onChange, disabled, w = 76, cls = '', ph = '0', title }: { id: string; value?: number; onChange: (v: number | undefined) => void; disabled?: boolean; w?: number; cls?: string; ph?: string; title?: string }) {
   const [s, setS] = useState(value ? String(value) : '');
   useEffect(() => { setS(value ? String(value) : ''); }, [value]);
-  return <input id={id} className={`numin ${cls}`} type="number" inputMode="decimal" min={0} step="any" style={{ width: w }} value={s} disabled={disabled} placeholder="0"
+  return <input id={id} className={`numin ${cls}`} type="number" inputMode="decimal" min={0} step="any" style={{ width: w }} value={s} disabled={disabled} placeholder={ph} title={title}
     onChange={e => { setS(e.target.value); const v = parseFloat(e.target.value); onChange(Number.isFinite(v) && v > 0 ? v : undefined); }} />;
 }
 
@@ -56,7 +56,7 @@ export function BudgetPane({ t, pb, pricing: P, project, projectId, readOnly, on
   return (
     <div className="pane">
       <div className="paneHead">
-        <div><h2>預算報價</h2><p className="note">數量由模型自動帶入；填入材料、工資、機具單價後自動計算複價、管理費、利潤與稅金。單價只要填一次，可帶到其他專案。</p></div>
+        <div><h2>預算報價</h2><p className="note">數量由模型自動帶入，報價單範本的工項全部列出，模型算不出的可直接在數量欄填入（模型的數量也可改）；填入材料、工資、機具單價後自動計算複價、管理費、利潤與稅金。單價只要填一次，可帶到其他專案。</p></div>
         <div className="kv">
           <button className="chip" onClick={() => { download(`${project}-預算報價單.xlsx`, reportWorkbook(['quote', 'boq', 'calc'], ctx), XLSX_TYPE); toast('已下載 Excel：報價單保留公式，可在 Excel 改單價'); }}>Excel</button>
           <button className="chip" onClick={() => printReports(reportHtml(['quote'], ctx))}>PDF／列印</button>
@@ -122,13 +122,16 @@ export function BudgetPane({ t, pb, pricing: P, project, projectId, readOnly, on
             </tr>,
             ...(open ? lines.map(l => {
               const c = l.custom;
-              return <tr key={l.key} className={l.up ? '' : 'unpriced'}>
+              return <tr key={l.key} className={`${l.up ? '' : 'unpriced'}${l.tpl && !l.manual ? ' tplRow' : ''}`}>
                 <td className="st">{l.up ? '✓' : '○'}</td>
                 <td className="num">{l.i}</td>
                 <td className="desc">{c && !readOnly
                   ? <input id={`cn-${c.id}`} type="text" value={c.name} onChange={e => setRate(l.key, { name: e.target.value } as Partial<PriceRate>)} />
                   : l.name}</td>
-                <td className="num">{c && !readOnly ? <Num id={`cq-${c.id}`} value={c.q} w={70} onChange={v => setRate(l.key, { q: v || 0 } as Partial<PriceRate>)} /> : l.lump ? '1 式' : f2(l.q)}</td>
+                <td className="num">{c && !readOnly ? <Num id={`cq-${c.id}`} value={c.q} w={70} onChange={v => setRate(l.key, { q: v || 0 } as Partial<PriceRate>)} />
+                  : readOnly ? (l.lump ? '1 式' : f2(l.q))
+                  : <Num id={`q-${l.key}`} cls={l.manual ? 'in-man' : ''} value={l.manual ? l.q : undefined} w={78} ph={l.lump ? '1 式' : l.q0 ? f2(l.q0) : '填數量'}
+                    title={l.q0 ? `模型數量 ${f2(l.q0)}，填入數字可改用手動數量，清空即還原` : '模型未算出，請填入數量'} onChange={v => setRate(l.key, { qty: v })} />}</td>
                 <td className="num"><Num id={`w-${l.key}`} value={l.waste} w={50} disabled={readOnly} onChange={v => setRate(l.key, { waste: v })} /></td>
                 <td className="num qw">{f2(l.qw)}</td>
                 <td>{c && !readOnly ? <input id={`cu-${c.id}`} type="text" value={c.unit} style={{ width: 44 }} onChange={e => setRate(l.key, { unit: e.target.value } as Partial<PriceRate>)} /> : l.unit}</td>
@@ -145,7 +148,7 @@ export function BudgetPane({ t, pb, pricing: P, project, projectId, readOnly, on
           ];
         })}</tbody>
       </table></div>
-      <p className="note">複價 = 含損數量 × 單價（四捨五入到元）。管理費、利潤以直接工程費計，營業稅以（直接工程費＋管理費＋利潤）計。「另計」項目以 1 式計價。工程數量改變時（重新匯入、修改模型），已填的單價會自動套用到同名稱的工項。</p>
+      <p className="note">複價 = 含損數量 × 單價（四捨五入到元）。管理費、利潤以直接工程費計，營業稅以（直接工程費＋管理費＋利潤）計。單位為「式」的工項未填數量時以 1 式計價。數量欄灰字是模型數量，填入數字改用手動數量（橘色），清空即還原。工程數量改變時（重新匯入、修改模型），已填的單價會自動套用到同名稱的工項。</p>
     </div>
   );
 }

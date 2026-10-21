@@ -1,3 +1,4 @@
+import { BUDGET_TEMPLATE, covers, type TemplateItem } from './budgetTemplate';
 import { computeRebar, type RebarKind, type RebarRow } from './rebar';
 import { roomMap, type RoomLabel, type RoomStat } from './rooms';
 import { WALL_H } from './sample';
@@ -34,7 +35,8 @@ export function facadeOf(o: BoxObject, cx: number, cz: number): Facade {
 
 export interface FinishRow { fl: string; name: string; q: number }
 export interface FinishGroup { title: string; unit: 'M2' | 'M'; rows: FinishRow[]; total: number }
-export interface BudgetLine { sec?: string; i?: number; name?: string; unit?: string; q?: number | string; note?: string }
+/** tpl: a 報價單 template item the model gives no quantity for (q 0), to be filled in by hand */
+export interface BudgetLine { sec?: string; i?: number; name?: string; unit?: string; q?: number | string; note?: string; tpl?: boolean }
 /** One line of the quantity calculation sheet: which item, where, and how it was worked out. */
 export interface CalcRow { sec: string; item: string; unit: string; fl: string; where: string; expr: string; q: number }
 export interface RoomWithFinish extends RoomStat { fl: string; fin: FinishChoice }
@@ -67,7 +69,8 @@ const FACADES: Facade[] = ['北向', '東向', '南向', '西向'];
 
 export const SEC = {
   temp: '一、假設工程', site: '二、放樣.土方及搭架工程', rc: '三、結構體工程', finish: '四、泥作.裝修工程', water: '五、防水工程',
-  open: '六、門窗工程', misc: '七、雜項工程', bath: '九、衛浴設備', mep: '十一、水電.弱電.消防工程（依樓地板面積估算）', other: '其他（模型未含，請依圖說另計）',
+  open: '六、門窗工程', misc: '七、雜項工程', road: '八、道路排水溝及圍牆工程', bath: '九、衛浴設備', steel: '十、鋼架工程',
+  mep: '十一、水電.弱電.消防工程（依樓地板面積估算）', other: '其他（自訂工項）',
 };
 const SEC_ORDER = Object.values(SEC);
 export const CONCRETE = '4000PSI 預拌混凝土', FORMWORK = '一般模板組立及損耗';
@@ -332,17 +335,25 @@ export function budgetOf(calc: CalcRow[], fl?: string): BudgetLine[] {
   const isType = (n: string) => /^(D 門|W 鋁窗) /.test(n) || /^[A-Z]{1,3}\d{0,3}[A-Z]? \S+ [\d.]+\*/.test(n);
   for (const sec of SEC_ORDER) {
     const body = [...lines.values()].filter(l => l.sec0 === sec);
-    if (sec === SEC.other) {
-      body.push(...['鋼架工程', '道路排水溝及圍牆工程'].map(t => ({ sec0: sec, name: t, unit: '式', q: '另計', n: 0, fls: new Set<string>() })));
-    }
-    if (!body.length) continue;
     out.push({ sec });
     const types = body.filter(l => isType(l.name!)).sort((a, b) => a.name!.localeCompare(b.name!));
+    const rest = body.filter(l => !isType(l.name!)), used = new Set<typeof rest[number]>();
+    // template order: a measured item takes the place of the first template item it covers;
+    // template items nothing covers are listed blank; measured items not in the template go last
+    const ordered: (typeof rest[number] | { item: TemplateItem })[] = [...types];
+    for (const t of BUDGET_TEMPLATE[sec] || []) {
+      const hit = rest.filter(l => covers(l.name!, t.name));
+      if (!hit.length) { ordered.push({ item: t }); continue; }
+      for (const l of hit) if (!used.has(l)) { used.add(l); ordered.push(l); }
+    }
+    ordered.push(...rest.filter(l => !used.has(l)));
     let i = 0;
-    for (const l of [...types, ...body.filter(l => !isType(l.name!))]) {
+    for (const l of ordered) {
+      if ('item' in l) { out.push({ i: ++i, name: l.item.name, unit: l.item.unit, q: 0, note: '模型未算出，請自行填入數量', tpl: true }); continue; }
       const multi = l.fls.size > 1 ? `${l.fls.size} 層合計` : fl || [...l.fls][0] || '';
       out.push({ i: ++i, name: l.name, unit: l.unit, q: typeof l.q === 'number' ? r2(l.q) : l.q, note: l.n ? `${multi}，見數量計算式` : '' });
     }
+    if (!body.length && !BUDGET_TEMPLATE[sec]) out.pop();
   }
   return out;
 }
