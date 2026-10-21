@@ -1,5 +1,6 @@
 import { useEffect, useState } from 'react';
-import { CLAIM_FLAG, LINE_ADD, LINE_ID, startTrial, verifyTrial } from '../lib/account';
+import { applyTrial, CLAIM_FLAG, LINE_ADD, LINE_ID, lineApply, verifyTrial } from '../lib/account';
+import { isPhone } from '../lib/files';
 import { checkEmail } from '../lib/emailCheck';
 import { supabase } from '../lib/supabase';
 import { RELEASES, VERSION } from '../lib/version';
@@ -45,18 +46,23 @@ export function AuthPage() {
     history.replaceState(null, '', location.pathname);
     verifyTrial(token).then(e => e ? setVerified(e) : setMsg({ err: '這個確認連結無效或已過期，請重新申請' })).catch(x => setMsg({ err: String((x as Error).message || x) }));
   }, []);
-  // the database opens a 7-day trial account and e-mails its random password to this address
+  // the application goes to the administrator (admin page + e-mail) and, on phones, LINE opens with it typed in;
+  // the administrator opens the account and its random password is e-mailed
   const sendRequest = async () => {
     setBusy(true); setMsg({});
     const c = await checkEmail(email);
     if (!c.ok) { setMsg({ err: c.err }); setBusy(false); return; }
     try {
-      const st = await startTrial(c.email, ref);
-      if (st === 'created') setSent(true);
-      else if (st === 'exists') setMsg({ err: '這個電子郵件已經有帳號了，請直接登入；忘記密碼請用 LINE 聯絡管理員' });
+      const st = await applyTrial(c.email, ref);
+      if (st === 'ok') { setSent(true); if (isPhone()) location.href = lineApply(c.email); }
+      else if (st === 'exists') setMsg({ err: '這個電子郵件已經申請過試用，不能重複申請。已開通的請直接登入；有問題請用 LINE 聯絡管理員' });
       else if (st === 'busy') setMsg({ err: '目前申請的人太多，請稍後再試' });
       else setMsg({ err: '電子郵件無法使用，請確認是否正確' });
-    } catch (x) { setMsg({ err: `申請失敗：${(x as Error).message}。也可以用 LINE ${LINE_ID} 聯絡管理員` }); }
+    } catch (x) {
+      // before 0014 is in the database the application still reaches the administrator through LINE
+      if ((x as { code?: string }).code === 'PGRST202') { setSent(true); if (isPhone()) location.href = lineApply(c.email); }
+      else setMsg({ err: `申請失敗：${(x as Error).message}。也可以用 LINE ${LINE_ID} 聯絡管理員` });
+    }
     setBusy(false);
   };
   const [msg, setMsg] = useState<{ err?: string; ok?: string }>({});
@@ -97,12 +103,14 @@ export function AuthPage() {
         </> : <div className="trial">
           <h3>申請免費試用</h3>
           {sent ? <>
-            <p className="note">✓ 試用帳號已開通！<br />密碼已寄到 <b>{email.trim()}</b>（沒看到請找垃圾郵件匣），請打開信，按信裡的「登入築本算圖」就會自動登入，開始 7 天免費試用。</p>
+            <p className="note">✓ 試用申請已送給管理員！<br />管理員確認後，會把帳號密碼寄到 <b>{email.trim()}</b>（沒看到請找垃圾郵件匣），打開信按「登入築本算圖」就會自動登入，開始 7 天免費試用。</p>
+            <a className="chip on" href={lineApply(email.trim())} target="_blank" rel="noopener" style={{ textDecoration: 'none', textAlign: 'center' }}>用 LINE 傳申請給管理員 {LINE_ID}</a>
+            <p className="note">同一個電子郵件、同一個 LINE 帳號只能申請一次。</p>
           </> : <>
-            <p className="note">輸入你的電子郵件，按「申請免費試用」，系統會立刻開通 7 天試用帳號，並把密碼寄到這個信箱{ref && <>（推薦碼 <b>{ref}</b>）</>}。</p>
+            <p className="note">輸入你的電子郵件，按「申請免費試用」，申請會送到管理員的 LINE 官方帳號 {LINE_ID}，管理員開通後把 7 天試用的帳號密碼寄到這個信箱{ref && <>（推薦碼 <b>{ref}</b>）</>}。同一個電子郵件、同一個 LINE 帳號只能申請一次。</p>
             <input id="trial-email" type="email" autoComplete="email" placeholder="你的電子郵件" value={email} onChange={e => setEmail(e.target.value)} onKeyDown={e => { if (e.key === 'Enter') { e.preventDefault(); sendRequest(); } }} />
             {checked && !checked.ok && checked.email === email.trim().toLowerCase() && <p className="err">{checked.err}</p>}
-            <button type="button" className="chip on" disabled={busy || (!!checked && !checked.ok && checked.email === email.trim().toLowerCase())} onClick={sendRequest}>{busy ? '開通中…' : '申請免費試用'}</button>
+            <button type="button" className="chip on" disabled={busy || (!!checked && !checked.ok && checked.email === email.trim().toLowerCase())} onClick={sendRequest}>{busy ? '送出中…' : '申請免費試用'}</button>
             <p className="note">有問題可以用 LINE <a href={LINE_ADD} target="_blank" rel="noopener">{LINE_ID}</a> 聯絡管理員。</p>
           </>}
           {!sent && <button type="button" className="chip ghost" onClick={() => { setMode('in'); setMsg({}); }}>已有帳號？登入</button>}

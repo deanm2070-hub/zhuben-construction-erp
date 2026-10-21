@@ -1,5 +1,5 @@
 import { useEffect, useState } from 'react';
-import { createAccount, deleteTrialAccount, extend, handleTrialRequest, listProfiles, listTrialRequests, listUsage, newPassword, sendWelcome, type TrialRequest, loadSettings, PLANS, REFERRAL, TRIAL_DAYS, runReminders, saveSetting, sendTestReminder, updateProfile, type Login, type Profile, type UsageDay } from '../lib/account';
+import { createAccount, deleteTrialAccount, lineUsed, extend, handleTrialRequest, listProfiles, listTrialRequests, listUsage, newPassword, sendWelcome, type TrialRequest, loadSettings, PLANS, REFERRAL, TRIAL_DAYS, runReminders, saveSetting, sendTestReminder, updateProfile, type Login, type Profile, type UsageDay } from '../lib/account';
 import { daysLeft, dueForReminder, REMIND_DAYS, reminderEmail, RENEW_HOW, TRIAL_REMIND_DAYS } from '../lib/reminder';
 import { Modal } from './Modal';
 
@@ -16,7 +16,7 @@ export function AdminPage({ selfId, onBack }: { selfId: string; onBack: () => vo
   const [err, setErr] = useState('');
   const [msg, setMsg] = useState('');
   const [q, setQ] = useState('');
-  const [form, setForm] = useState({ email: '', password: '', plan: 'monthly', expires: day(extend(null, 1)), ref: '', mail: true, request: 0 });
+  const [form, setForm] = useState({ email: '', password: '', plan: 'monthly', expires: day(extend(null, 1)), ref: '', mail: true, request: 0, line: '' });
   // null: the trial-request migration (0007) has not been run
   const [requests, setRequests] = useState<TrialRequest[] | null>(null);
   // null: the usage migration (0005) has not been run
@@ -53,20 +53,24 @@ export function AdminPage({ selfId, onBack }: { selfId: string; onBack: () => vo
       const key = form.ref.trim().toLowerCase();
       const referrer = key ? (list || []).find(p => p.ref_code === key || (p.email || '').toLowerCase() === key) : null;
       if (key && !referrer) throw new Error(`找不到推薦碼或帳號「${form.ref.trim()}」`);
-      const r = await createAccount(form.email.trim(), form.password, form.plan, form.plan === 'unlimited' || !form.expires ? null : new Date(`${form.expires}T23:59:59`).toISOString(), referrer?.id ?? null);
+      // one trial per LINE account: the LINE name the application came from must not have been used before
+      const line = form.line.trim();
+      if (form.request && !line) throw new Error('請填對方的 LINE 名稱（同一個 LINE 帳號只能開通一次）');
+      if (line) { const used = await lineUsed(line, form.email.trim()); if (used) throw new Error(`這個 LINE 帳號「${line}」已經申請過（${used}），不能重複開通`); }
+      const r = await createAccount(form.email.trim(), form.password, form.plan, form.plan === 'unlimited' || !form.expires ? null : new Date(`${form.expires}T23:59:59`).toISOString(), referrer?.id ?? null, line || null);
       let mailed = '';
       if (form.mail && requests !== null) {
         try { await sendWelcome(form.email.trim(), form.password); mailed = '，帳號密碼已寄到對方信箱'; } catch (x) { mailed = `，但開通信沒寄出（${(x as Error).message}）`; }
       }
-      if (form.request) { await handleTrialRequest(form.request).catch(() => {}); listTrialRequests().then(setRequests); }
+      if (form.request) { await handleTrialRequest(form.request, line).catch(() => {}); listTrialRequests().then(setRequests); }
       setMsg(`已建立 ${form.email}${referrer ? `（推薦人 ${referrer.email}）` : ''}${mailed}${r.confirm ? '；對方需先到信箱點啟用連結才能登入' : ''}`);
-      setForm({ ...form, email: '', password: '', ref: '', request: 0 });
+      setForm({ ...form, email: '', password: '', ref: '', request: 0, line: '' });
       refresh();
     } catch (x) { setErr(String((x as Error).message || x)); }
     setBusy(false);
   };
 
-  const shown = (list || []).filter(p => !q || (p.email || '').includes(q) || (p.note || '').includes(q));
+  const shown = (list || []).filter(p => !q || (p.email || '').includes(q) || (p.note || '').includes(q) || (p.line_name || '').includes(q));
   const active = (list || []).filter(p => status(p).c === 'ok').length;
   const due = dueForReminder(list || []);
   const mail = preview && reminderEmail(preview, settings?.site_url || location.origin, new Date(), settings?.renew_how || RENEW_HOW);
@@ -136,11 +140,11 @@ export function AdminPage({ selfId, onBack }: { selfId: string; onBack: () => vo
 
         {requests && requests.length > 0 && <div className="card">
           <h3>試用申請（{requests.length}）</h3>
-          <p className="note">從登入頁送出的申請。按「開通」會把資料填到下方的新增帳號（試用 {TRIAL_DAYS} 天、自動產生密碼），確認後按「建立帳號」，帳號密碼會寄到對方信箱。</p>
+          <p className="note">從登入頁送出的申請（同時會從對方手機傳 LINE 到官方帳號）。按「開通」會把資料填到下方的新增帳號（試用 {TRIAL_DAYS} 天、自動產生密碼），填上對方在 LINE 的名稱後按「建立帳號」，帳號密碼會寄到對方信箱。同一個 email、同一個 LINE 帳號只能開通一次。</p>
           {requests.map(q => (
             <div className="kv" key={q.id}>
               <span><b>{q.email}</b>{q.ref_code && `・推薦碼 ${q.ref_code}`}・{new Date(q.created_at).toLocaleString('zh-TW')}{list?.some(p => (p.email || '').toLowerCase() === q.email) && '・已有帳號'}</span>
-              <button className="chip on" onClick={() => { setForm({ ...form, email: q.email, password: newPassword(), plan: 'trial', expires: day(new Date(Date.now() + TRIAL_DAYS * 864e5).toISOString()), ref: q.ref_code || '', request: q.id }); document.getElementById('new-email')?.scrollIntoView({ behavior: 'smooth', block: 'center' }); }}>開通</button>
+              <button className="chip on" onClick={() => { setForm({ ...form, email: q.email, password: newPassword(), plan: 'trial', expires: day(new Date(Date.now() + TRIAL_DAYS * 864e5).toISOString()), ref: q.ref_code || '', request: q.id, line: '' }); setTimeout(() => document.getElementById('new-line')?.focus(), 400); document.getElementById('new-email')?.scrollIntoView({ behavior: 'smooth', block: 'center' }); }}>開通</button>
               <button className="chip ghost" onClick={() => handleTrialRequest(q.id).then(() => listTrialRequests().then(setRequests)).catch(e => setErr(String(e.message || e)))}>略過</button>
             </div>
           ))}
@@ -155,6 +159,7 @@ export function AdminPage({ selfId, onBack }: { selfId: string; onBack: () => vo
               {Object.entries(PLANS).map(([k, v]) => <option key={k} value={k}>{v}</option>)}
             </select>
             <input id="new-ref" type="text" placeholder="推薦碼或推薦人 email（選填）" value={form.ref} onChange={e => setForm({ ...form, ref: e.target.value })} />
+            <input id="new-line" type="text" placeholder={form.request ? '對方的 LINE 名稱（必填）' : '對方的 LINE 名稱（選填）'} value={form.line} required={!!form.request} onChange={e => setForm({ ...form, line: e.target.value })} />
             {form.plan !== 'unlimited' && <label className="note">到期日 <input id="new-expires" type="date" value={form.expires} onChange={e => setForm({ ...form, expires: e.target.value })} required /></label>}
             {requests !== null && <label className="note"><input id="new-mail" type="checkbox" checked={form.mail} onChange={e => setForm({ ...form, mail: e.target.checked })} /> 寄帳號密碼到對方信箱</label>}
             <button className="chip on" disabled={busy}>{busy ? '建立中…' : '建立帳號'}</button>
@@ -163,7 +168,7 @@ export function AdminPage({ selfId, onBack }: { selfId: string; onBack: () => vo
 
         {err && <p className="err">{err}</p>}
         {msg && <p className="note">{msg}</p>}
-        <input id="admin-search" type="search" placeholder="搜尋電子郵件或備註" value={q} onChange={e => setQ(e.target.value)} />
+        <input id="admin-search" type="search" placeholder="搜尋電子郵件、LINE 名稱或備註" value={q} onChange={e => setQ(e.target.value)} />
 
         {list === null ? <p className="note">載入中…</p> : (
           <div className="grid">
@@ -172,6 +177,7 @@ export function AdminPage({ selfId, onBack }: { selfId: string; onBack: () => vo
               return (
                 <div className="card" key={p.id}>
                   <h3 title={p.email || ''}>{p.email}{self && '（你）'}</h3>
+                  {p.line_name && <span className="meta">LINE：{p.line_name}</span>}
                   <span className={s.c === 'err' ? 'err' : 'meta'}>{s.t}・{PLANS[p.plan] || p.plan}・{p.expires_at ? `到期 ${day(p.expires_at)}` : '不限期'}</span>
                   <span className="meta">建立於 {day(p.created_at)}{p.ref_code && `・推薦碼 ${p.ref_code}`}</span>
                   {referral(p)}

@@ -10,6 +10,8 @@ export interface Profile {
   disabled: boolean;
   note: string | null;
   created_at: string;
+  /** LINE name or ID the trial was applied from (0014): one trial per LINE account */
+  line_name?: string | null;
   /** when the last renewal reminder e-mail went out (0004_renewal_reminders.sql) */
   reminded_at?: string | null;
   /** share code in the account's share link, the account that referred it, and when that referral was rewarded (0005) */
@@ -85,7 +87,7 @@ export async function listProfiles(): Promise<Profile[]> {
   return data as Profile[];
 }
 
-export async function updateProfile(id: string, patch: Partial<Pick<Profile, 'plan' | 'expires_at' | 'disabled' | 'note' | 'referred_by'>>) {
+export async function updateProfile(id: string, patch: Partial<Pick<Profile, 'plan' | 'expires_at' | 'disabled' | 'note' | 'referred_by' | 'line_name'>>) {
   const { error } = await supabase!.from('profiles').update(patch).eq('id', id);
   if (error) throw error;
 }
@@ -95,7 +97,7 @@ export async function updateProfile(id: string, patch: Partial<Pick<Profile, 'pl
  * the database trigger creates its profile, which is then given the chosen plan. If e-mail confirmation is on in
  * Supabase, the new user still has to click the link in the e-mail before signing in.
  */
-export async function createAccount(email: string, password: string, plan: string, expiresAt: string | null, referredBy: string | null = null) {
+export async function createAccount(email: string, password: string, plan: string, expiresAt: string | null, referredBy: string | null = null, lineName: string | null = null) {
   const url = import.meta.env.VITE_SUPABASE_URL as string, key = (import.meta.env.VITE_SUPABASE_ANON_KEY as string).trim().replace(/^['"]|['"]$/g, '');
   const side = createClient(normalizeSupabaseUrl(url), key, { auth: { persistSession: false, autoRefreshToken: false, storageKey: 'zl-admin-create' } });
   const { data, error } = await side.auth.signUp({ email, password, options: { emailRedirectTo: location.origin } });
@@ -103,7 +105,7 @@ export async function createAccount(email: string, password: string, plan: strin
   const id = data.user?.id;
   // an address that already has an account comes back without identities and no new user
   if (!id || (data.user?.identities && data.user.identities.length === 0)) throw new Error('這個電子郵件已經有帳號');
-  await updateProfile(id, { plan, expires_at: expiresAt, ...(referredBy ? { referred_by: referredBy } : {}) });
+  await updateProfile(id, { plan, expires_at: expiresAt, ...(referredBy ? { referred_by: referredBy } : {}), ...(lineName ? { line_name: lineName } : {}) });
   return { id, confirm: !data.session };
 }
 
@@ -178,6 +180,20 @@ export async function requestTrial(email: string, ref: string) {
   if (error) throw error;
   if (!data) throw new Error('請確認電子郵件是否正確');
 }
+/** the trial application from the sign-in page (0014): saved for the admin page and e-mailed to the administrator; one per address */
+export async function applyTrial(email: string, ref: string): Promise<'ok' | 'exists' | 'invalid' | 'busy'> {
+  const { data, error } = await supabase!.rpc('apply_trial', { p_email: email, p_ref: ref || null });
+  if (error) throw error;
+  return (data as { status: 'ok' | 'exists' | 'invalid' | 'busy' }).status;
+}
+/** the LINE official account chat with the application typed in (opens LINE on phones) */
+export const lineApply = (email: string) => `https://line.me/R/oaMessage/${LINE_ID}/?${encodeURIComponent(`申請築本算圖免費試用\nEmail：${email}`)}`;
+/** administrator: the e-mail of the account or application that already used this LINE name, or null (0014) */
+export async function lineUsed(line: string, email: string): Promise<string | null> {
+  const { data, error } = await supabase!.rpc('line_used', { p_line: line, p_email: email });
+  if (error) throw new Error(error.code === 'PGRST202' ? '需要先在 Supabase SQL Editor 執行 0014_試用改由管理員開通.sql' : error.message);
+  return data as string | null;
+}
 /** opens a 7-day trial account for this address and e-mails it a random password (0010) */
 export async function startTrial(email: string, ref: string): Promise<'created' | 'exists' | 'invalid' | 'busy'> {
   const { data, error } = await supabase!.rpc('start_trial', { p_email: email, p_ref: ref || null });
@@ -191,7 +207,7 @@ export async function verifyTrial(token: string) {
   return data as string | null;
 }
 
-export interface TrialRequest { id: number; email: string; ref_code: string | null; created_at: string; handled_at: string | null }
+export interface TrialRequest { id: number; email: string; ref_code: string | null; created_at: string; handled_at: string | null; line_name?: string | null }
 export async function listTrialRequests(): Promise<TrialRequest[] | null> {
   // only requests whose e-mail has been confirmed (0009); before that migration, all of them
   const q = () => supabase!.from('trial_requests').select('*').is('handled_at', null).order('created_at', { ascending: false });
@@ -199,8 +215,8 @@ export async function listTrialRequests(): Promise<TrialRequest[] | null> {
   if (r.error) r = await q();
   return r.error ? null : r.data as TrialRequest[];
 }
-export async function handleTrialRequest(id: number) {
-  const { error } = await supabase!.from('trial_requests').update({ handled_at: new Date().toISOString() }).eq('id', id);
+export async function handleTrialRequest(id: number, lineName?: string) {
+  const { error } = await supabase!.from('trial_requests').update({ handled_at: new Date().toISOString(), ...(lineName ? { line_name: lineName } : {}) }).eq('id', id);
   if (error) throw error;
 }
 /** e-mails a new account its sign-in details */
