@@ -3,7 +3,7 @@ import {
   type BoxObject, type CadData, type DoorObject, type ModelObject, type RoomRect,
 } from '@cloud-modeler/core';
 import * as THREE from 'three';
-import { OrbitControls } from 'three/examples/jsm/controls/OrbitControls.js';
+import { TrackballControls } from 'three/examples/jsm/controls/TrackballControls.js';
 import { RoomEnvironment } from 'three/examples/jsm/environments/RoomEnvironment.js';
 import { EffectComposer } from 'three/examples/jsm/postprocessing/EffectComposer.js';
 import { RenderPass } from 'three/examples/jsm/postprocessing/RenderPass.js';
@@ -13,7 +13,8 @@ import { OutputPass } from 'three/examples/jsm/postprocessing/OutputPass.js';
 /** mat: automatic rendering (lit materials, sky, soft shadows); persp: the same look from eye level */
 export type RenderMode = 'mat' | 'persp' | 'layer' | 'white' | 'wire';
 export type Tool = 'orbit' | 'pan' | 'select' | 'measure' | 'push' | 'move' | 'draw' | 'paint' | 'flip' | 'del' | 'walk';
-export type SceneKey = 'sw' | 'ne' | 'top' | 'hall' | 'eye';
+/** front: 正立面 (from the south), bird: 鳥瞰圖, side: 側向立面 (from the east), eye: the eye-level perspective */
+export type SceneKey = 'front' | 'bird' | 'side' | 'eye';
 export type DrawKind = 'wall' | 'rc' | 'rail' | 'column' | 'slab' | 'tall' | 'low';
 /** what each drawing tool makes: thickness of a line-drawn part (0: drawn as a rectangle), default height, cm */
 export const DRAW_KINDS: Record<DrawKind, { label: string; thick: number; h: number; layer: BoxObject['layer']; color: number }> = {
@@ -63,7 +64,7 @@ export const TOOL_HINT: Record<Tool, string> = {
   walk: '漫遊：拖曳畫面轉頭，WASD／方向鍵或右下按鈕走動。',
 };
 
-interface Label { el: HTMLDivElement; pos: THREE.Vector3; room?: boolean; cad?: boolean; meas?: boolean }
+interface Label { el: HTMLDivElement; pos: THREE.Vector3; room?: boolean; cad?: boolean; meas?: boolean; sel?: boolean }
 type Drag =
   | { kind: 'look'; x: number; y: number }
   | { kind: 'draw'; p0: { x: number; z: number }; preview?: THREE.Mesh; box?: Omit<BoxObject, 'id'> }
@@ -101,7 +102,8 @@ export class Viewer {
   private renderer: THREE.WebGLRenderer;
   private scene = new THREE.Scene();
   private camera = new THREE.PerspectiveCamera(40, 1, 5, 40000);
-  private controls: OrbitControls;
+  /** free rotation in every direction: over the top, under the building, all the way round */
+  private controls: TrackballControls;
   private sun = new THREE.DirectionalLight(0xfff4e0, 0.75);
   private hemi = new THREE.HemisphereLight(0xffffff, 0x9aa6b8, 2.2);
   private env: THREE.Texture | null = null;
@@ -153,10 +155,13 @@ export class Viewer {
     this.renderer.localClippingEnabled = true;
     this.renderer.shadowMap.type = phone ? THREE.PCFShadowMap : THREE.PCFSoftShadowMap;
     view.prepend(this.renderer.domElement);
-    this.controls = new OrbitControls(this.camera, this.renderer.domElement);
-    this.controls.enableDamping = true;
-    this.controls.dampingFactor = 0.12;
-    this.controls.maxPolarAngle = Math.PI / 2 - 0.02;
+    this.controls = new TrackballControls(this.camera, this.renderer.domElement);
+    this.controls.rotateSpeed = 3;
+    this.controls.zoomSpeed = 1.2;
+    this.controls.panSpeed = 0.9;
+    this.controls.dynamicDampingFactor = 0.18;
+    this.controls.minDistance = 50;
+    this.controls.keys = ['', '', ''];  // W A S D belong to walking
     this.scene.add(this.hemi);
     this.sun.intensity = 2.2;
     this.sun.castShadow = true;
@@ -208,7 +213,7 @@ export class Viewer {
     this.clearMeasure();
     this.applyCadView();
     this.rebuild();
-    this.goScene('sw', true);
+    this.goScene('bird', true);
   }
   /** Replaces the model as one undoable step (CAD import, reset). */
   replace(objects: ModelObject[], cad: CadData | null) {
@@ -222,7 +227,7 @@ export class Viewer {
     this.applyCadView();
     this.rebuild();
     this.commit();
-    this.goScene('sw');
+    this.goScene('bird');
   }
   nextId() { return this.uid; }
   get roomRects(): RoomRect[] | undefined { return this.cad ? undefined : SAMPLE_ROOMS; }
@@ -270,7 +275,7 @@ export class Viewer {
     const h = this.history.pop();
     if (!h) return this.ev.toast('沒有可以復原的步驟');
     this.objects = JSON.parse(h.o);
-    if (h.c !== this.cad) { this.cad = h.c; this.applyCadView(); this.goScene('sw'); }
+    if (h.c !== this.cad) { this.cad = h.c; this.applyCadView(); this.goScene('bird'); }
     this.selectedId = null;
     this.rebuild();
     this.commit();
@@ -384,8 +389,9 @@ export class Viewer {
     if (this.tool === 'measure' && t !== 'measure') this.measA = null;
     this.tool = t;
     this.controls.mouseButtons.LEFT = t === 'pan' ? THREE.MOUSE.PAN : THREE.MOUSE.ROTATE;
-    this.controls.touches.ONE = t === 'pan' ? THREE.TOUCH.PAN : THREE.TOUCH.ROTATE;
-    this.controls.enableRotate = t !== 'draw';
+    this.controls.mouseButtons.RIGHT = t === 'pan' ? THREE.MOUSE.ROTATE : THREE.MOUSE.PAN;
+    // one finger always turns the model on phones; two fingers zoom and move
+    this.controls.noRotate = t === 'draw';
     if (t === 'walk') this.enterWalk();
     this.ev.info(TOOL_HINT[t]);
   }
@@ -579,11 +585,16 @@ export class Viewer {
   }
   private updateSelection() {
     if (this.selBox) { this.helperGroup.remove(this.selBox); this.selBox = null; }
+    const i = this.labels.findIndex(l => l.sel);
+    if (i >= 0) { this.labels[i].el.remove(); this.labels.splice(i, 1); }
     const o = this.byId(this.selectedId);
     this.ev.select?.(o || null);
     if (!o) return;
     const m = this.meshOf(o.id);
     if (!m) return;
+    // the selected part's name floats above it, so a new name shows at once
+    const b = new THREE.Box3().setFromObject(m);
+    this.addLabel(`<b>${esc(o.name || '構件')}</b>`, new THREE.Vector3((b.min.x + b.max.x) / 2, b.max.y + 15, (b.min.z + b.max.z) / 2), 'tag selTag').sel = true;
     this.selBox = new THREE.BoxHelper(m, 0x1f6feb);
     (this.selBox.material as THREE.LineBasicMaterial).depthTest = false;
     this.selBox.renderOrder = 10;
@@ -713,9 +724,9 @@ export class Viewer {
   private placeLabels() {
     const rw = this.view.clientWidth, rh = this.view.clientHeight, v = new THREE.Vector3();
     for (const it of this.labels) {
-      if ((it.room && this.cad) || (!this.showLabels && !it.meas)) { it.el.hidden = true; continue; }
+      if ((it.room && this.cad) || (!this.showLabels && !it.meas && !it.sel)) { it.el.hidden = true; continue; }
       // a vertical section also takes away the names of what is cut off
-      if (!it.meas && this.sectionPlane && this.sectionKind !== 'h' && this.sectionPlane.distanceToPoint(it.pos) < 0) { it.el.hidden = true; continue; }
+      if (!it.meas && !it.sel && this.sectionPlane && this.sectionKind !== 'h' && this.sectionPlane.distanceToPoint(it.pos) < 0) { it.el.hidden = true; continue; }
       v.copy(it.pos).project(this.camera);
       const off = v.z > 1 || Math.abs(v.x) > 1.2 || Math.abs(v.y) > 1.2;
       it.el.hidden = off;
@@ -726,16 +737,21 @@ export class Viewer {
   /* ---------- camera ---------- */
   private sceneDef(k: SceneKey): { pos: number[]; target?: number[]; fov: number } {
     const s = Math.max(this.bounds.W, this.bounds.D, this.height * 1.4) / 1180, c = this.center;
-    if (k === 'sw') return { pos: [c.x - 1050 * s, 1250 * s, c.z + 1250 * s], fov: 40 };
-    if (k === 'ne') return { pos: [c.x + 1050 * s, 1250 * s, c.z - 1250 * s], fov: 40 };
-    if (k === 'top') return { pos: [c.x, 9500 * s, c.z + 1], fov: 8.5 };
+    if (k === 'bird') return { pos: [c.x - 1050 * s, 1250 * s, c.z + 1250 * s], fov: 40 };
+    if (k === 'front' || k === 'side') {
+      // elevations: level view straight at the middle of the building, far enough to see all of it
+      const fov = 30, b = this.floor ? this.floorBase : 0, cy = b + this.height / 2;
+      const aspect = this.view.clientWidth / Math.max(1, this.view.clientHeight), t = Math.tan(fov / 2 * Math.PI / 180);
+      const wide = k === 'front' ? this.bounds.W : this.bounds.D, deep = k === 'front' ? this.bounds.D : this.bounds.W;
+      const d = Math.max(this.height * 0.6 / t, wide * 0.6 / (t * aspect)) + deep / 2;
+      return k === 'front' ? { pos: [c.x, cy, c.z + d], target: [c.x, cy, c.z], fov } : { pos: [c.x + d, cy, c.z], target: [c.x, cy, c.z], fov };
+    }
     if (k === 'eye') {
       // two-point perspective from a person standing outside the south-west corner: eye height, level view
       const b = this.floor ? this.floorBase : 0, d = Math.max(this.bounds.W, this.bounds.D) * 0.7 + this.height * 0.6;
       return { pos: [c.x - d * 0.62, b + 160, c.z + d * 0.78], target: [c.x, b + 160 + this.height * 0.12, c.z], fov: 55 };
     }
-    if (this.cad) { const b = this.floorBase; return { pos: [c.x, 170 + b, c.z + this.bounds.D * 0.42], target: [c.x, 120 + b, c.z - this.bounds.D * 0.1], fov: 60 }; }
-    return { pos: [560, 300, 860], target: [540, 140, 250], fov: 55 };
+    return { pos: [c.x - 1050 * s, 1250 * s, c.z + 1250 * s], fov: 40 };
   }
   goScene(k: SceneKey, instant = false) {
     this.exitWalk();
@@ -744,6 +760,8 @@ export class Viewer {
     const aspect = this.view.clientWidth / Math.max(1, this.view.clientHeight);
     const fit = s.target ? 1 : Math.max(1, 0.92 / aspect);
     const to = { pos: new THREE.Vector3(...s.pos).sub(target).multiplyScalar(fit).add(target), target, fov: s.fov };
+    // a set view stands upright again however the model was turned
+    this.camera.up.set(0, 1, 0);
     if (instant) {
       this.camera.position.copy(to.pos);
       this.controls.target.copy(to.target);
@@ -758,6 +776,7 @@ export class Viewer {
     const w = this.view.clientWidth, h = this.view.clientHeight;
     this.renderer.setSize(w, h);
     this.composer?.setSize(w, h);
+    this.controls.handleResize();
     this.camera.aspect = w / Math.max(1, h);
     this.camera.updateProjectionMatrix();
   }
@@ -778,6 +797,7 @@ export class Viewer {
     this.walk.on = false;
     const s = this.walk.saved;
     if (s) { this.camera.position.copy(s.pos); this.controls.target.copy(s.target); this.camera.fov = s.fov; this.camera.updateProjectionMatrix(); }
+    this.camera.up.set(0, 1, 0);
     this.controls.enabled = true;
   }
   /** On-screen walk buttons: f/b/l/r. */
@@ -1185,7 +1205,7 @@ export class Viewer {
       if (w.keys.has('b')) this.camera.position.addScaledVector(fw, -sp);
       if (w.keys.has('r')) this.camera.position.addScaledVector(r, sp);
       if (w.keys.has('l')) this.camera.position.addScaledVector(r, -sp);
-    } else if (this.controls.update()) this.active = now;
+    } else this.controls.update();
     // idle: redraw about once a second only, which catches any change made without input
     const busy = !!f || (this.walk.on && this.walk.keys.size > 0) || now - this.active < 1500;
     // rendered modes: plain frames while moving, then one finished frame (ambient occlusion, smooth edges) once at rest

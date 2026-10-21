@@ -297,3 +297,4 @@ textarea{font:13px var(--font);padding:6px 8px;border-radius:8px;border:1px soli
 .side nav button{gap:8px}
 @media (max-width:560px){.hideSm{display:none!important}}
 .cols2{display:grid;grid-template-columns:repeat(auto-fit,minmax(260px,1fr));gap:12px}
+.tag.selTag{background:#1f6feb;z-index:3}.tag.selTag b{color:#fff}

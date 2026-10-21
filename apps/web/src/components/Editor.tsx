@@ -25,7 +25,7 @@ export const MODULES = [
 type Module = typeof MODULES[number][0];
 
 const MODES: [RenderMode, string][] = [['mat', '自動渲染'], ['persp', '透視圖'], ['layer', '圖層分色'], ['white', '純白白模'], ['wire', '線框']];
-const SCENES: [SceneKey, string][] = [['sw', '西南等角全覽'], ['top', '正交平面俯視（2D/3D）'], ['hall', '走道與門向特寫'], ['ne', '東北等角']];
+const SCENES: [SceneKey, string][] = [['front', '正立面'], ['bird', '鳥瞰圖'], ['side', '側向立面']];
 const PALETTE = [0xeeebe5, 0xc98a4b, 0x6b4f3a, 0x2f6fd6, 0x41557a, 0x6f7d93, 0x16a34a, 0xdc2626, 0xf5b83d, 0x1d2533];
 const hex = (c: number) => '#' + c.toString(16).padStart(6, '0');
 
@@ -39,7 +39,7 @@ export function Editor({ projectId, importNow, trial = false, onExit }: { projec
   const [loadErr, setLoadErr] = useState('');
   const [mode, setMode] = useState<RenderMode>('mat');
   const [tool, setTool] = useState<Tool>('orbit');
-  const [scene, setScene] = useState<SceneKey>('sw');
+  const [scene, setScene] = useState<SceneKey>('bird');
   const [labels, setLabels] = useState(true);
   // section cut: horizontal at a height (0 … top of the building) or vertical at a plan X / Y position, cm
   const [section, setSection] = useState({ on: false, kind: 'h' as 'h' | 'x' | 'z', v: { h: 140, x: 0, z: 0 }, flip: false, ext: { W: 1000, D: 800, top: 300 } });
@@ -223,7 +223,7 @@ export function Editor({ projectId, importNow, trial = false, onExit }: { projec
               <span className="sep" />
               <span className="lbl">樓層</span>
               {[null, ...viewer.current.floors.map(f => f.key)].map(k => (
-                <button key={k || 'all'} className={`chip ${floor === k ? 'on' : ''}`} onClick={() => { v().setFloor(k); setFloor(k); v().goScene(scene === 'hall' ? 'hall' : scene); }}>{k || '整棟'}</button>
+                <button key={k || 'all'} className={`chip ${floor === k ? 'on' : ''}`} onClick={() => { v().setFloor(k); setFloor(k); v().goScene(scene); }}>{k || '整棟'}</button>
               ))}
             </>}
           </div>
@@ -247,7 +247,7 @@ export function Editor({ projectId, importNow, trial = false, onExit }: { projec
             cutSection({ on, ext, v: on ? fresh : section.v });
             showToast(on ? '剖面開啟：可選水平或垂直剖面，拖曳滑桿移動切面' : '剖面關閉');
           }}
-          onHome={() => { chooseTool('orbit'); v().goScene('sw'); setScene('sw'); }} />}
+          onHome={() => { chooseTool('orbit'); v().goScene('bird'); setScene('bird'); }} />}
         {module === '3d' && (tool === 'draw' || tool === 'paint' || tool === 'measure' || section.on) && (
           <div className="sub"><div className="subInner">
             {tool === 'draw' && <><span className="t">畫什麼</span>{(Object.keys(DRAW_KINDS) as DrawKind[]).map(k =>
@@ -282,7 +282,7 @@ export function Editor({ projectId, importNow, trial = false, onExit }: { projec
         )}
         {module === '3d' && sel && viewer.current && (
           <PropsPanel o={sel} floors={viewer.current.floors} readOnly={readOnly}
-            onApply={patch => { v().updateObject(sel.id, patch); showToast('已套用，數量會依新尺寸重算'); }}
+            onApply={patch => { const renamed = patch.name && patch.name !== sel.name; v().updateObject(sel.id, patch); showToast(renamed ? `已套用，名稱改為「${patch.name}」` : '已套用，數量會依新尺寸重算'); }}
             onDelete={() => { v().deleteSelected(); }}
             onClose={() => v().selectId(null)} />
         )}
@@ -318,7 +318,7 @@ export function Editor({ projectId, importNow, trial = false, onExit }: { projec
             if (!name || name === '匯入圖面') { const n = r.cad.name.replace(/\.(dxf|dwg|skp|dae|obj|glb|gltf|fbx|stl)$/i, ''); setName(n); store.save(projectId, { name: n }).catch(() => {}); }
             setDialog('none');
             setModule('3d');
-            setScene('sw');
+            setScene('bird');
             setFloor(null);
             showToast(r.summary);
             setInfo(`匯入完成：${r.cad.name}｜範圍 ${Math.round(r.cad.W)} × ${Math.round(r.cad.D)} cm`);

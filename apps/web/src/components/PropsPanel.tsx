@@ -25,7 +25,7 @@ export function PropsPanel({ o, floors, readOnly, onApply, onDelete, onClose }: 
   const apply = () => {
     const base = floors.find(x => x.key === f.floor)?.y || 0;
     if (box) {
-      const patch: Partial<BoxObject> = { name: f.name || box.name, w: num(f.w, 1), d: num(f.d, 1), h: num(f.h, 1), y: num(f.y, -1000) + base };
+      const patch: Partial<BoxObject> = { name: f.name.trim() || box.name, w: num(f.w, 1), d: num(f.d, 1), h: num(f.h, 1), y: num(f.y, -1000) + base };
       if (f.floor) patch.floor = f.floor;
       if (box.layer === 'wall' && f.kind !== kindOf(box)) {
         if (f.kind === 'column') patch.rc = { kind: 'column', mark: f.name || '柱', fl: f.floor || '1F', b: Math.min(num(f.w, 1), num(f.d, 1)), h: Math.max(num(f.w, 1), num(f.d, 1)) };
@@ -34,7 +34,7 @@ export function PropsPanel({ o, floors, readOnly, onApply, onDelete, onClose }: 
       onApply(patch as Partial<ModelObject>);
     } else {
       const d = o as Extract<ModelObject, { layer: 'door' }>, mid = (d.a + d.b) / 2, w = num(f.w, 10);
-      onApply({ name: f.name || d.name, a: mid - w / 2, b: mid + w / 2, h: num(f.h, 10), y: num(f.y, -1000) + base, ...(f.floor ? { floor: f.floor } : {}) } as Partial<ModelObject>);
+      onApply({ name: f.name.trim() || d.name, a: mid - w / 2, b: mid + w / 2, h: num(f.h, 10), y: num(f.y, -1000) + base, ...(f.floor ? { floor: f.floor } : {}) } as Partial<ModelObject>);
     }
   };
   const field = (k: 'w' | 'd' | 'h' | 'y', label: string) => (
@@ -43,7 +43,10 @@ export function PropsPanel({ o, floors, readOnly, onApply, onDelete, onClose }: 
   return (
     <aside className="props" aria-label="構件屬性">
       <div className="propsHead"><b>構件屬性</b><span className="badge">{memberOf(o)}</span><button className="x" aria-label="關閉" onClick={onClose}>×</button></div>
-      <label>名稱<input id="prop-name" type="text" value={f.name} disabled={readOnly} onChange={e => setF({ ...f, name: e.target.value })} onKeyDown={e => e.key === 'Enter' && apply()} /></label>
+      <label>構件名稱<input id="prop-name" type="text" value={f.name} disabled={readOnly} placeholder="輸入新名稱" enterKeyHint="done"
+        onChange={e => setF({ ...f, name: e.target.value })}
+        onKeyDown={e => { if (e.key === 'Enter') (e.target as HTMLInputElement).blur(); }}
+        onBlur={() => { const n = f.name.trim(); if (n && n !== o.name) apply(); }} /></label>
       {box?.layer === 'wall' && <label>類別<select id="prop-kind" value={f.kind} disabled={readOnly} onChange={e => setF({ ...f, kind: e.target.value as Kind })}>
         <option value="rc">RC 牆（算混凝土、模板）</option><option value="light">隔間牆（算隔間面積）</option><option value="column">柱</option></select></label>}
       {box ? <>{field('w', '寬')}{field('d', '深（厚）')}</> : field('w', '門窗寬')}
@@ -52,7 +55,7 @@ export function PropsPanel({ o, floors, readOnly, onApply, onDelete, onClose }: 
       {floors.length > 0 && <label>樓層<select id="prop-floor" value={f.floor} disabled={readOnly} onChange={e => setF({ ...f, floor: e.target.value })}>
         {!o.floor && <option value="">—</option>}{floors.map(x => <option key={x.key}>{x.key}</option>)}</select></label>}
       {!readOnly && <div className="kv"><button className="chip on" onClick={apply}>套用</button><button className="chip ghost danger" onClick={onDelete}>刪除</button></div>}
-      <p className="note">改完按「套用」（或 Enter），可用「復原」回到上一步；工程數量會依新尺寸重算。</p>
+      <p className="note">名稱改完按 Enter 或點別處就存好；尺寸改完按「套用」（或 Enter），可用「復原」回到上一步；工程數量會依新尺寸重算。</p>
     </aside>
   );
 }
