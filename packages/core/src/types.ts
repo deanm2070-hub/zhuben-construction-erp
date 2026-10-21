@@ -87,7 +87,12 @@ export interface CadData {
   floors?: CadFloor[];
   /** reinforcement read from the structural detail sheets, and the slab panels of the structural plans */
   rc?: RcData;
+  /** imported 3D models (SketchUp): the geometry not turned into walls, slabs … kept as plain mesh */
+  meshes?: CadMesh[];
 }
+
+/** Plain mesh in plan cm (x east, y up from 1F, z south): base64 Int16 positions on a 1 cm grid and Uint16 (wide: Uint32) triangle indices. */
+export interface CadMesh { floor?: string; color: number; opacity?: number; pos: string; idx: string; wide?: boolean }
 
 /** n bars of size #s */
 export interface Bar { n: number; s: number }

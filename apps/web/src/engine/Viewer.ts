@@ -1,5 +1,5 @@
 import {
-  isBox, isDoor, SAMPLE_D, SAMPLE_ROOMS, SAMPLE_W, WALL_H,
+  isBox, isDoor, unpackMesh, SAMPLE_D, SAMPLE_ROOMS, SAMPLE_W, WALL_H,
   type BoxObject, type CadData, type DoorObject, type ModelObject, type RoomRect,
 } from '@cloud-modeler/core';
 import * as THREE from 'three';
@@ -94,6 +94,9 @@ export class Viewer {
   private measGroup = new THREE.Group();
   private helperGroup = new THREE.Group();
   private cadGroup = new THREE.Group();
+  /** imported 3D model geometry that is not a wall, slab … (furniture, stairs, roofs) */
+  private meshGroup = new THREE.Group();
+  private meshKey = '';
   private cadFloor: THREE.Mesh | null = null;
   private underlay: THREE.Mesh | null = null;
   private selBox: THREE.BoxHelper | null = null;
@@ -136,7 +139,7 @@ export class Viewer {
     this.sun.castShadow = true;
     this.sun.shadow.mapSize.set(phone ? 1024 : 2048, phone ? 1024 : 2048);
     this.sun.shadow.bias = -0.0008;
-    this.scene.add(this.sun, this.sun.target, this.floorGroup, this.objGroup, this.measGroup, this.helperGroup, this.cadGroup);
+    this.scene.add(this.sun, this.sun.target, this.floorGroup, this.objGroup, this.measGroup, this.helperGroup, this.cadGroup, this.meshGroup);
     this.buildSampleFloors(SAMPLE_ROOMS);
     this.bindEvents();
     const ro = new ResizeObserver(() => this.resize());
@@ -428,6 +431,7 @@ export class Viewer {
       c.traverse(n => { const m = n as THREE.Mesh; m.geometry?.dispose(); (m.material as THREE.Material | undefined)?.dispose?.(); });
     }
     for (const o of this.objects) if (this.shown(o)) this.objGroup.add(this.buildObj(o));
+    this.buildMeshes();
     const floorTint = (f: THREE.Mesh, base: number) => {
       const mat = f.material as THREE.MeshStandardMaterial;
       mat.color.setHex(this.mode === 'white' ? 0xf4f4f2 : this.mode === 'layer' ? 0xe9ecf0 : base);
@@ -455,6 +459,44 @@ export class Viewer {
     this.helperGroup.add(this.selBox);
     this.ev.info(describe(o));
   }
+
+  /** The kept SketchUp geometry, rebuilt only when the model, storey or render mode changes. */
+  private buildMeshes() {
+    const key = `${this.cad?.meshes?.length ?? 0}|${this.floor}|${this.mode}|${isDarkTheme()}`;
+    if (key === this.meshKey && this.meshCad === this.cad) return;
+    this.meshKey = key;
+    this.meshCad = this.cad;
+    for (const c of this.meshGroup.children.slice()) {
+      this.meshGroup.remove(c);
+      const m = c as THREE.Mesh;
+      m.geometry?.dispose();
+      (m.material as THREE.Material).dispose();
+    }
+    for (const cm of this.cad?.meshes || []) {
+      if (this.floor && cm.floor && cm.floor !== this.floor) continue;
+      const { pos, idx } = unpackMesh(cm);
+      const g0 = new THREE.BufferGeometry();
+      g0.setAttribute('position', new THREE.BufferAttribute(pos, 3));
+      g0.setIndex(new THREE.BufferAttribute(idx, 1));
+      const g = g0.toNonIndexed();
+      g0.dispose();
+      g.computeVertexNormals();
+      const glass = (cm.opacity ?? 1) < 1;
+      const mat = this.matFor({ layer: glass ? 'glass' : 'furniture', color: cm.color } as ModelObject);
+      mat.side = THREE.DoubleSide;
+      if (glass && this.mode === 'mat') (mat as THREE.MeshStandardMaterial).opacity = Math.max(0.2, cm.opacity!);
+      const m = new THREE.Mesh(g, mat);
+      m.castShadow = this.mode === 'mat' || this.mode === 'white' || this.mode === 'layer';
+      m.receiveShadow = true;
+      m.raycast = () => {};
+      this.meshGroup.add(m);
+      // SketchUp-style outlines: only creases, not the triangulation
+      const e = new THREE.LineSegments(new THREE.EdgesGeometry(g, 25), this.edgeMat());
+      e.raycast = () => {};
+      this.meshGroup.add(e);
+    }
+  }
+  private meshCad: CadData | null = null;
 
   /* ---------- CAD overlay ---------- */
   private applyCadView() {

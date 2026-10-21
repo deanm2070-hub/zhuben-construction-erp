@@ -157,7 +157,7 @@ export function Editor({ projectId, importNow, onExit }: { projectId: string; im
           <button className={`chip ${magnet ? 'on' : ''}`} onClick={() => { v().setMagnet(!magnet); setMagnet(!magnet); showToast(magnet ? '磁吸貼合：關' : '磁吸貼合：開'); }}>磁吸貼合</button>
           <button className="chip" onClick={() => { v().setShowLabels(!labels); setLabels(!labels); }}>{labels ? '隱藏標籤' : '顯示標籤'}</button>
           <span className="sep" />
-          <button className="chip key" onClick={() => setDialog('cad')}>匯入 AutoCAD（DWG/DXF）</button>
+          <button className="chip key" onClick={() => setDialog('cad')}>匯入 AutoCAD／SketchUp</button>
           {underlay
             ? <button className="chip" onClick={() => { v().setUnderlay(null); setUnderlay(false); }}>移除底圖</button>
             : <label className="chip tap">匯入 PDF／圖片底圖<input id="underlay-file" className="tap-input" type="file" accept="image/*,application/pdf,.pdf" onChange={e => { const f = e.target.files?.[0]; e.target.value = ''; if (f) onUnderlayFile(f); }} /></label>}
@@ -224,7 +224,7 @@ export function Editor({ projectId, importNow, onExit }: { projectId: string; im
           onSource={f => { store.uploadSource(projectId, f).catch(() => showToast('原始檔上傳失敗，模型仍會儲存')); }}
           onBuilt={r => {
             v().replace(r.objects, r.cad);
-            if (!name || name === '匯入圖面') { const n = r.cad.name.replace(/\.(dxf|dwg)$/i, ''); setName(n); store.save(projectId, { name: n }).catch(() => {}); }
+            if (!name || name === '匯入圖面') { const n = r.cad.name.replace(/\.(dxf|dwg|skp|dae|obj|glb|gltf|fbx|stl)$/i, ''); setName(n); store.save(projectId, { name: n }).catch(() => {}); }
             setDialog('none');
             setScene('sw');
             setFloor(null);

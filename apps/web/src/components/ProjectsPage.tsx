@@ -39,13 +39,13 @@ export function ProjectsPage({ email, onOpen }: { email: string | null; onOpen: 
         </div>
         {!store.cloud && <div className="banner">目前是本機模式：專案存在這個瀏覽器裡。設定 Supabase 後即可登入並存到雲端（見 README）。</div>}
         <div className="kv">
-          <button className="chip key" onClick={() => create('cad')}>從 AutoCAD／PDF 開始</button>
+          <button className="chip key" onClick={() => create('cad')}>從 AutoCAD／SketchUp／PDF 開始</button>
           <button className="chip" onClick={() => create('sample')}>開啟範例平面</button>
           <button className="chip" onClick={() => create('blank')}>空白專案</button>
           <label className="chip tap">開啟專案檔<input id="project-file" className="tap-input" type="file" accept=".json,application/json" onChange={async e => { const f = e.target.files?.[0]; e.target.value = ''; if (!f) return; try { const { name, model } = await readProjectFile(f); onOpen(await store.create(name, model)); } catch (x) { setErr(String((x as Error).message || x)); } }} /></label>
         </div>
         {err && <p className="err">{err}</p>}
-        {list === null ? <p className="note">載入中…</p> : list.length === 0 ? <p className="note">還沒有專案。先開一個範例平面看看，或直接匯入 AutoCAD 圖面。</p> : (
+        {list === null ? <p className="note">載入中…</p> : list.length === 0 ? <p className="note">還沒有專案。先開一個範例平面看看，或直接匯入 AutoCAD 圖面、SketchUp 模型。</p> : (
           <div className="grid">
             {list.map(p => (
               <div className="card" key={p.id}>

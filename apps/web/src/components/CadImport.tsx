@@ -1,9 +1,10 @@
 import {
-  analyzeBuilding, buildBuilding, buildFromDxf, decodeDxf, mergeDrawings, DWG_VERSIONS, dwgSignature, guessLayerKind, guessUnits, parseDxf, sampleDxf,
+  analyzeBuilding, buildBuilding, buildFromMesh, type MeshBuildResult, type MeshPart, buildFromDxf, decodeDxf, mergeDrawings, DWG_VERSIONS, dwgSignature, guessLayerKind, guessUnits, parseDxf, sampleDxf,
   UNIT_NAME, UNIT_SCALE, WALL_H, type BuildingAnalysis, type BuildOptions, type CadData, type DxfDrawing, type LayerKind, type ModelObject,
 } from '@cloud-modeler/core';
 import { useMemo, useState } from 'react';
 import { readDwg } from '../lib/dwg';
+import { isModelFile, readModel3d } from '../lib/model3d';
 import { Modal } from './Modal';
 
 /** How to tick several files in the phone's own file picker (the page cannot change that screen). */
@@ -15,7 +16,7 @@ const MULTI_HINT = /iPhone|iPad|iPod/.test(navigator.userAgent) || (navigator.pl
 
 type Stage =
   | { s: 'pick'; files: File[] }
-  | { s: 'reading'; name: string; ver: string }
+  | { s: 'reading'; name: string; ver: string; title?: string; note?: string }
   | { s: 'building'; name: string; dxf: DxfDrawing; a: BuildingAnalysis }
   | { s: 'layers'; name: string; dxf: DxfDrawing; map: Record<string, LayerKind>; unit: number; wallH: number }
   | { s: 'error'; msg: string };
@@ -76,8 +77,29 @@ export function CadImport({ firstId, onBuilt, onSource, onClose }: {
       return dxf;
     } catch { setSt({ s: 'error', msg: `${f.name} 解析失敗，請確認是 DWG 或 ASCII 格式的 DXF。` }); return null; }
   };
+  /** SketchUp models (and their .dae / .obj … exports) go straight to a building: storeys, walls, openings, slabs read from the geometry. */
+  const onModels = async (files: File[]) => {
+    const parts: MeshPart[] = [];
+    for (let i = 0; i < files.length; i++) {
+      const f = files[i];
+      setSt({ s: 'reading', title: '讀取 3D 模型中', name: files.length > 1 ? `${f.name}（第 ${i + 1}／${files.length} 個檔）` : f.name, ver: /\.skp$/i.test(f.name) ? 'SketchUp 模型' : '3D 模型', note: '第一次開 SketchUp 檔會先下載讀取元件（約 0.5 MB）。大型模型需要幾秒鐘。' });
+      try {
+        for (const p of await readModel3d(f)) parts.push({ ...p, solid: `${i}|${p.solid ?? ''}` });
+        onSource(f);
+      } catch (e) { return setSt({ s: 'error', msg: `${f.name} 讀取失敗：${(e as Error).message}` }); }
+    }
+    setSt({ s: 'reading', title: '辨識 3D 模型中', name: '正在找樓層、牆、門窗、柱、梁、樓板…', ver: '請稍候', note: '' });
+    await new Promise(r => setTimeout(r, 50));
+    let r: MeshBuildResult | null;
+    try { r = buildFromMesh(parts, files.map(f => f.name).join('、'), firstId); }
+    catch (e) { return setSt({ s: 'error', msg: `辨識模型時出錯：${(e as Error).message}。可以把這個檔傳給我檢查。` }); }
+    if (!r) return setSt({ s: 'error', msg: '模型裡找不到牆或樓板的面（可能是空檔，或只有線條沒有面）。' });
+    onBuilt({ objects: r.objects, cad: r.cad, summary: meshSummary(r) });
+  };
   /** Several files (architectural + structural sets) are read one by one and laid side by side. */
   const onFiles = async (files: File[]) => {
+    const models = files.filter(isModelFile);
+    if (models.length) return onModels(models);
     const ds: DxfDrawing[] = [];
     for (let i = 0; i < files.length; i++) {
       const d = await readOne(files[i], i + 1, files.length);
@@ -103,7 +125,7 @@ export function CadImport({ firstId, onBuilt, onSource, onClose }: {
     };
     const start = () => { setPicked(st.files); onFiles(st.files); };
     return (
-      <Modal title="匯入 AutoCAD 圖面" desc="支援 DWG 與 DXF，直接在瀏覽器讀取。" onClose={onClose} actions={<>
+      <Modal title="匯入圖面或 3D 模型" desc="支援 AutoCAD 的 DWG、DXF，以及 SketchUp 的 .skp（也可用 SketchUp 匯出的 .dae、.obj、.glb、.fbx），直接在瀏覽器讀取。" onClose={onClose} actions={<>
         {close}
         <button className="chip" onClick={() => fromText(sampleDxf(), '範例 2房2廳.dxf')}>用範例 DXF 試試</button>
         <button className="chip on" disabled={!st.files.length} onClick={start}>{st.files.length > 1 ? `開始讀取 ${st.files.length} 個檔` : '開始讀取'}</button>
@@ -112,7 +134,7 @@ export function CadImport({ firstId, onBuilt, onSource, onClose }: {
           onDragOver={e => { e.preventDefault(); setDrag(true); }} onDragLeave={() => setDrag(false)}
           onDrop={e => { e.preventDefault(); setDrag(false); add(e.dataTransfer.files); }}>
           <b>{st.files.length ? '＋ 再加入檔案' : '點這裡選擇檔案'}</b>
-          <span>DWG 或 DXF，可以一次選多個，也可以分次加入（建築圖、結構圖）</span>
+          <span>DWG、DXF 或 SketchUp（.skp），可以一次選多個，也可以分次加入（建築圖、結構圖）</span>
           <small className="how">{MULTI_HINT}</small>
           <input id="cad-file" className="tap-input" type="file" multiple onChange={e => { add(e.target.files); e.target.value = ''; }} />
         </label>
@@ -123,11 +145,12 @@ export function CadImport({ firstId, onBuilt, onSource, onClose }: {
           </li>)}
         </ul>}
         <p>整套執照圖（各層平面、立面或剖面、門窗表）會自動分出樓層，依高程算樓高，門窗依門窗表的尺寸與窗台高開口，蓋出整棟 3D。</p>
+        <p>SketchUp 模型會自動分出樓層，認出牆（含厚度）、門窗開口、柱、梁、樓板，直接算工程數量；家具、樓梯、斜屋頂等保留原本的樣子顯示。</p>
         <p>只有一張平面圖時，牆圖層會擠出成有厚度的 3D 牆（雙線牆自動配對），門弧算門、窗線算窗，房間名稱用來自動分區算面積。</p>
       </Modal>
     );
   }
-  if (st.s === 'reading') return <Modal title="讀取 DWG 中" desc={`${st.name}｜${st.ver}`} onClose={() => {}} actions={null}><p>第一次開 DWG 會先下載讀取元件（約 10 MB），之後就很快。大型圖面需要幾秒鐘。</p></Modal>;
+  if (st.s === 'reading') return <Modal title={st.title || '讀取 DWG 中'} desc={`${st.name}｜${st.ver}`} onClose={() => {}} actions={null}>{st.note !== '' && <p>{st.note || '第一次開 DWG 會先下載讀取元件（約 10 MB），之後就很快。大型圖面需要幾秒鐘。'}</p>}</Modal>;
   if (st.s === 'building') return <BuildingStep st={st} firstId={firstId} onBuilt={onBuilt} onClose={onClose}
     onLayers={() => toLayers(st.dxf, st.name)} />;
   if (st.s === 'error') return <Modal title="無法匯入" onClose={onClose} actions={<><button className="chip" onClick={() => setSt({ s: 'pick', files: picked })}>重新選擇</button>{close}</>}><p className="err">{st.msg}</p></Modal>;
@@ -284,4 +307,14 @@ function BuildingStep({ st, firstId, onBuilt, onLayers, onClose }: {
       <p className="note">牆依各層平面圖的牆、柱圖層建立，各層用軸線對齊。門窗開口依平面上的編號套用門窗表的高度與窗台高，沒有編號的開口用預設尺寸（門 210、窗台 90＋窗高 150）。</p>
     </Modal>
   );
+}
+
+/** What the importer made of a 3D model, for the toast after building. */
+function meshSummary(r: MeshBuildResult): string {
+  const f = r.report.floors, sum = (k: 'walls' | 'columns' | 'beams' | 'doors' | 'windows' | 'stairs') => f.reduce((s, x) => s + (x[k] || 0), 0);
+  const storeys = f.filter(x => x.key !== 'RF').map(x => x.key);
+  const area = f.reduce((s, x) => s + x.slabArea, 0);
+  return `${/\.skp\b/i.test(r.cad.name) ? 'SketchUp 模型' : '3D 模型'}：${storeys.length} 層（${storeys.join('、')}）${f.some(x => x.key === 'RF') ? '＋屋頂' : ''}，牆 ${sum('walls')} 段、柱 ${sum('columns')}、梁 ${sum('beams')}、門 ${sum('doors')}、窗 ${sum('windows')}、樓板 ${Math.round(area)} ㎡${sum('stairs') ? `、樓梯 ${sum('stairs')} 座` : ''}` +
+    (r.report.kept ? `；家具、裝飾等 ${r.report.kept.toLocaleString()} 個面照原樣顯示` : '') +
+    (r.report.singleFace ? '。模型的牆是單面（沒有厚度），先以 10 cm 計' : '');
 }
