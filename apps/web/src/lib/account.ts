@@ -55,6 +55,14 @@ export async function loadAccount(userId: string): Promise<Account> {
     supabase.rpc('device_ok'),
   ]);
   if (admin.error || exists.error || prof.error) return OPEN_ACCOUNT;
+  // an account made without its profile (plan and expiry) gets its 7-day trial now (0013); re-read it once
+  if (!prof.data && !admin.data) {
+    const fix = await supabase.rpc('ensure_profile');
+    if (!fix.error) {
+      const again = await supabase.from('profiles').select('*').eq('id', userId).maybeSingle();
+      if (!again.error) prof.data = again.data;
+    }
+  }
   // without the one-device migration (0003) every device keeps working
   const elsewhere = !device.error && device.data === false;
   const p = prof.data as Profile | null, isAdmin = !!admin.data;

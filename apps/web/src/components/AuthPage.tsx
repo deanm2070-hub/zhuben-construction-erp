@@ -97,8 +97,7 @@ export function AuthPage() {
         </> : <div className="trial">
           <h3>申請免費試用</h3>
           {sent ? <>
-            <p className="note">✓ 試用帳號已開通！<br />密碼已寄到 <b>{email.trim()}</b>（沒看到請找垃圾郵件匣），用這個電子郵件和信裡的密碼登入，就可以開始 7 天免費試用。</p>
-            <button type="button" className="chip on" onClick={() => { setMode('in'); setSent(false); setPassword(''); setMsg({}); }}>前往登入</button>
+            <p className="note">✓ 試用帳號已開通！<br />密碼已寄到 <b>{email.trim()}</b>（沒看到請找垃圾郵件匣），請打開信，按信裡的「登入築本算圖」就會自動登入，開始 7 天免費試用。</p>
           </> : <>
             <p className="note">輸入你的電子郵件，按「申請免費試用」，系統會立刻開通 7 天試用帳號，並把密碼寄到這個信箱{ref && <>（推薦碼 <b>{ref}</b>）</>}。</p>
             <input id="trial-email" type="email" autoComplete="email" placeholder="你的電子郵件" value={email} onChange={e => setEmail(e.target.value)} onKeyDown={e => { if (e.key === 'Enter') { e.preventDefault(); sendRequest(); } }} />
