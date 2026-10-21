@@ -154,7 +154,16 @@ export interface ProjectModel {
   cad: CadData | null;
   finishes: Record<string, Partial<FinishChoice>>;
   settings: TakeoffSettings;
+  /** unit prices, hand-typed lines, fees and the quotation header (預算報價) */
+  pricing?: import('./pricing').Pricing;
+  /** saved states of the quantities and prices (計算版本) */
+  versions?: import('./pricing').CalcVersion[];
+  /** project information: category, status, client … (also kept on the project row for the project list) */
+  info?: ProjectInfo;
 }
+
+export const PROJECT_STATUS = ['估算中', '已報價', '已得標', '施工中', '已結案'] as const;
+export interface ProjectInfo { category?: string; status?: string; client?: string; site?: string; note?: string }
 
 export const isDoor = (o: ModelObject): o is DoorObject => o.layer === 'door';
 export const isBox = (o: ModelObject): o is BoxObject => o.layer !== 'door';

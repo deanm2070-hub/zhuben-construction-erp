@@ -1,6 +1,13 @@
 # 築本算圖（雲端 3D 室內繪圖與工程數量計算）
 
-瀏覽器裡的 3D 平面建模工具：匯入 AutoCAD DWG／DXF、SketchUp 模型或 PDF 平面圖，自動生成牆、門、窗與房間，並依「業主報價單」格式計算結構與裝修數量，可下載 Excel。
+瀏覽器裡的建築圖算量與報價軟體，六大功能：
+
+1. 建築圖與結構圖匯入：DWG、DXF、SketchUp、PDF，辨識圖層、尺寸、軸線、樓層與構件，並提供人工校正（屬性面板、繪圖、推拉、刪除）。
+2. 2D 平面圖轉 3D 模型：柱、梁、板、牆、門窗、樓梯依樓層建模，分層、分構件顯示。
+3. 工程數量計算：混凝土、模板、牆面、樓地板面積、鋼筋（依配筋圖），每筆附計算式。
+4. 工程預算與報價：材料／工資／機具單價與複價、損耗、管理費、利潤、稅金（`packages/core/src/pricing.ts`）。
+5. 雲端專案管理：分類與狀態、計算版本比較、原始圖檔、團隊成員與權限。
+6. 數量明細與報表匯出：依工項、樓層、構件、施工區域，Excel 與 PDF（`apps/web/src/lib/report.ts`）。
 
 ## 專案結構
 
@@ -28,7 +35,8 @@ npm run build
 ### 1. Supabase（帳號、資料庫、檔案）
 
 1. 在 supabase.com 建立專案。
-2. 在 SQL Editor 依序執行 `supabase/migrations/0001_projects.sql`、`0002_subscriptions.sql`、`0003_single_device.sql`、`0004_renewal_reminders.sql`、`0005_trial_referrals.sql`、`0006_rename.sql`、`0007_trial_requests.sql`（或使用 `supabase db push`）。
+2. 在 SQL Editor 依序執行 `supabase/migrations/0001_projects.sql`、`0002_subscriptions.sql`、`0003_single_device.sql`、`0004_renewal_reminders.sql`、`0005_trial_referrals.sql`、`0006_rename.sql`、`0007_trial_requests.sql` … `0011_team_projects.sql`（或使用 `supabase db push`；設定 GitHub secret `SUPABASE_DB_URL` 後，推上 main 的新檔案由「Database migrations」自動執行）。
+   `0011_team_projects.sql`：專案的分類、狀態、業主（`projects.meta`），以及專案成員（`project_members`，可編輯／只能檢視），擁有者用 `share_project` 以電子郵件加入成員。
    0002 加入訂閱控管：每個帳號有方案與到期日，第一個在「我的專案」按「把這個帳號設為管理員」的帳號成為管理員，可在「管理員後台」新增帳號、延長、停用。到期或停用的帳號由資料庫權限（RLS）擋住，打不開專案。
    `0003_single_device.sql`：一個帳號同時只能在一台裝置使用，後登入的裝置接手，先前的裝置被登出（管理員不受限）。
    `0004_renewal_reminders.sql`：每天台灣時間 9 點，資料庫透過 Resend（resend.com）寄續訂提醒信給 14 天內到期的帳號（同一到期日只寄一次）。寄信前先在 SQL Editor 單獨執行 `select vault.create_secret('你的 Resend API 金鑰', 'resend_api_key');`，金鑰加密存在 Supabase Vault，不放在程式或網站。寄件人、回覆信箱、續訂方式在管理員後台設定；Resend 未驗證網域前只能從 onboarding@resend.dev 寄到 Resend 註冊信箱。

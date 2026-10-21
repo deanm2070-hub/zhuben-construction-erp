@@ -40,6 +40,8 @@ export interface CalcRow { sec: string; item: string; unit: string; fl: string; 
 export interface RoomWithFinish extends RoomStat { fl: string; fin: FinishChoice }
 export interface Takeoff {
   budget: BudgetLine[]; groups: FinishGroup[]; rooms: RoomWithFinish[]; calc: CalcRow[]; floorArea: number; wallH: number;
+  /** area of the floor slabs (ground slab and floors, not the roof), ㎡ */
+  slabArea?: number;
   /** bar list from the reinforcement drawings, and the members whose schedule was not found */
   rebar?: { rows: RebarRow[]; missing: string[] };
 }
@@ -183,10 +185,12 @@ export function computeTakeoff(inp: TakeoffInput): Takeoff {
   }
   const ground = /^1F$|^B/.test(fl) || slabs.some(o => /地坪/.test(o.name));
   const slabA = sum(slabs, o => o.w * o.d / 1e4);
+  let slabArea = 0;
   if (slabA > 0) {
     const t = slabs[0].h || S.slab, name = ground ? '地坪' : slabs.some(o => /屋頂/.test(o.name)) ? '屋頂板' : '樓板';
     row(SEC.rc, CONCRETE, 'M3', name, `面積 ${r2(slabA)} ㎡ × 厚 ${m(t)} m`, slabA * t / 100);
     if (!ground) row(SEC.rc, FORMWORK, '㎡', `${name}底模`, `面積 ${r2(slabA)} ㎡`, slabA);
+    if (name !== '屋頂板') slabArea = slabA;
     if (name === '屋頂板') row(SEC.water, '屋頂.露台防水處理（含保護層）', '㎡', '屋頂板', `面積 ${r2(slabA)} ㎡`, slabA);
   }
   const eaveA = sum(eaves, o => o.w * o.d / 1e4);
@@ -275,7 +279,7 @@ export function computeTakeoff(inp: TakeoffInput): Takeoff {
   row(SEC.bath, '明鏡', '面', '浴廁', bathNote, basins);
   row(SEC.bath, '馬桶(座式)', '組', '浴廁', bathNote, wc);
   for (const t of ['水電工程', '弱電工程', '消防工程']) row(SEC.mep, t, '坪', '室內', `樓地板面積 ${r2(floorArea)} ㎡ ÷ 3.3058（依設備圖確認）`, floorArea / PING);
-  return { budget: budgetOf(calc, fl), groups: G, rooms, calc, floorArea, wallH: H };
+  return { budget: budgetOf(calc, fl), groups: G, rooms, calc, floorArea, wallH: H, slabArea: r2(slabArea) };
 }
 
 /** Budget lines from calculation rows, in the template's section order; door and window types lead their section. */
@@ -354,6 +358,7 @@ export function computeBuildingTakeoff(objects: ModelObject[], cad: CadData, fin
     rooms: parts.flatMap(p => p.rooms),
     calc,
     floorArea: parts.reduce((s, p) => s + p.floorArea, 0),
+    slabArea: r2(parts.reduce((s, p) => s + (p.slabArea || 0), 0)),
     wallH: Math.max(WALL_H, ...parts.map(p => p.wallH)),
   };
 }

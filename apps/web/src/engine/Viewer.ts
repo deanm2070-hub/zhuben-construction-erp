@@ -1,5 +1,5 @@
 import {
-  isBox, isDoor, unpackMesh, SAMPLE_D, SAMPLE_ROOMS, SAMPLE_W, WALL_H,
+  isBox, isDoor, memberOf, unpackMesh, SAMPLE_D, SAMPLE_ROOMS, SAMPLE_W, WALL_H,
   type BoxObject, type CadData, type DoorObject, type ModelObject, type RoomRect,
 } from '@cloud-modeler/core';
 import * as THREE from 'three';
@@ -26,6 +26,8 @@ export interface ViewerEvents {
   delta(dx: number, dz: number): void;
   /** the model changed and should be saved */
   change(objects: ModelObject[], cad: CadData | null): void;
+  /** the selected part changed (null: nothing selected) */
+  select?(o: ModelObject | null): void;
 }
 
 export const LAYER_COLORS: Record<string, { name: string; color: number }> = {
@@ -82,6 +84,8 @@ export class Viewer {
   drawH = 0;
   paintColor = 0x2f6fd6;
   selectedId: number | null = null;
+  /** member kinds (柱, 梁, 樓板 …) hidden from the view */
+  hidden = new Set<string>();
 
   private renderer: THREE.WebGLRenderer;
   private scene = new THREE.Scene();
@@ -210,7 +214,26 @@ export class Viewer {
     if (this.sectionOn) this.setSection(true, this.sectionH);
   }
   private get floorBase() { return this.floors.find(f => f.key === this.floor)?.y || 0; }
-  private shown(o: ModelObject) { return !this.floor || !o.floor || o.floor === this.floor; }
+  private shown(o: ModelObject) { return (!this.floor || !o.floor || o.floor === this.floor) && (!this.hidden.size || !this.hidden.has(memberOf(o))); }
+  /** Shows or hides parts of the model by member kind. */
+  setHidden(kinds: Iterable<string>) {
+    this.hidden = new Set(kinds);
+    if (this.selectedId && !this.objects.some(o => o.id === this.selectedId && this.shown(o))) this.selectedId = null;
+    this.rebuild();
+    this.invalidate();
+  }
+  /** Changes one part (manual correction from the properties panel) as one undoable step. */
+  updateObject(id: number, patch: Partial<ModelObject>) {
+    const o = this.byId(id);
+    if (!o) return;
+    this.snapshot();
+    Object.assign(o, patch);
+    this.rebuild();
+    this.commit();
+    this.invalidate();
+  }
+  /** Selects a part by id (null clears). */
+  selectId(id: number | null) { this.selectedId = id; this.updateSelection(); this.invalidate(); }
   get planBounds() { return { ...this.bounds }; }
   roomLabels() {
     if (this.cad) return this.cad.texts.map(t => ({ n: t.s, x: t.x, z: t.z }));
@@ -450,6 +473,7 @@ export class Viewer {
   private updateSelection() {
     if (this.selBox) { this.helperGroup.remove(this.selBox); this.selBox = null; }
     const o = this.byId(this.selectedId);
+    this.ev.select?.(o || null);
     if (!o) return;
     const m = this.meshOf(o.id);
     if (!m) return;

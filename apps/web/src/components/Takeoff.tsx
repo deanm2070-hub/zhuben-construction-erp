@@ -1,12 +1,15 @@
-import { EXT_FINISHES, FINISH_SHORT, FINISHES, PING, REBAR_KINDS, REBAR_STD, rebarSummary, type FinishChoice, type Takeoff as T, type TakeoffSettings } from '@cloud-modeler/core';
+import { EXT_FINISHES, FINISH_SHORT, FINISHES, groupQuantities, PING, REBAR_KINDS, REBAR_STD, rebarSummary, type FinishChoice, type GroupBy, type PricedBudget, type Pricing, type Takeoff as T, type TakeoffSettings } from '@cloud-modeler/core';
 import { useState } from 'react';
-import { download, takeoffWorkbook } from '../lib/files';
-import { Modal } from './Modal';
+import { download } from '../lib/files';
+import { reportWorkbook } from '../lib/report';
 
 const f2 = (v: number | string | undefined) => typeof v === 'number' ? v.toLocaleString(undefined, { maximumFractionDigits: 2 }) : v ?? '';
 const r2 = (v: number) => Math.round(v * 100) / 100;
 
+const GROUPS: Record<string, [GroupBy, string]> = { floor: ['floor', '樓層'], member: ['member', '構件'], area: ['area', '施工區域'] };
+
 function toTsv(t: T, tab: string) {
+  if (GROUPS[tab]) return [`${GROUPS[tab][1]}\t工程項目\t數量\t單位`, ...groupQuantities(t.calc, GROUPS[tab][0]).flatMap(g => g.rows.map(r => `${g.key}\t${r.item}\t${r.q}\t${r.unit}`))].join('\n');
   if (tab === 'budget') return ['項次\t名稱及規格\t單位\t數量\t單價\t總價\t備註', ...t.budget.map(b => b.sec ? (b.sec.includes('、') ? b.sec.replace('、', '、\t') : `\t${b.sec}`) : `${b.i}\t${b.name}\t${b.unit}\t${b.q}\t\t\t${b.note || ''}`)].join('\n');
   if (tab === 'detail') return t.groups.map(g => [g.title, '樓層\t空間名稱\t合計\t單位', ...g.rows.map(r => `${r.fl}\t${r.name}\t${r.q}\t${g.unit}`), `以上項目總計 = ${g.total} ${g.unit}`].join('\n')).join('\n\n');
   if (tab === 'rebar') return ['樓層\t構件\t編號\t鋼筋位置\t號數\t單支長(m)\t支數\t總長(m)\t重量(kg)\t計算式', ...(t.rebar?.rows || []).map(r => `${r.fl}\t${r.kind}\t${r.mark}\t${r.part}\t#${r.s}\t${r.len / 100}\t${r.n}\t${r2(r.len * r.n / 100)}\t${r.kg}\t${r.expr}`)].join('\n');
@@ -18,13 +21,16 @@ function toTsv(t: T, tab: string) {
   return ['空間\t面積㎡\t坪\t地坪\t天花\t牆面', ...t.rooms.map(r => `${r.name}\t${r2(r.area)}\t${r2(r.area / PING)}\t${r.fin.f}\t${r.fin.c}\t${r.fin.w}`)].join('\n');
 }
 
-export function Takeoff({ takeoff: t, project, subtitle, settings, onSettings, onFinish, onClose, toast }: {
-  takeoff: T; project: string; subtitle: string; settings: TakeoffSettings;
+type Tab = 'budget' | 'calc' | 'floor' | 'member' | 'area' | 'rebar' | 'rebarSum' | 'detail' | 'spaces';
+
+export function Takeoff({ takeoff: t, pb, pricing, project, subtitle, settings, readOnly, onSettings, onFinish, toast }: {
+  takeoff: T; pb: PricedBudget; pricing: Pricing; project: string; subtitle: string; settings: TakeoffSettings; readOnly: boolean;
   onSettings: (s: TakeoffSettings) => void;
   onFinish: (room: string, patch: Partial<FinishChoice>) => void;
-  onClose: () => void; toast: (s: string) => void;
+  toast: (s: string) => void;
 }) {
-  const [tab, setTab] = useState<'budget' | 'calc' | 'rebar' | 'rebarSum' | 'detail' | 'spaces'>('budget');
+  const [tab, setTab] = useState<Tab>('budget');
+  const grouped = GROUPS[tab] ? groupQuantities(t.calc, GROUPS[tab][0]) : [];
   const [rbFloor, setRbFloor] = useState('全部');
   const [rbKind, setRbKind] = useState('全部');
   const rb = t.rebar?.rows || [];
@@ -40,21 +46,41 @@ export function Takeoff({ takeoff: t, project, subtitle, settings, onSettings, o
     catch { toast('瀏覽器不允許寫入剪貼簿，請改用「下載 Excel」'); }
   };
   const sel = (k: 'f' | 'c' | 'w', room: string, cur: string) => (
-    <select id={`fin-${k}-${room}`} value={cur} onChange={e => onFinish(room, { [k]: e.target.value })}>
+    <select id={`fin-${k}-${room}`} value={cur} disabled={readOnly} onChange={e => onFinish(room, { [k]: e.target.value })}>
       {Object.keys(FINISHES[k]).map(c => <option key={c} value={c}>{c === '-' ? '不施作' : `${c} ${FINISH_SHORT[c]}`}</option>)}
     </select>
   );
   return (
-    <Modal title="工程數量統計" desc={subtitle} onClose={onClose} actions={<>
-      <button className="chip" onClick={onClose}>關閉</button>
-      <button className="chip" onClick={copy}>複製目前分頁</button>
-      <button className="chip on" onClick={() => download(`${project}-工程數量.xlsx`, takeoffWorkbook(t, project), 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet')}>下載 Excel</button>
-    </>}>
-      <div className="kv">
-        {([['budget', '預算書數量'], ['calc', '數量計算式'], ...(rb.length ? [['rebar', '鋼筋明細'], ['rebarSum', '鋼筋統計']] as const : []), ['detail', '裝修細項'], ['spaces', '空間做法設定']] as const).map(([k, l]) => (
+    <div className="pane">
+      <div className="paneHead">
+        <div><h2>工程數量</h2><p className="note">{subtitle}</p></div>
+        <div className="kv">
+          <button className="chip" onClick={copy}>複製目前分頁</button>
+          <button className="chip on" onClick={() => download(`${project}-工程數量.xlsx`, reportWorkbook(['boq', 'floor', 'member', 'area', 'calc', ...(rb.length ? ['rebar', 'rebarSum'] as const : []), 'finish', 'rooms'], { project, t, pb, pricing }), 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet')}>下載 Excel</button>
+        </div>
+      </div>
+      <div className="stats">
+        {t.floorArea > 0 || !t.slabArea
+          ? <div><span>樓地板面積（室內空間）</span><b>{f2(r2(t.floorArea))} ㎡</b><small>{f2(r2(t.floorArea / PING))} 坪{t.slabArea ? `・樓板 ${f2(t.slabArea)} ㎡` : ''}</small></div>
+          : <div><span>樓地板面積（依樓板）</span><b>{f2(t.slabArea)} ㎡</b><small>{f2(r2(t.slabArea / PING))} 坪・空間未標示做法</small></div>}
+        {([['混凝土', /混凝土/, 'M3'], ['模板', /模板/, '㎡'], ['鋼筋', /^鋼筋（/, '噸']] as const).map(([l, re, u]) => {
+          const q = t.calc.filter(c => re.test(c.item) && c.unit === u).reduce((a, c) => a + c.q, 0);
+          return <div key={l}><span>{l}</span><b>{f2(r2(q))} {u}</b></div>;
+        })}
+        <div><span>牆面（內＋外）</span><b>{f2(r2(t.calc.filter(c => /牆面|外牆|內牆/.test(c.item) && c.unit === '㎡' && !/防水/.test(c.item)).reduce((a, c) => a + c.q, 0)))} ㎡</b></div>
+        <div><span>工項</span><b>{pb.count}</b><small>{t.calc.length} 筆計算</small></div>
+      </div>
+      <div className="kv tabs">
+        {([['budget', '依工項（預算書）'], ['floor', '依樓層'], ['member', '依構件'], ['area', '依施工區域'], ['calc', '數量計算式'], ...(rb.length ? [['rebar', '鋼筋料單'], ['rebarSum', '鋼筋統計']] as const : []), ['detail', '裝修細項'], ['spaces', '空間做法設定']] as const).map(([k, l]) => (
           <button key={k} className={`chip ${tab === k ? 'on' : ''}`} onClick={() => setTab(k)}>{l}</button>
         ))}
       </div>
+      {GROUPS[tab] && grouped.map(g => (
+        <div className="tbl" key={g.key}><table>
+          <thead><tr><th colSpan={4}>{GROUPS[tab][1]}：{g.key}</th></tr><tr><th>工程項目</th><th className="num">數量</th><th>單位</th><th className="num">計算筆數</th></tr></thead>
+          <tbody>{g.rows.map((r, i) => <tr key={i}><td>{r.item}</td><td className="num">{f2(r.q)}</td><td>{r.unit}</td><td className="num">{r.n}</td></tr>)}</tbody>
+        </table></div>
+      ))}
       {tab === 'budget' && <div className="tbl"><table>
         <thead><tr><th>項次</th><th>名稱及規格</th><th>單位</th><th className="num">數量</th><th>計算依據</th></tr></thead>
         <tbody>{t.budget.map((b, i) => b.sec
@@ -119,13 +145,13 @@ export function Takeoff({ takeoff: t, project, subtitle, settings, onSettings, o
       ))}
       {tab === 'spaces' && <>
         <div className="kv">
-          <label>樓層 <input id="q-floor" type="text" value={settings.floor} style={{ width: 56 }} onChange={e => onSettings({ ...settings, floor: e.target.value || '1F' })} /></label>
-          <label>外牆做法 <select id="q-ext" value={settings.ext} onChange={e => onSettings({ ...settings, ext: +e.target.value })}>
+          <label>樓層 <input id="q-floor" disabled={readOnly} type="text" value={settings.floor} style={{ width: 56 }} onChange={e => onSettings({ ...settings, floor: e.target.value || '1F' })} /></label>
+          <label>外牆做法 <select id="q-ext" disabled={readOnly} value={settings.ext} onChange={e => onSettings({ ...settings, ext: +e.target.value })}>
             {EXT_FINISHES.map((x, i) => <option key={i} value={i}>{x}</option>)}
           </select></label>
-          <label>樓板厚 <input id="q-slab" type="number" min={0} max={50} value={settings.slab} style={{ width: 64 }} onChange={e => onSettings({ ...settings, slab: +e.target.value || 0 })} /> cm</label>
-          <label>開挖深 <input id="q-dig" type="number" min={0} max={1000} value={settings.dig ?? 150} style={{ width: 70 }} onChange={e => onSettings({ ...settings, dig: +e.target.value || 0 })} /> cm</label>
-          <label>鋼筋 <input id="q-rebar" type="number" min={0} max={300} value={settings.rebar} style={{ width: 70 }} onChange={e => onSettings({ ...settings, rebar: +e.target.value || 0 })} /> kg/M3</label>
+          <label>樓板厚 <input id="q-slab" disabled={readOnly} type="number" min={0} max={50} value={settings.slab} style={{ width: 64 }} onChange={e => onSettings({ ...settings, slab: +e.target.value || 0 })} /> cm</label>
+          <label>開挖深 <input id="q-dig" disabled={readOnly} type="number" min={0} max={1000} value={settings.dig ?? 150} style={{ width: 70 }} onChange={e => onSettings({ ...settings, dig: +e.target.value || 0 })} /> cm</label>
+          <label>鋼筋 <input id="q-rebar" disabled={readOnly} type="number" min={0} max={300} value={settings.rebar} style={{ width: 70 }} onChange={e => onSettings({ ...settings, rebar: +e.target.value || 0 })} /> kg/M3</label>
         </div>
         <div className="tbl"><table>
           <thead><tr><th>空間</th><th className="num">面積 ㎡</th><th className="num">坪</th><th>地坪</th><th>天花</th><th>牆面</th></tr></thead>
@@ -136,7 +162,7 @@ export function Takeoff({ takeoff: t, project, subtitle, settings, onSettings, o
           </tbody>
         </table></div>
       </>}
-      <p className="note">數量依 3D 模型自動計算，每一項的算法列在「數量計算式」。空間依牆體與房名自動分區，門洞已從牆面與踢腳扣除，窗戶從所在空間的牆面扣除。梁、挖土、水電弱電消防為估算，取得結構圖與設備圖後請調整。做法依房名自動帶入，可在「空間做法設定」修改。正式報價前請現場丈量確認。</p>
-    </Modal>
+      <p className="note">數量依 3D 模型自動計算，每一項的算法列在「數量計算式」。空間依牆體與房名自動分區，門洞已從牆面與踢腳扣除，窗戶從所在空間的牆面扣除。梁、挖土、水電弱電消防為估算，取得結構圖與設備圖後請調整。做法依房名自動帶入，可在「空間做法設定」修改。模型不對的地方，在「3D 模型」選取構件直接修改尺寸或類別，數量會跟著重算。</p>
+    </div>
   );
 }
