@@ -82,7 +82,8 @@ export function computeTakeoff(inp: TakeoffInput): Takeoff {
   const boxes = objects.filter(isBox);
   const walls = boxes.filter(o => o.layer === 'wall' && o.h > 0);
   // concrete walls: by line colour when the plans give one (same colour as the exterior wall), else by name and thickness
-  const isExt = (o: BoxObject) => o.wall ? o.wall === 'rc' : /外牆|窗台|窗楣|女兒牆/.test(o.name) || Math.min(o.w, o.d) >= 18;
+  // a concrete wall is at least 12 cm thick: thinner pairs of lines in the exterior-wall colour are finishes or partitions
+  const isExt = (o: BoxObject) => o.wall ? o.wall === 'rc' && Math.min(o.w, o.d) >= 12 : /外牆|窗台|窗楣|女兒牆/.test(o.name) || Math.min(o.w, o.d) >= 18;
   const len = (o: BoxObject) => Math.max(o.w, o.d) / 100;
   const sum = <T>(a: T[], f: (o: T) => number) => a.reduce((s, o) => s + f(o), 0);
   const full = walls.filter(o => o.y === 0 && o.h >= 200);
@@ -172,16 +173,52 @@ export function computeTakeoff(inp: TakeoffInput): Takeoff {
     return [...g.entries()];
   };
   const colDims = (o: BoxObject) => o.rc?.b && o.rc.h ? [o.rc.b, o.rc.h] : [Math.min(o.w, o.d), Math.max(o.w, o.d)];
+  /* where parts meet, the concrete and the formwork are counted once: a wall stops at the column faces and under the
+     beam or slab above it; a column face against a wall needs no formwork */
+  const rect = (o: BoxObject) => ({ x0: o.x - o.w / 2, x1: o.x + o.w / 2, z0: o.z - o.d / 2, z1: o.z + o.d / 2 });
+  const over = (a0: number, a1: number, b0: number, b1: number) => Math.max(0, Math.min(a1, b1) - Math.max(a0, b0));
+  const beamsHere = boxes.filter(o => o.rc?.kind === 'beam' || (o.layer === 'slab' && /梁/.test(o.name)));
+  const slabT = slabs[0]?.h || S.slab;
+  const storeyTop = Math.max(H, ...walls.map(o => o.y + o.h));
+  const colOf = new Map<BoxObject, number>();  // column → wall-covered face area, cm²
+  const wallNet = (o: BoxObject) => {
+    const r = rect(o), alongX = o.w >= o.d, L = Math.max(o.w, o.d), t = Math.min(o.w, o.d), top = o.y + o.h;
+    if (o.rot) return { L, A: L * o.h, cut: 0 };
+    // the length inside columns
+    let inCols = 0;
+    for (const c of cols) {
+      if (c.rot) continue;
+      const q = rect(c), ix = over(r.x0, r.x1, q.x0 - 3, q.x1 + 3), iz = over(r.z0, r.z1, q.z0 - 3, q.z1 + 3);
+      if (ix <= 0 || iz <= 0) continue;
+      inCols += Math.max(0, alongX ? over(r.x0, r.x1, q.x0, q.x1) : over(r.z0, r.z1, q.z0, q.z1));
+      colOf.set(c, (colOf.get(c) || 0) + t * Math.min(o.h, c.h));
+    }
+    const net = Math.max(0, L - inCols);
+    // the top of the wall that is really beam or slab
+    let under = 0, cut = 0;
+    for (const b of beamsHere) {
+      if (b.rot) continue;
+      const q = rect(b), ix = over(r.x0, r.x1, q.x0, q.x1), iz = over(r.z0, r.z1, q.z0, q.z1);
+      if (ix <= 0 || iz <= 0) continue;
+      const len = Math.min(alongX ? ix : iz, net - under), dep = over(o.y, top, b.y, b.y + b.h);
+      if (len <= 0 || dep <= 0) continue;
+      under += len; cut += len * dep;
+    }
+    if (top >= storeyTop - 1) cut += Math.max(0, net - under) * Math.min(slabT, o.h);
+    return { L: net, A: Math.max(0, net * o.h - cut), cut };
+  };
+  const wallParts = new Map(rcWalls.map(o => [o, wallNet(o)]));
   for (const [k, list] of byDims(cols, o => `${o.rc ? `${o.rc.mark} ` : ''}${colDims(o).map(Math.round).join('×')}×${Math.round(o.h)}`)) {
-    const o = list[0], [a, b] = colDims(o);
+    const o = list[0], [a, b] = colDims(o), covered = sum(list, c => colOf.get(c) || 0);
     row(SEC.rc, CONCRETE, 'M3', `柱 ${k}`, `${m(a)} × ${m(b)} × ${m(o.h)} m × ${list.length} 支`, a * b * o.h / 1e6 * list.length);
-    row(SEC.rc, FORMWORK, '㎡', `柱 ${k}`, `周長 2×(${m(a)}+${m(b)}) m × 高 ${m(o.h)} m × ${list.length} 支`, 2 * (a + b) * o.h / 1e4 * list.length);
+    row(SEC.rc, FORMWORK, '㎡', `柱 ${k}`, `周長 2×(${m(a)}+${m(b)}) m × 高 ${m(o.h)} m × ${list.length} 支${covered ? ` − 貼牆面 ${r2(covered / 1e4)} ㎡` : ''}`, Math.max(0, 2 * (a + b) * o.h * list.length - covered) / 1e4);
   }
   for (const [, list] of byDims(rcWalls, o => `${Math.round(Math.min(o.w, o.d))}|${Math.round(o.h)}`)) {
-    const t = Math.min(list[0].w, list[0].d), h = list[0].h, L = sum(list, o => Math.max(o.w, o.d));
+    const t = Math.min(list[0].w, list[0].d), h = list[0].h, L = sum(list, o => wallParts.get(o)!.L), A = sum(list, o => wallParts.get(o)!.A), cut = sum(list, o => wallParts.get(o)!.cut);
     const where = `RC牆 厚${Math.round(t)} 高${Math.round(h)}${/窗台|窗楣|門楣/.test(list[0].name) ? '（窗台/窗楣）' : ''}`;
-    row(SEC.rc, CONCRETE, 'M3', where, `長 ${m(L)} m × 厚 ${m(t)} m × 高 ${m(h)} m（${list.length} 段）`, L * t * h / 1e6);
-    row(SEC.rc, FORMWORK, '㎡', where, `長 ${m(L)} m × 高 ${m(h)} m × 2 面`, L * h * 2 / 1e4);
+    const less = cut > 0 ? ` − 梁、板重疊 ${r2(cut / 1e4)} ㎡` : '';
+    row(SEC.rc, CONCRETE, 'M3', where, `(長 ${m(L)} m × 高 ${m(h)} m${less}) × 厚 ${m(t)} m（${list.length} 段，柱內已扣）`, A * t / 1e6);
+    row(SEC.rc, FORMWORK, '㎡', where, `(長 ${m(L)} m × 高 ${m(h)} m${less}) × 2 面（柱內已扣）`, A * 2 / 1e4);
   }
   const ground = /^1F$|^B/.test(fl) || slabs.some(o => /地坪/.test(o.name));
   const slabA = sum(slabs, o => o.w * o.d / 1e4);
