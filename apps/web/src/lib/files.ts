@@ -95,13 +95,14 @@ export function takeoffWorkbook(t: Takeoff, project: string) {
 }
 
 /** Project file: the whole model with its name, as JSON. */
-export const PROJECT_EXT = '.zhuliang.json';
+export const PROJECT_EXT = '.zhuben.json';
 export function projectFile(name: string, model: unknown): string {
-  return JSON.stringify({ format: 'zhuliang-project', version: 1, name, savedAt: new Date().toISOString(), model });
+  return JSON.stringify({ format: 'zhuben-project', version: 1, name, savedAt: new Date().toISOString(), model });
 }
 export async function readProjectFile(f: File): Promise<{ name: string; model: ProjectModel }> {
   let j: { format?: string; name?: string; model?: ProjectModel };
-  try { j = JSON.parse(await f.text()); } catch { throw new Error('這不是築量雲的專案檔'); }
-  if (j.format !== 'zhuliang-project' || !j.model || !Array.isArray(j.model.objects)) throw new Error('這不是築量雲的專案檔');
-  return { name: j.name || f.name.replace(/\.zhuliang\.json$|\.json$/i, ''), model: j.model };
+  try { j = JSON.parse(await f.text()); } catch { throw new Error('這不是築本算圖的專案檔'); }
+  // files saved before the rename are still read
+  if ((j.format !== 'zhuben-project' && j.format !== 'zhuliang-project') || !j.model || !Array.isArray(j.model.objects)) throw new Error('這不是築本算圖的專案檔');
+  return { name: j.name || f.name.replace(/\.(zhuben|zhuliang)\.json$|\.json$/i, ''), model: j.model };
 }

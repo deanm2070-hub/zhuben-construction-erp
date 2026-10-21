@@ -19,7 +19,7 @@ export function ProfileInfo({ email, account, onClose }: { email: string; accoun
     }
   }, []);
   const link = p?.ref_code ? shareLink(p.ref_code) : '';
-  const text = `我在用「築量雲」：匯入 AutoCAD 圖面自動建 3D、算工程數量。用這個連結申請免費試用：${link}`;
+  const text = `我在用「築本算圖」：匯入 AutoCAD 圖面自動建 3D、算工程數量。用這個連結申請免費試用：${link}`;
   const copy = async () => { try { await navigator.clipboard.writeText(link); setCopied(true); } catch { /* not allowed */ } };
 
   return (

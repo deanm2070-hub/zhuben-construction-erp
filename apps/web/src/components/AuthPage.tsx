@@ -33,13 +33,13 @@ export function AuthPage() {
     if (error) try { sessionStorage.removeItem(CLAIM_FLAG); } catch { /* private mode */ }
     if (error) setMsg({ err: error.message === 'Invalid login credentials' ? '電子郵件或密碼不正確' : error.message });
   };
-  const request = `我想申請築量雲試用\n電子郵件：${email.trim() || '（請填寫）'}${ref ? `\n推薦碼：${ref}` : ''}`;
+  const request = `我想申請築本算圖試用\n電子郵件：${email.trim() || '（請填寫）'}${ref ? `\n推薦碼：${ref}` : ''}`;
 
   return (
     <div className="page">
       <form className="auth" onSubmit={submit}>
-        <img src="/logo.png" alt="築量雲" width={96} height={96} style={{ display: 'block', margin: '0 auto 8px' }} />
-        <h1>築量雲</h1>
+        <img src="/logo.png" alt="築本算圖" width={96} height={96} style={{ display: 'block', margin: '0 auto 8px' }} />
+        <h1>築本算圖</h1>
         <p className="note">登入後，專案會存在雲端，換電腦也能繼續編輯。</p>
         {mode === 'in' ? <>
           <input id="email" type="email" autoComplete="email" placeholder="電子郵件" value={email} onChange={e => setEmail(e.target.value)} required />

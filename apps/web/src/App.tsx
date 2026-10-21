@@ -98,7 +98,7 @@ export function App() {
 function Expired({ email, profile }: { email: string; profile: Account['profile'] }) {
   return (
     <div className="page"><div className="wrap" style={{ maxWidth: 520 }}>
-      <img src="/logo.png" alt="築量雲" width={72} height={72} />
+      <img src="/logo.png" alt="築本算圖" width={72} height={72} />
       <h1>{profile?.disabled ? '帳號已停用' : profile ? '訂閱已到期' : '帳號尚未開通'}</h1>
       <p className="note">{email}{profile?.expires_at && !profile.disabled ? `，到期日 ${profile.expires_at.slice(0, 10)}` : ''}。請聯絡管理員續約或開通，完成後重新整理此頁即可繼續使用；你的專案都還保留著。</p>
       <div className="kv">
@@ -114,7 +114,7 @@ function Expired({ email, profile }: { email: string; profile: Account['profile'
 function Elsewhere({ email }: { email: string }) {
   return (
     <div className="page"><div className="wrap" style={{ maxWidth: 520 }}>
-      <img src="/logo.png" alt="築量雲" width={72} height={72} />
+      <img src="/logo.png" alt="築本算圖" width={72} height={72} />
       <h1>帳號已在其他裝置登入</h1>
       <p className="note">{email} 剛剛在另一台裝置登入，每個帳號同一時間只能在一台裝置使用，所以這台已登出。要改在這台使用，請重新登入（另一台就會被登出）。尚未儲存的修改無法再存到雲端。</p>
       <div className="kv">
