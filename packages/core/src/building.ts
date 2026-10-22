@@ -879,9 +879,20 @@ export function slabRects(walls: BoxObject[], labels: { x: number; z: number; s:
     const q: number[] = [];
     for (let k = 0; k < N; k++) { const i = k % nx, j = (k / nx) | 0; if ((i === 0 || j === 0 || i === nx - 1 || j === nz - 1) && !dil[k]) { out[k] = 1; q.push(k); } }
     while (q.length) { const k = q.pop()!; for (const m of nb(k)) if (!out[m] && !dil[m]) { out[m] = 1; q.push(m); } }
+    // diagonal steps too, or the inside corners of the outside keep triangles R cells across (slivers of slab in the
+    // corners of a terrace or a recess); a diagonal step does not slip between two wall cells
     for (let step = 0; step < R + 1; step++) {
       const add: number[] = [];
-      for (let k = 0; k < N; k++) if (out[k]) for (const m of nb(k)) if (!out[m] && !wall[m]) add.push(m);
+      for (let k = 0; k < N; k++) if (out[k]) {
+        for (const m of nb(k)) if (!out[m] && !wall[m]) add.push(m);
+        const i = k % nx;
+        for (const [di, dj] of [[-1, -1], [1, -1], [-1, 1], [1, 1]]) {
+          if (i + di < 0 || i + di >= nx) continue;
+          const m = k + dj * nx + di;
+          if (m < 0 || m >= N || out[m] || wall[m] || wall[k + di] || wall[k + dj * nx]) continue;
+          add.push(m);
+        }
+      }
       if (!add.length) break;
       for (const m of add) out[m] = 1;
     }
@@ -917,6 +928,54 @@ export function slabRects(walls: BoxObject[], labels: { x: number; z: number; s:
 }
 
 type Rect = { x0: number; x1: number; z0: number; z1: number };
+/**
+ * The space round a label on a plan, closed off by any drawn line (walls, columns, the single line of a balcony
+ * railing, window frames): a balcony strip outside the exterior wall that no wall box closes. Small gaps are bridged.
+ * Null when it runs out further than maxArea cm² (the label is not in a closed space).
+ */
+export function spaceFromLines(segs: { x1: number; z1: number; x2: number; z2: number }[], x: number, z: number, maxArea = 600000): Rect[] | null {
+  const C = 10, R0 = Math.sqrt(maxArea) * 1.5;
+  const x0 = x - R0, z0 = z - R0, nx = Math.ceil(2 * R0 / C), nz = nx, N = nx * nz;
+  const line = new Uint8Array(N);
+  for (const q of segs) {
+    const L = Math.hypot(q.x2 - q.x1, q.z2 - q.z1), n = Math.max(1, Math.ceil(L / 4));
+    if (Math.max(q.x1, q.x2) < x0 || Math.min(q.x1, q.x2) > x0 + 2 * R0 || Math.max(q.z1, q.z2) < z0 || Math.min(q.z1, q.z2) > z0 + 2 * R0) continue;
+    for (let t = 0; t <= n; t++) {
+      const i = Math.floor((q.x1 + (q.x2 - q.x1) * t / n - x0) / C), j = Math.floor((q.z1 + (q.z2 - q.z1) * t / n - z0) / C);
+      if (i >= 0 && j >= 0 && i < nx && j < nz) line[j * nx + i] = 1;
+    }
+  }
+  const k0 = Math.floor((z - z0) / C) * nx + Math.floor((x - x0) / C), limit = maxArea / (C * C);
+  for (const R of [0, 1, 2, 3, 4, 6]) {
+    const solid = new Uint8Array(N);
+    for (let k = 0; k < N; k++) if (line[k]) {
+      const i = k % nx, j = (k / nx) | 0;
+      for (let b = Math.max(0, j - R); b <= Math.min(nz - 1, j + R); b++) for (let a = Math.max(0, i - R); a <= Math.min(nx - 1, i + R); a++) solid[b * nx + a] = 1;
+    }
+    // a label written over a line (a door swing): start from the nearest free cell beside it
+    let ks = k0;
+    for (let r = 1; solid[ks] && r <= 4; r++) for (let dj = -r; dj <= r && solid[ks]; dj++) for (let di = -r; di <= r; di++) { const m = k0 + dj * nx + di; if (m >= 0 && m < N && !solid[m]) { ks = m; break; } }
+    if (solid[ks]) continue;
+    const seen = new Uint8Array(N), st = [ks];
+    seen[ks] = 1;
+    let n = 0, open = false;
+    while (st.length) {
+      const k = st.pop()!, i = k % nx, j = (k / nx) | 0;
+      if (++n > limit || i === 0 || j === 0 || i === nx - 1 || j === nz - 1) { open = true; break; }
+      for (const m of [k - 1, k + 1, k - nx, k + nx]) if (!seen[m] && !solid[m]) { seen[m] = 1; st.push(m); }
+    }
+    if (open) continue;
+    // back out to the lines, then over them (the line's own width: half a wall, the railing)
+    for (let step = 0; step < R + 2; step++) {
+      const add: number[] = [];
+      for (let k = 0; k < N; k++) if (seen[k]) for (const m of [k - 1, k + 1, k - nx, k + nx]) if (m >= 0 && m < N && !seen[m] && (step === R + 1 || !line[m])) add.push(m);
+      for (const m of add) seen[m] = 1;
+    }
+    return maskRects(seen, nx, nz, C, 0, 2000).map(r => ({ x0: r.x0 + x0, x1: r.x1 + x0, z0: r.z0 + z0, z1: r.z1 + z0 }));
+  }
+  return null;
+}
+
 /**
  * Rectangles crossed corner to corner by an X on a plan: drawn solid, the storey has no floor slab there (a void, a
  * shaft); drawn dashed, it is the projection of the opening in the floor above. At least 80 cm each way (smaller
@@ -1557,6 +1616,8 @@ export function buildBuilding(d: DxfDrawing, a: BuildingAnalysis, name: string, 
   const terraces = new Map<string, { x: number; z: number; s: string }[]>();
   /** floor openings: the storey's own (solid X), the storey above's (dashed X), the open sky over a 露台 */
   const voidsOf = new Map<string, Rect[]>(), voidsUp = new Map<string, Rect[]>(), openAt = new Map<string, { x: number; z: number }[]>();
+  /** balconies (floor and ceiling slab) and terraces (floor only) found from the plan lines round their labels */
+  const outSpaces = new Map<string, { kind: 'balcony' | 'terrace'; rects: Rect[] }[]>();
   /** names of open-air spaces on each storey (外廊, 露台 …) on any layer: they are not under the roof */
   const outdoorOf = new Map<string, { x: number; z: number }[]>(), roomsOf = new Map<string, { x: number; z: number }[]>();
   const slants: { key: string; side: 'w' | 'e'; x1: number; z1: number; x2: number; z2: number }[] = [];
@@ -1757,14 +1818,27 @@ export function buildBuilding(d: DxfDrawing, a: BuildingAnalysis, name: string, 
       const balc = notes.filter(n => /陽台|露台/.test(n.s) && n.s.length <= 8 && !/投影|面積/.test(n.s));
       const stairPairs = pairWalls(g.segs.filter(q => STAIR_LAYER.test(q.layer)).map(q => ({ x1: X(q.a[0]), z1: Z(q.a[1]), x2: X(q.b[0]), z2: Z(q.b[1]) })));
       const slanted = lines.filter(l => Math.abs(l.ax - l.bx) >= 1 && Math.abs(l.az - l.bz) >= 1);
+      // a stair is not a balcony: its treads (equal parallel lines a riser apart) and anything over its flights or landings stay stair
+      const flight = (stairPre.get(st.key) || []).flatMap(sp => [...sp.steps, ...sp.landings]);
+      const inStair = (x: number, z: number) => flight.some(t => x >= Math.min(t.x0, t.x1) - 40 && x <= Math.max(t.x0, t.x1) + 40 && z >= Math.min(t.z0, t.z1) - 40 && z <= Math.max(t.z0, t.z1) + 40);
+      const tread = (l: typeof stairPairs[number]) => {
+        const lx = Math.abs(l.bx - l.ax) >= Math.abs(l.bz - l.az), len = Math.hypot(l.bx - l.ax, l.bz - l.az);
+        return stairPairs.filter(o => o !== l && (Math.abs(o.bx - o.ax) >= Math.abs(o.bz - o.az)) === lx && Math.abs(Math.hypot(o.bx - o.ax, o.bz - o.az) - len) < 10
+          && (lx ? Math.abs((o.ax + o.bx) / 2 - (l.ax + l.bx) / 2) < 15 && Math.abs(o.az - l.az) < 120 : Math.abs((o.az + o.bz) / 2 - (l.az + l.bz) / 2) < 15 && Math.abs(o.ax - l.ax) < 120)).length >= 2;
+      };
       for (const l of [...stairPairs, ...slanted]) {
         const len = Math.hypot(l.bx - l.ax, l.bz - l.az), mx = (l.ax + l.bx) / 2, mz = (l.az + l.bz) / 2;
         if (l.single || l.t < 8 || l.t > 25 || len < 60 || len > 1200 || !balc.some(n => Math.hypot(n.x - mx, n.z - mz) < 450)) continue;
+        if (inStair(mx, mz) || (stairPairs.includes(l) && tread(l))) continue;
         const b = wallBox(l, H, 0);
         // already built (a slanted wall kept as a wall), or this pair found twice
         if ([...walls, ...railCand].some(o => Math.abs(o.x - b.x) < 10 && Math.abs(o.z - b.z) < 10 && Math.abs(Math.max(o.w, o.d) - Math.max(b.w, b.d)) < 30)) continue;
         railCand.push(b);
       }
+      // a run of equal parallel pairs side by side (treads, louvres, a hatch) is a pattern, not a railing
+      const same = (p: BoxObject, q: BoxObject) => p !== q && Math.abs((p.rot || 0) - (q.rot || 0)) < 0.2 && Math.abs(p.w - q.w) < 10 && Math.abs(p.d - q.d) < 10 && Math.hypot(p.x - q.x, p.z - q.z) < 130;
+      const pattern = railCand.filter(p => railCand.filter(q => same(p, q)).length >= 2);
+      for (const p of pattern) railCand.splice(railCand.indexOf(p), 1);
     }
     const edges = parapet ? new Map<BoxObject, { kind: EdgeKind; label: string }>() : classifyEdges(walls, [...shut, ...railCand], notes, W, D, st.key.startsWith('R'));
     const slabEdges: BoxObject[] = [];
@@ -1823,6 +1897,12 @@ export function buildBuilding(d: DxfDrawing, a: BuildingAnalysis, name: string, 
       voidsUp.set(st.key, crosses.filter(r => r.dashed));
       // a 露台 is open to the sky: the storey above has no floor over it
       openAt.set(st.key, texts.filter(t => /露台/.test(t.s) && !/上方|投影|範圍|面積|計算/.test(t.s)));
+      const lineSegs = g.segs.filter(q => !/GRID|AXIS|DIM|軸|尺寸|FURN|傢俱|家具|TEXT|HAT|落水|toilet|編號|Defpoints|BEAM|梁|STA|樓梯|AREA|面積|高程|標高/i.test(q.layer))
+        .map(q => ({ x1: X(q.a[0]), z1: Z(q.a[1]), x2: X(q.b[0]), z2: Z(q.b[1]) }));
+      outSpaces.set(st.key, texts.filter(t => /陽台|露台/.test(t.s) && t.s.trim().length <= 6 && !/上方|投影|範圍|面積|計算|頂板/.test(t.s)).flatMap(t => {
+        const rects = spaceFromLines(lineSegs, t.x, t.z);
+        return rects ? [{ kind: /露台/.test(t.s) ? 'terrace' as const : 'balcony' as const, rects }] : [];
+      }));
     }
     for (const r of slabRects(walls.length ? [...walls, ...shut, ...slabEdges] : walls, texts, W, D, holes)) {
       add({ layer: 'slab', name: st.key === '1F' ? '地坪（CAD）' : st.key === 'RF' ? '屋頂板（CAD）' : '樓板（CAD）', x: (r.x0 + r.x1) / 2, z: (r.z0 + r.z1) / 2, w: r.x1 - r.x0, d: r.z1 - r.z0, h: SLAB, y: -SLAB, color: 0xd6d1c7 });
@@ -2087,8 +2167,29 @@ export function buildBuilding(d: DxfDrawing, a: BuildingAnalysis, name: string, 
     while (j > 0 && /MF$/.test(a.storeys[j].key)) j--;
     const lower = a.storeys[j];
     // over a roof storey (its terrace inside the parapet looks indoor) only a roof with no slab of its own is filled
-    if (/^R\d+F$/.test(lower.key) && (st.key !== 'RF' || (slabsOf.get('RF') || []).length)) continue;
-    const add = subtractRects(slabsOf.get(lower.key) || [], slabsOf.get(st.key) || [], W, D);
+    // (a stray patch off the building, a north arrow or a site item, is not a roof of its own)
+    const below = slabsOf.get(lower.key) || [];
+    const own = (slabsOf.get('RF') || []).filter(r => below.some(b => r.x0 < b.x1 + 50 && b.x0 < r.x1 + 50 && r.z0 < b.z1 + 50 && b.z0 < r.z1 + 50));
+    let from = below;
+    if (/^R\d+F$/.test(lower.key) && (st.key !== 'RF' || own.length)) {
+      // a rooftop structure stands on the roof below it: its floor is that roof, within the walls it stands in
+      const ws = objects.filter((o): o is BoxObject => isBox(o) && o.floor === st.key && o.layer === 'wall' && !o.rot);
+      const groups: { x0: number; x1: number; z0: number; z1: number; len: number }[] = [];
+      for (const w of ws) {
+        const b = { x0: w.x - w.w / 2, x1: w.x + w.w / 2, z0: w.z - w.d / 2, z1: w.z + w.d / 2, len: Math.max(w.w, w.d) };
+        const hit = groups.filter(g => b.x0 < g.x1 + 150 && g.x0 < b.x1 + 150 && b.z0 < g.z1 + 150 && g.z0 < b.z1 + 150);
+        const m = hit.reduce((g, h) => ({ x0: Math.min(g.x0, h.x0), x1: Math.max(g.x1, h.x1), z0: Math.min(g.z0, h.z0), z1: Math.max(g.z1, h.z1), len: g.len + h.len }), b);
+        for (const h of hit) groups.splice(groups.indexOf(h), 1);
+        groups.push(m);
+      }
+      const foot = groups.filter(g => g.len >= 600);
+      if (!foot.length) continue;
+      from = below.flatMap(r => foot.flatMap(g => {
+        const c = { x0: Math.max(r.x0, g.x0), x1: Math.min(r.x1, g.x1), z0: Math.max(r.z0, g.z0), z1: Math.min(r.z1, g.z1) };
+        return c.x1 - c.x0 > 5 && c.z1 - c.z0 > 5 ? [c] : [];
+      }));
+    }
+    const add = subtractRects(from, slabsOf.get(st.key) || [], W, D);
     if (!slabsOf.has(st.key)) slabsOf.set(st.key, []);
     for (const r of add) {
       objects.push({ id: id++, layer: 'slab', name: st.key === 'RF' ? '屋頂板（CAD）' : '樓板（CAD）', floor: st.key, x: (r.x0 + r.x1) / 2, z: (r.z0 + r.z1) / 2, w: r.x1 - r.x0, d: r.z1 - r.z0, h: SLAB, y: st.base - SLAB, color: 0xd6d1c7 });
@@ -2096,6 +2197,18 @@ export function buildBuilding(d: DxfDrawing, a: BuildingAnalysis, name: string, 
     }
   }
   // floor openings marked on the plans: cut out of the slabs (beams stay where they are)
+  // balconies and terraces outside the walls: their own floor slab where the plate does not reach
+  const slabAt = (st: Storey, rs: Rect[], name: string) => {
+    const add = subtractRects(rs, slabsOf.get(st.key) || [], W, D);
+    for (const r of add) {
+      objects.push({ id: id++, layer: 'slab', name, floor: st.key, x: (r.x0 + r.x1) / 2, z: (r.z0 + r.z1) / 2, w: r.x1 - r.x0, d: r.z1 - r.z0, h: SLAB, y: st.base - SLAB, color: 0xd6d1c7 });
+      (slabsOf.get(st.key) || slabsOf.set(st.key, []).get(st.key)!).push(r);
+    }
+  };
+  for (const st of a.storeys) for (const sp of outSpaces.get(st.key) || []) {
+    slabAt(st, sp.rects, sp.kind === 'balcony' ? '陽台樓板（CAD）' : '露台樓板（CAD）');
+    if (sp.kind === 'terrace') (voidsUp.get(st.key) || voidsUp.set(st.key, []).get(st.key)!).push(...sp.rects);
+  }
   // each 露台: its part of the floor plate, closed off by the walls (doorways bridged) and the plate's edge
   for (const st of a.storeys) {
     const at = openAt.get(st.key) || [];
@@ -2120,13 +2233,51 @@ export function buildBuilding(d: DxfDrawing, a: BuildingAnalysis, name: string, 
     }
     slabsOf.set(st.key, keep);
   });
+  // the open sides of balconies and terraces (no wall, window or railing built there, open air beyond): a 110 cm railing
+  for (const st of a.storeys) for (const sp of outSpaces.get(st.key) || []) {
+    const bx = { x0: minOf(sp.rects.map(r => r.x0)), x1: maxOf(sp.rects.map(r => r.x1)), z0: minOf(sp.rects.map(r => r.z0)), z1: maxOf(sp.rects.map(r => r.z1)) };
+    const solid = objects.filter((o): o is BoxObject => isBox(o) && o.floor === st.key && (o.layer === 'wall' || o.layer === 'glass' || o.layer === 'rail'));
+    const plate = (slabsOf.get(st.key) || []).filter(r => !sp.rects.includes(r));
+    const inRect = (x: number, z: number, r: Rect) => x > r.x0 && x < r.x1 && z > r.z0 && z < r.z1;
+    for (const side of ['x0', 'x1', 'z0', 'z1'] as const) {
+      const alongX = side[0] === 'z', at = bx[side], out = side.endsWith('0') ? -1 : 1, lo = alongX ? bx.x0 : bx.z0, hi = alongX ? bx.x1 : bx.z1;
+      const free: number[] = [];
+      for (let u = lo + 5; u < hi; u += 10) {
+        const px = alongX ? u : at, pz = alongX ? at : u;
+        if (!sp.rects.some(r => inRect(alongX ? px : px - out * 15, alongX ? pz - out * 15 : pz, r))) continue;
+        const covered = solid.some(o => Math.abs(px - o.x) < o.w / 2 + (alongX ? 0 : 25) && Math.abs(pz - o.z) < o.d / 2 + (alongX ? 25 : 0));
+        const indoor = plate.some(r => inRect(alongX ? px : px + out * 40, alongX ? pz + out * 40 : pz, r));
+        if (!covered && !indoor) free.push(u);
+      }
+      for (let i = 0; i < free.length;) {
+        let j = i;
+        while (j + 1 < free.length && free[j + 1] - free[j] < 15) j++;
+        const a0 = free[i] - 5, a1 = free[j] + 5;
+        if (a1 - a0 >= 60) {
+          const c = (a0 + a1) / 2, t = 15, pos = at - out * t / 2;
+          objects.push({ id: id++, layer: 'rail', name: '陽台欄杆（CAD）', floor: st.key, x: alongX ? c : pos, z: alongX ? pos : c, w: alongX ? a1 - a0 : t, d: alongX ? t : a1 - a0, h: 110, y: st.base, color: 0xd9d6cf });
+        }
+        i = j + 1;
+      }
+    }
+  }
+  // a balcony has a slab over it too: the floor of the balcony above, or its own roof
+  a.storeys.forEach((st, i) => {
+    const up = a.storeys[i + 1];
+    if (!up) return;
+    for (const sp of outSpaces.get(st.key) || []) if (sp.kind === 'balcony') {
+      const free = subtractRects(sp.rects, voidsOf.get(up.key) || [], W, D);
+      slabAt(up, free, up.key === 'RF' ? '屋頂板（CAD）' : '陽台頂板（CAD）');
+    }
+  });
   for (const f of floors) id = fillBetweenColumns(objects, f, linesOf.get(f.key) || [], outdoorOf.get(f.key) || [], id);
   // columns and walls standing on a terrace or roof deck (nothing above them) end level with the parapet round it
   const headH = parapetNote ?? a.parapet;
   a.storeys.forEach((st, i) => {
     const next = a.storeys[i + 1];
     if (!next) return;
-    const cover = slabsOf.get(next.key) || [];
+    // a stair well or a void (天井, double-height room) in the floor above still has the storey's walls running up beside it
+    const cover = [...(slabsOf.get(next.key) || []), ...(holesOf.get(next.key) || []), ...(voidsOf.get(next.key) || [])];
     for (const o of objects) {
       if (!isBox(o) || o.floor !== st.key || o.layer !== 'wall' || o.rot || o.y !== st.base || o.h < headH + 40 || o.h < st.h - 5) continue;
       if (/窗台|窗楣|門楣|隔間牆下/.test(o.name)) continue;
@@ -2149,6 +2300,16 @@ export function buildBuilding(d: DxfDrawing, a: BuildingAnalysis, name: string, 
     if (seenBox.has(k)) { objects.splice(i--, 1); if (o.layer === 'wall') nWalls--; else if (o.layer === 'glass') nWins--; }
     else seenBox.add(k);
   }
+  // a wall lying wholly inside another (a second outline of the same wall, a stub drawn into a thicker one) is built once
+  const innerOf = objects.filter((o): o is BoxObject => isBox(o) && o.layer === 'wall' && !o.rot);
+  const gone = new Set<BoxObject>();
+  for (const p of innerOf) {
+    if (/柱/.test(p.name)) continue;
+    const q = innerOf.find(q => q !== p && !gone.has(q) && q.floor === p.floor && p.x - p.w / 2 >= q.x - q.w / 2 - 1 && p.x + p.w / 2 <= q.x + q.w / 2 + 1 && p.z - p.d / 2 >= q.z - q.d / 2 - 1 && p.z + p.d / 2 <= q.z + q.d / 2 + 1
+      && p.y >= q.y - 1 && p.y + p.h <= q.y + q.h + 1 && (p.w * p.d < q.w * q.d || p.id > q.id));
+    if (q) gone.add(p);
+  }
+  for (let i = objects.length - 1; i >= 0; i--) if (gone.has(objects[i] as BoxObject)) { objects.splice(i, 1); nWalls--; }
   // a little group of walls 3 m or more away from the rest of its floor is a site item drawn on a wall layer
   // (a meter box, a gate post): left out with the floor patches under it
   const wallsOf = (k: string) => objects.filter((o): o is BoxObject => isBox(o) && o.floor === k && o.layer === 'wall');
