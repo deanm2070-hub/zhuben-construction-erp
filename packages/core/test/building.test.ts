@@ -1,7 +1,7 @@
 import { describe, expect, it } from 'vitest';
 import {
   analyzeBuilding, buildBuilding, computeBuildingTakeoff, CONCRETE, DEFAULT_SETTINGS, drawingFromDwg, findFlights, isBox, isDoor, mergeDrawings,
-  openingName, openingType, parseFloors, planStairs,
+  openingName, openingType, parseFloors, planStairs, roomSlabAt,
   type DwgDatabase, type DxfDrawing, type Pt,
 } from '../src';
 
@@ -202,5 +202,22 @@ describe('door / window schedule in a grid of cells', () => {
     expect(s.find(i => i.code === 'W1')).toMatchObject({ w: 160, h: 130, sill: 90, name: '鋁推窗', kind: 'window' });
     expect(s.find(i => i.code === 'W10')).toMatchObject({ w: 443, h: 180, legs: [165, 278] });
     expect(s.find(i => i.code === 'F1')).toBeUndefined();
+  });
+});
+
+describe('roomSlabAt', () => {
+  const wall = (x: number, z: number, w: number, d: number) => ({ id: 0, layer: 'wall' as const, name: '牆', x, z, w, d, h: 300, y: 0, color: 0 });
+  // a 4 m × 3 m room (inside faces), 20 cm walls, a 90 cm doorway in the south wall
+  const walls = [wall(200, -10, 440, 20), wall(-10, 150, 20, 300), wall(410, 150, 20, 300), wall(55, 310, 130, 20), wall(310, 310, 220, 20)];
+  it('floods the room, bridging the doorway, under half of the walls', () => {
+    const rs = roomSlabAt(walls, 200, 150, 400, 300);
+    const area = rs.reduce((n, r) => n + (r.x1 - r.x0) * (r.z1 - r.z0), 0) / 1e4;
+    expect(area).toBeGreaterThan(12);
+    expect(area).toBeLessThan(15);
+  });
+  it('leaves out an existing slab and finds nothing outside', () => {
+    const rs = roomSlabAt(walls, 200, 150, 400, 300, [{ x0: -20, x1: 420, z0: -20, z1: 320 }]);
+    expect(rs).toEqual([]);
+    expect(roomSlabAt(walls, 900, 900, 400, 300)).toEqual([]);
   });
 });

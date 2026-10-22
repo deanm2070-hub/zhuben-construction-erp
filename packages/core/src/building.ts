@@ -917,6 +917,61 @@ export function slabRects(walls: BoxObject[], labels: { x: number; z: number; s:
 }
 
 type Rect = { x0: number; x1: number; z0: number; z1: number };
+/**
+ * Manual correction: the floor of the room around (x, z), bounded by a storey's walls, as rectangles. Doorways are
+ * bridged (up to about 2.4 m, the narrowest bridging that closes the room is used); the slab runs under the walls'
+ * inner halves. Parts already covered by `existing` slabs are left out. Empty when the point is not inside a room.
+ */
+export function roomSlabAt(walls: BoxObject[], x: number, z: number, W: number, D: number, existing: Rect[] = []): Rect[] {
+  const { C, M, nx, nz, N, wall, nb, cell } = raster(walls, W, D, 200);
+  const k0 = cell(x, z);
+  if (k0 < 0 || wall[k0]) return [];
+  for (const R of [0, 3, 5, 8, 12]) {
+    const dil = new Uint8Array(N);
+    if (R) {
+      for (let j = 0; j < nz; j++) for (let i = 0; i < nx; i++) if (wall[j * nx + i])
+        for (let b = Math.max(0, j - R); b <= Math.min(nz - 1, j + R); b++) for (let a = Math.max(0, i - R); a <= Math.min(nx - 1, i + R); a++)
+          if ((a - i) ** 2 + (b - j) ** 2 <= R * R) dil[b * nx + a] = 1;
+    } else dil.set(wall);
+    if (dil[k0]) continue;
+    const seen = new Uint8Array(N), stack = [k0];
+    seen[k0] = 1;
+    let open = false;
+    while (stack.length && !open) {
+      const k = stack.pop()!, i = k % nx, j = (k / nx) | 0;
+      if (i === 0 || j === 0 || i === nx - 1 || j === nz - 1) { open = true; break; }
+      for (const m of nb(k)) if (!seen[m] && !dil[m]) { seen[m] = 1; stack.push(m); }
+    }
+    if (open) continue;
+    // back out to the wall faces: straight runs that end on a wall within the bridging (twice, for the corners),
+    // so nothing spills out through a bridged doorway; then two cells (20 cm) under the walls
+    for (let pass = 0; pass < 2 && R; pass++) {
+      const add: number[] = [];
+      for (let k = 0; k < N; k++) if (seen[k]) {
+        const i = k % nx, j = (k / nx) | 0;
+        for (const [di, dj] of [[1, 0], [-1, 0], [0, 1], [0, -1]]) {
+          let s = 1;
+          for (; s <= R + 1; s++) { const a = i + di * s, b = j + dj * s; if (a < 0 || b < 0 || a >= nx || b >= nz || wall[b * nx + a]) break; }
+          const a = i + di * s, b = j + dj * s;
+          if (s > R + 1 || a < 0 || b < 0 || a >= nx || b >= nz) continue;
+          for (let t = 1; t < s; t++) add.push((j + dj * t) * nx + i + di * t);
+        }
+      }
+      for (const m of add) seen[m] = 1;
+    }
+    for (let step = 0; step < 2; step++) {
+      const add: number[] = [];
+      for (let k = 0; k < N; k++) if (seen[k]) for (const m of nb(k)) if (!seen[m] && wall[m]) add.push(m);
+      for (const m of add) seen[m] = 1;
+    }
+    for (const r of existing)
+      for (let j = Math.max(0, Math.round((r.z0 + M) / C)); j < Math.min(nz, Math.round((r.z1 + M) / C)); j++)
+        for (let i = Math.max(0, Math.round((r.x0 + M) / C)); i < Math.min(nx, Math.round((r.x1 + M) / C)); i++) seen[j * nx + i] = 0;
+    return maskRects(seen, nx, nz, C, M, 2000);
+  }
+  return [];
+}
+
 /** The part of rectangles `a` not covered by rectangles `b`, on a 10 cm grid, as rectangles of at least 0.2 m². */
 function subtractRects(a: Rect[], b: Rect[], W: number, D: number): Rect[] {
   if (!a.length) return [];

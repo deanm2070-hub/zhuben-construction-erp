@@ -1,5 +1,5 @@
 import {
-  isBox, isDoor, memberOf, unpackMesh, SAMPLE_D, SAMPLE_ROOMS, SAMPLE_W, WALL_H,
+  isBox, isDoor, memberOf, roomSlabAt, unpackMesh, SAMPLE_D, SAMPLE_ROOMS, SAMPLE_W, WALL_H,
   type BoxObject, type CadData, type DoorObject, type ModelObject, type RoomRect,
 } from '@cloud-modeler/core';
 import * as THREE from 'three';
@@ -12,7 +12,7 @@ import { OutputPass } from 'three/examples/jsm/postprocessing/OutputPass.js';
 
 /** mat: automatic rendering (lit materials, sky, soft shadows); persp: the same look from eye level */
 export type RenderMode = 'mat' | 'persp' | 'layer' | 'white' | 'wire';
-export type Tool = 'orbit' | 'pan' | 'select' | 'measure' | 'push' | 'move' | 'draw' | 'paint' | 'flip' | 'del' | 'walk';
+export type Tool = 'orbit' | 'pan' | 'select' | 'measure' | 'push' | 'move' | 'draw' | 'paint' | 'flip' | 'del' | 'walk' | 'fix';
 /** front: 正立面 (from the south), bird: 鳥瞰圖, side: 側向立面 (from the east), eye: the eye-level perspective */
 export type SceneKey = 'front' | 'bird' | 'side' | 'eye';
 export type DrawKind = 'wall' | 'rc' | 'rail' | 'column' | 'slab' | 'tall' | 'low';
@@ -61,8 +61,13 @@ export const TOOL_HINT: Record<Tool, string> = {
   paint: '油漆桶：選一個顏色，再點構件上色。',
   flip: '改門向：點門片，依序切換四種開門方向。',
   del: '刪除：點構件刪除，可用復原找回。',
-  walk: '漫遊：拖曳畫面轉頭，WASD／方向鍵或右下按鈕走動。',
+  walk: '漫遊：拖曳畫面轉頭，用左下搖桿或 WASD／方向鍵走動；切換樓層會走到那一層。',
+  fix: '補牆板：「柱間補牆」依序點兩根柱（或牆），在中間補一道牆；「點房間補樓板」先選樓層，再點房間地面補上樓板。',
 };
+/** quick-correction kinds of the 補牆板 tool */
+export type FixKind = 'wall' | 'slab';
+/** the structural frame stays solid in the x-ray view, in these colours; everything else turns to glass */
+const XRAY: Record<string, number> = { 柱: 0x2f6fd6, 梁: 0xe0862e, 基礎: 0x8a6440 };
 
 interface Label { el: HTMLDivElement; pos: THREE.Vector3; room?: boolean; cad?: boolean; meas?: boolean; sel?: boolean }
 type Drag =
@@ -100,6 +105,15 @@ export class Viewer {
   selectedId: number | null = null;
   /** member kinds (柱, 梁, 樓板 …) hidden from the view */
   hidden = new Set<string>();
+  fixKind: FixKind = 'wall';
+  /** 柱間補牆: the first column or wall picked */
+  private fixA: number | null = null;
+  /** exploded view: extra gap between storeys, cm (0: off) */
+  explode = 0;
+  /** x-ray: columns, beams and footings solid, the rest see-through */
+  xray = false;
+  /** sun study: day of the year and solar hour (null: the fixed late-morning sun), plan north rotated by northDeg */
+  sunStudy: { day: number; hour: number; northDeg: number } | null = null;
 
   private renderer: THREE.WebGLRenderer;
   private scene = new THREE.Scene();
@@ -133,7 +147,7 @@ export class Viewer {
   private bounds = { W: SAMPLE_W, D: SAMPLE_D };
   private uid = 1;
   private fly: { from: { pos: THREE.Vector3; target: THREE.Vector3; fov: number }; to: { pos: THREE.Vector3; target: THREE.Vector3; fov: number }; t0: number } | null = null;
-  private walk = { on: false, yaw: 0, pitch: 0, keys: new Set<string>(), saved: null as null | { pos: THREE.Vector3; target: THREE.Vector3; fov: number } };
+  private walk = { on: false, yaw: 0, pitch: 0, keys: new Set<string>(), axis: { x: 0, y: 0 }, saved: null as null | { pos: THREE.Vector3; target: THREE.Vector3; fov: number } };
   private drag: Drag | null = null;
   private pointers = new Set<number>();
   private downAt: { x: number; y: number; t: number } | null = null;
@@ -247,6 +261,8 @@ export class Viewer {
     this.selectedId = null;
     this.applyCadView();
     this.rebuild();
+    // walking: go to that storey at eye height
+    if (this.walk.on) this.camera.position.y = this.floorBase + 160;
   }
   private get floorBase() { return this.floors.find(f => f.key === this.floor)?.y || 0; }
   private shown(o: ModelObject) { return (!this.floor || !o.floor || o.floor === this.floor) && (!this.hidden.size || !this.hidden.has(memberOf(o))); }
@@ -396,6 +412,7 @@ export class Viewer {
   setTool(t: Tool) {
     if (this.tool === 'walk' && t !== 'walk') this.exitWalk();
     if (this.tool === 'measure' && t !== 'measure') this.measA = null;
+    this.fixA = null;
     this.tool = t;
     this.controls.mouseButtons.LEFT = t === 'pan' ? THREE.MOUSE.PAN : THREE.MOUSE.ROTATE;
     this.controls.touches.ONE = t === 'pan' ? THREE.TOUCH.PAN : THREE.TOUCH.ROTATE;
@@ -573,7 +590,12 @@ export class Viewer {
       this.objGroup.remove(c);
       c.traverse(n => { const m = n as THREE.Mesh; m.geometry?.dispose(); (m.material as THREE.Material | undefined)?.dispose?.(); });
     }
-    for (const o of this.objects) if (this.shown(o)) this.objGroup.add(this.buildObj(o));
+    for (const o of this.objects) if (this.shown(o)) {
+      const n = this.buildObj(o);
+      n.position.y += this.lift(o.floor);
+      if (this.xray) this.xrayNode(n, XRAY[memberOf(o)]);
+      this.objGroup.add(n);
+    }
     this.buildMeshes();
     this.applyClip();
     const floorTint = (f: THREE.Mesh, base: number) => {
@@ -586,6 +608,32 @@ export class Viewer {
     if (this.cadFloor) { floorTint(this.cadFloor, 0xe2cfae); this.cadFloor.visible = this.mode !== 'wire'; }
     this.updateSelection();
   }
+  /** exploded view: how far a storey's parts are raised */
+  private lift(floor?: string) {
+    if (!this.explode || !floor || this.floor) return 0;
+    const i = [...this.floors].sort((a, b) => a.y - b.y).findIndex(f => f.key === floor);
+    return i > 0 ? i * this.explode : 0;
+  }
+  /** x-ray look of one part: solid in its colour (structure) or faint glass */
+  private xrayNode(n: THREE.Object3D, solid?: number) {
+    n.traverse(c => {
+      const m = c as THREE.Mesh;
+      if ((m as unknown as THREE.LineSegments).isLineSegments) {
+        const lm = m.material as THREE.LineBasicMaterial;
+        if (solid === undefined) { lm.transparent = true; lm.opacity = 0.12; lm.depthWrite = false; }
+        return;
+      }
+      if (!m.isMesh) return;
+      (m.material as THREE.Material).dispose();
+      m.material = solid !== undefined
+        ? new THREE.MeshStandardMaterial({ color: solid, roughness: 0.6 })
+        : new THREE.MeshLambertMaterial({ color: 0xa9b4c4, transparent: true, opacity: 0.1, depthWrite: false });
+      m.castShadow = solid !== undefined;
+      if (solid === undefined) m.renderOrder = 2;
+    });
+  }
+  setExplode(gap: number) { this.explode = Math.max(0, gap); this.rebuild(); this.invalidate(); }
+  setXray(on: boolean) { this.xray = on; this.rebuild(); this.invalidate(); }
   private meshOf(id: number) {
     let r: THREE.Mesh | null = null;
     this.objGroup.traverse(n => { if ((n as THREE.Mesh).isMesh && n.userData.id === id) r = n as THREE.Mesh; });
@@ -612,7 +660,7 @@ export class Viewer {
 
   /** The kept SketchUp geometry, rebuilt only when the model, storey or render mode changes. */
   private buildMeshes() {
-    const key = `${this.cad?.meshes?.length ?? 0}|${this.floor}|${this.mode}|${isDarkTheme()}`;
+    const key = `${this.cad?.meshes?.length ?? 0}|${this.floor}|${this.mode}|${isDarkTheme()}|${this.explode}|${this.xray}`;
     if (key === this.meshKey && this.meshCad === this.cad) return;
     this.meshKey = key;
     this.meshCad = this.cad;
@@ -639,11 +687,15 @@ export class Viewer {
       m.castShadow = this.real || this.mode === 'white' || this.mode === 'layer';
       m.receiveShadow = true;
       m.raycast = () => {};
+      m.position.y = this.lift(cm.floor);
+      if (this.xray) this.xrayNode(m);
       this.meshGroup.add(m);
       // SketchUp-style outlines: only creases, not the triangulation
       if (this.real) continue;
       const e = new THREE.LineSegments(new THREE.EdgesGeometry(g, 25), this.edgeMat());
       e.raycast = () => {};
+      e.position.y = m.position.y;
+      if (this.xray) this.xrayNode(e);
       this.meshGroup.add(e);
     }
   }
@@ -694,13 +746,31 @@ export class Viewer {
   }
   private fitSun() {
     const s = Math.max(this.bounds.W, this.bounds.D, this.height * 1.4) / 1180, c = this.center;
-    // late-morning sun from the south-east: the south faces lit, the west faces in soft shade, shadows falling back-left in the default view
-    this.sun.position.set(c.x + 1100 * s, 1250 * s, c.z + 900 * s);
+    const st = this.sunStudy ? sunDirection(this.sunStudy.day, this.sunStudy.hour, this.sunStudy.northDeg) : null;
+    if (st) {
+      // sun study: the real sun of that day and hour; below the horizon only the sky light is left
+      this.sun.position.set(c.x + st.dir.x * 1800 * s, Math.max(0.02, st.dir.y) * 1800 * s, c.z + st.dir.z * 1800 * s);
+      this.sun.intensity = st.alt > 0 ? 0.6 + 2.2 * Math.min(1, Math.sin(st.alt) * 1.6) : 0;
+    } else {
+      // late-morning sun from the south-east: the south faces lit, the west faces in soft shade, shadows falling back-left in the default view
+      this.sun.position.set(c.x + 1100 * s, 1250 * s, c.z + 900 * s);
+      this.sun.intensity = 2.2;
+    }
     this.sun.target.position.copy(c);
     Object.assign(this.sun.shadow.camera, { left: -1000 * s, right: 1000 * s, top: 1000 * s, bottom: -1000 * s, near: 100, far: 4000 * s });
     this.sun.shadow.camera.updateProjectionMatrix();
+    this.invalidate();
     this.camera.far = Math.max(40000, 14000 * s);
     this.camera.updateProjectionMatrix();
+  }
+
+  /** Sun study on (day of the year 1–365, solar hour 0–24) or off (null). Returns the sun's altitude and azimuth, degrees. */
+  setSunStudy(v: { day: number; hour: number; northDeg: number } | null) {
+    this.sunStudy = v;
+    this.fitSun();
+    if (!v) return null;
+    const st = sunDirection(v.day, v.hour, v.northDeg);
+    return { alt: st.alt * 180 / Math.PI, az: st.az * 180 / Math.PI };
   }
 
   /** Lays an image (a rendered PDF page or a photo of a plan) on the floor for tracing. */
@@ -806,6 +876,8 @@ export class Viewer {
   }
   /** On-screen walk buttons: f/b/l/r. */
   walkKey(k: string, down: boolean) { if (down) this.walk.keys.add(k); else this.walk.keys.delete(k); }
+  /** On-screen joystick: x right, y forward, each -1 … 1. */
+  walkStick(x: number, y: number) { this.walk.axis = { x, y }; this.invalidate(); }
 
   /* ---------- picking ---------- */
   private setRay(e: PointerEvent) {
@@ -949,7 +1021,7 @@ export class Viewer {
       if (!p || !d.p0) return;
       const r = this.magnetSnap(d.o, d.sx + p.x - d.p0.x, d.sz + p.z - d.p0.z);
       d.o.x = r.x; d.o.z = r.z;
-      this.meshOf(d.o.id)?.position.set(r.x, d.o.y + d.o.h / 2, r.z);
+      this.meshOf(d.o.id)?.position.set(r.x, d.o.y + d.o.h / 2 + this.lift(d.o.floor), r.z);
       this.selBox?.update();
       this.ev.delta(r.x - d.sx, r.z - d.sz);
       this.ev.info(`移動 ${d.o.name}｜ΔX:${Math.round(r.x - d.sx)} ΔZ:${Math.round(r.z - d.sz)} cm`);
@@ -966,7 +1038,7 @@ export class Viewer {
         m.geometry = new THREE.BoxGeometry(d.o.w, nh, d.o.d);
         const edge = m.children[0] as THREE.LineSegments | undefined;
         if (edge) { edge.geometry.dispose(); edge.geometry = new THREE.EdgesGeometry(m.geometry); }
-        m.position.y = d.o.y + nh / 2;
+        m.position.y = d.o.y + nh / 2 + this.lift(d.o.floor);
       }
       this.selBox?.update();
       this.ev.info(`推拉 ${d.o.name}｜高度 ${nh} cm（原 ${d.sh} cm）`);
@@ -985,7 +1057,7 @@ export class Viewer {
         m.geometry = new THREE.BoxGeometry(d.o.w, d.o.h, d.o.d);
         const edge = m.children[0] as THREE.LineSegments | undefined;
         if (edge) { edge.geometry.dispose(); edge.geometry = new THREE.EdgesGeometry(m.geometry); }
-        m.position.set(d.o.x, d.o.y + d.o.h / 2, d.o.z);
+        m.position.set(d.o.x, d.o.y + d.o.h / 2 + this.lift(d.o.floor), d.o.z);
       }
       this.selBox?.update();
       this.ev.info(`推拉 ${d.o.name}｜${d.axis === 'w' ? '長' : '寬'} ${ns} cm（原 ${d.s0} cm）`);
@@ -1062,6 +1134,7 @@ export class Viewer {
       return;
     }
     if (tool === 'measure') return this.measureClick(e);
+    if (tool === 'fix') return this.fixKind === 'wall' ? this.fixWall(e) : this.fixSlab(e);
     const h = this.hitObject(e);
     if (!h) return;
     if (tool === 'paint') {
@@ -1091,6 +1164,58 @@ export class Viewer {
       this.commit();
       this.ev.toast(`已刪除 ${h.o.name}（可按復原）`);
     }
+  }
+  /** 柱間補牆: first click picks a column (or wall), the second one adds a wall closing the gap to it */
+  private fixWall(e: PointerEvent) {
+    const h = this.hitObject(e);
+    if (!h || !isBox(h.o) || h.o.layer !== 'wall') { this.ev.toast('請點柱或牆'); return; }
+    const a = this.byId(this.fixA);
+    if (!a || !isBox(a) || a === h.o) {
+      this.fixA = h.o.id;
+      this.selectedId = h.o.id;
+      this.updateSelection();
+      this.ev.info(`已選 ${h.o.name}，再點另一根柱或牆，會在兩者之間補一道牆`);
+      return;
+    }
+    const w = wallBetween(a, h.o);
+    this.fixA = null;
+    if (!w) { this.ev.toast('兩者已經相接，或相距太遠（超過 12 m）'); return; }
+    this.snapshot();
+    const o = { id: this.uid++, ...w, floor: a.floor || h.o.floor } as BoxObject;
+    if (!o.floor) delete o.floor;
+    this.objects.push(o);
+    this.selectedId = o.id;
+    this.rebuild();
+    this.commit();
+    this.ev.toast(`已補牆 ${Math.round(Math.max(o.w, o.d))} cm（可按復原）`);
+  }
+  /** 點房間補樓板: the floor of the room clicked, bounded by that storey's walls, minus slabs already there */
+  private fixSlab(e: PointerEvent) {
+    if (this.floors.length && !this.floor) { this.ev.toast('請先在上方「樓層」選一層，再點房間'); return; }
+    const key = this.floor || undefined, base = this.floorBase;
+    this.setRay(e);
+    const p = new THREE.Vector3();
+    if (!this.ray.ray.intersectPlane(new THREE.Plane(new THREE.Vector3(0, 1, 0), -base), p)) return;
+    const on = (o: ModelObject) => !key || o.floor === key;
+    const walls = this.objects.filter((o): o is BoxObject => isBox(o) && (o.layer === 'wall' || o.layer === 'rail' || o.layer === 'glass') && on(o) && o.h >= 60 && o.y < base + 150);
+    const slabs = this.objects.filter((o): o is BoxObject => isBox(o) && o.layer === 'slab' && on(o) && !/梁/.test(o.name) && Math.abs(o.y + o.h - base) < 10);
+    const rects = roomSlabAt(walls, p.x, p.z, this.bounds.W, this.bounds.D, slabs.map(o => ({ x0: o.x - o.w / 2, x1: o.x + o.w / 2, z0: o.z - o.d / 2, z1: o.z + o.d / 2 })));
+    if (!rects.length) {
+      const inSlab = slabs.some(o => Math.abs(p.x - o.x) < o.w / 2 && Math.abs(p.z - o.z) < o.d / 2);
+      this.ev.toast(inSlab ? '這個房間已經有樓板' : '這裡沒有圍起來的房間：先用「柱間補牆」把缺的牆補上，或用「繪圖 › 樓板」畫');
+      return;
+    }
+    this.snapshot();
+    let area = 0;
+    for (const r of rects) {
+      const o: BoxObject = { id: this.uid++, layer: 'slab', name: '樓板（手動補板）', x: (r.x0 + r.x1) / 2, z: (r.z0 + r.z1) / 2, w: r.x1 - r.x0, d: r.z1 - r.z0, h: 15, y: base - 15, color: 0xd6d1c7 };
+      if (key) o.floor = key;
+      this.objects.push(o);
+      area += o.w * o.d;
+    }
+    this.rebuild();
+    this.commit();
+    this.ev.toast(`已補樓板 ${(area / 1e4).toFixed(1)} m²（可按復原）`);
   }
   private measureClick(e: PointerEvent) {
     const h = this.hitObject(e);
@@ -1195,7 +1320,7 @@ export class Viewer {
         this.composer.setSize(w, h);
       }
       // a section cut is not seen by the occlusion pass: leave it out rather than shade what was cut away
-      this.ao!.enabled = !this.sectionPlane;
+      this.ao!.enabled = !this.sectionPlane && !this.xray;
       this.composer.render();
       return true;
     } catch (e) {
@@ -1243,9 +1368,10 @@ export class Viewer {
       if (w.keys.has('b')) this.camera.position.addScaledVector(fw, -sp);
       if (w.keys.has('r')) this.camera.position.addScaledVector(r, sp);
       if (w.keys.has('l')) this.camera.position.addScaledVector(r, -sp);
+      if (w.axis.x || w.axis.y) { this.camera.position.addScaledVector(fw, sp * 1.4 * w.axis.y); this.camera.position.addScaledVector(r, sp * 1.4 * w.axis.x); }
     } else if (this.controls.update()) this.active = now;
     // idle: redraw about once a second only, which catches any change made without input
-    const busy = !!f || (this.walk.on && this.walk.keys.size > 0) || now - this.active < 1500;
+    const busy = !!f || (this.walk.on && (this.walk.keys.size > 0 || !!this.walk.axis.x || !!this.walk.axis.y)) || now - this.active < 1500;
     // rendered modes: plain frames while moving, then one finished frame (ambient occlusion, smooth edges) once at rest
     const rest = this.real && !this.walk.on && !busy;
     if (busy || now - this.drawn > (this.phone ? 4000 : 1000) || (rest && !this.finished)) {
@@ -1257,6 +1383,49 @@ export class Viewer {
       this.drawn = now;
     }
   }
+}
+
+/**
+ * A wall closing the gap between two parts (columns, wall ends): across the facing faces, as thick as the thinner wall
+ * end (columns: 20 cm), from the lower foot to the higher top. Null when they touch or are more than 12 m apart.
+ */
+export function wallBetween(a: BoxObject, b: BoxObject): Omit<BoxObject, 'id'> | null {
+  const y = Math.min(a.y, b.y), h = Math.max(a.y + a.h, b.y + b.h) - y;
+  const thin = [a, b].filter(o => Math.min(o.w, o.d) < 30).map(o => Math.min(o.w, o.d));
+  const t = thin.length ? Math.min(...thin) : 20;
+  const base = { layer: 'wall' as const, name: '牆（手動補牆）', color: 0xeeebe5, y, h };
+  const square = (o: BoxObject) => !o.rot || Math.abs(Math.sin(2 * o.rot)) < 1e-3;
+  if (square(a) && square(b)) {
+    // sizes along the plan axes (a quarter turn swaps them)
+    const ext = (o: BoxObject) => Math.abs(Math.sin(o.rot || 0)) > 0.5 ? { w: o.d, d: o.w } : { w: o.w, d: o.d };
+    const ea = ext(a), eb = ext(b);
+    const alongX = Math.abs(b.x - a.x) >= Math.abs(b.z - a.z);
+    const [l, r, el, er] = (alongX ? a.x <= b.x : a.z <= b.z) ? [a, b, ea, eb] : [b, a, eb, ea];
+    const g0 = alongX ? l.x + el.w / 2 : l.z + el.d / 2, g1 = alongX ? r.x - er.w / 2 : r.z - er.d / 2;
+    if (g1 - g0 < 5 || g1 - g0 > 1200) return null;
+    // across: the middle of the two parts' common band, or of their centres when they do not line up
+    const lo = Math.max(alongX ? l.z - el.d / 2 : l.x - el.w / 2, alongX ? r.z - er.d / 2 : r.x - er.w / 2);
+    const hi = Math.min(alongX ? l.z + el.d / 2 : l.x + el.w / 2, alongX ? r.z + er.d / 2 : r.x + er.w / 2);
+    const c = hi > lo ? (lo + hi) / 2 : alongX ? (l.z + r.z) / 2 : (l.x + r.x) / 2;
+    const tt = hi > lo ? Math.min(t, hi - lo) : t;
+    return alongX ? { ...base, x: (g0 + g1) / 2, z: c, w: g1 - g0, d: tt } : { ...base, x: c, z: (g0 + g1) / 2, w: tt, d: g1 - g0 };
+  }
+  // a part at an angle: along the line between the centres, less half of each part
+  const dx = b.x - a.x, dz = b.z - a.z, L = Math.hypot(dx, dz) - (Math.min(a.w, a.d) + Math.min(b.w, b.d)) / 2;
+  if (L < 5 || L > 1200) return null;
+  return { ...base, x: (a.x + b.x) / 2, z: (a.z + b.z) / 2, w: L, d: t, rot: Math.atan2(-dz, dx) };
+}
+
+/**
+ * Direction towards the sun at latitude 25° N (Taiwan), solar time: x east, y up, z south (plan up is north,
+ * turned by northDeg clockwise when the drawing's north is not up). alt / az in radians, az from north clockwise.
+ */
+export function sunDirection(day: number, hour: number, northDeg = 0) {
+  const lat = 25 * Math.PI / 180, dec = 23.44 * Math.PI / 180 * Math.sin(2 * Math.PI * (284 + day) / 365), H = (hour - 12) * 15 * Math.PI / 180;
+  const alt = Math.asin(Math.sin(lat) * Math.sin(dec) + Math.cos(lat) * Math.cos(dec) * Math.cos(H));
+  const az = Math.atan2(Math.sin(H), Math.cos(H) * Math.sin(lat) - Math.tan(dec) * Math.cos(lat)) + Math.PI;
+  const a = az + northDeg * Math.PI / 180;
+  return { alt, az, dir: new THREE.Vector3(Math.sin(a) * Math.cos(alt), Math.sin(alt), -Math.cos(a) * Math.cos(alt)) };
 }
 
 export function describe(o: ModelObject) {

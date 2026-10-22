@@ -82,6 +82,9 @@ input[type=range]{accent-color:var(--accent);width:140px}
 .pad{position:absolute;right:max(16px,env(safe-area-inset-right));bottom:56px;display:grid;grid-template-columns:repeat(3,48px);gap:6px;z-index:5}
 .dbtn{width:48px;height:48px;border-radius:14px;border:1px solid var(--line);background:var(--panel);color:var(--fg);font-size:18px;cursor:pointer;box-shadow:var(--shadow);user-select:none;touch-action:none}
 .dbtn:active{background:var(--accent);color:var(--accent-fg)}
+.stick{position:absolute;right:max(16px,env(safe-area-inset-right));bottom:56px;width:132px;height:132px;border-radius:50%;border:1px solid var(--line);background:color-mix(in srgb,var(--panel) 80%,transparent);box-shadow:var(--shadow);z-index:5;touch-action:none;display:grid;place-items:center;user-select:none}
+.stick .knob{width:56px;height:56px;border-radius:50%;background:var(--accent);opacity:.85;pointer-events:none;box-shadow:var(--shadow)}
+.stick::before{content:"前進";position:absolute;top:6px;font-size:11px;color:var(--muted)}
 
 .status{display:flex;gap:12px;align-items:center;padding:7px max(16px,env(safe-area-inset-right)) 7px max(16px,env(safe-area-inset-left));background:var(--panel);border-top:1px solid var(--line);font:500 12px var(--font);min-width:0;z-index:5}
 .status .eng{font-weight:700;color:var(--accent);flex:none;display:flex;align-items:center;gap:6px}

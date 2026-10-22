@@ -11,6 +11,7 @@ const I: Record<string, JSX.Element> = {
   draw: <><rect x="4" y="7" width="16" height="10" rx="1" /><path d="M4 12h16" /></>,
   paint: <><path d="M5 11l7-7 7 7-7 7z" /><path d="M19 15c1 1.6 1.5 2.6 1.5 3.3a1.5 1.5 0 0 1-3 0c0-.7.5-1.7 1.5-3.3z" /></>,
   flip: <><path d="M6 21V3h8v18" /><path d="M14 21a8 8 0 0 0-8-8" /></>,
+  fix: <><path d="M4 20V8M20 20V8" /><path d="M4 14h16" strokeDasharray="3 2" /><path d="M2 20h20" /></>,
   del: <path d="M5 7h14M10 7V4h4v3M7 7l1 13h8l1-13" />,
   undo: <><path d="M9 14L4 9l5-5" /><path d="M4 9h10a6 6 0 0 1 0 12h-3" /></>,
   walk: <><circle cx="13" cy="4" r="2" /><path d="M10 22l2-7 3 3v4M8 12l3-4 4 1 2 4M12 15l-1-5" /></>,
@@ -21,7 +22,7 @@ const Icon = ({ k }: { k: string }) => <svg viewBox="0 0 24 24" aria-hidden="tru
 
 const GROUPS: [string, string, string, string][][] = [
   [['orbit', '旋轉', '旋轉視角', ''], ['pan', '平移', '平移視角', ''], ['select', '構件', '選取構件，查看尺寸', ''], ['measure', '捲尺', '捲尺：點兩點量距離', '']],
-  [['push', '推拉', '推拉：頂面上下拖曳改高度，側面左右拖曳改長度', 'edit'], ['move', '移動', '移動構件', 'edit'], ['draw', '繪圖', '畫牆、RC牆、欄杆、柱、樓板、櫃', 'edit'], ['paint', '油漆桶', '點構件換顏色', 'edit'], ['flip', '改門向', '點門片切換開門方向', 'edit'], ['del', '刪除', '點構件刪除', 'danger']],
+  [['push', '推拉', '推拉：頂面上下拖曳改高度，側面左右拖曳改長度', 'edit'], ['move', '移動', '移動構件', 'edit'], ['draw', '繪圖', '畫牆、RC牆、欄杆、柱、樓板、櫃', 'edit'], ['fix', '補牆板', '點兩根柱補牆、點房間補樓板', 'edit'], ['paint', '油漆桶', '點構件換顏色', 'edit'], ['flip', '改門向', '點門片切換開門方向', 'edit'], ['del', '刪除', '點構件刪除', 'danger']],
 ];
 
 export function Dock({ tool, section, onTool, onUndo, onSection, onHome }: { tool: Tool; section: boolean; onTool: (t: Tool) => void; onUndo: () => void; onSection: () => void; onHome: () => void }) {

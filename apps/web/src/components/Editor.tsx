@@ -1,6 +1,6 @@
 import { computeBuildingTakeoff, computeTakeoff, DEFAULT_SETTINGS, memberOf, MEMBERS, priceBudget, withPricing, type CalcVersion, type FinishChoice, type ModelObject, type Pricing, type ProjectInfo, type TakeoffSettings } from '@cloud-modeler/core';
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
-import { DRAW_KINDS, TOOL_HINT, Viewer, type DrawKind, type RenderMode, type SceneKey, type Tool } from '../engine/Viewer';
+import { DRAW_KINDS, TOOL_HINT, Viewer, type DrawKind, type FixKind, type RenderMode, type SceneKey, type Tool } from '../engine/Viewer';
 import { download, PROJECT_EXT, projectFile } from '../lib/files';
 import { store, type Role } from '../lib/store';
 import { BudgetPane } from './BudgetPane';
@@ -10,6 +10,7 @@ import { ImportPane } from './ImportPane';
 import { ProjectPane } from './ProjectPane';
 import { PropsPanel } from './PropsPanel';
 import { ReportPane } from './ReportPane';
+import { Stick } from './Stick';
 import { Takeoff } from './Takeoff';
 import { TrialLock } from './TrialLock';
 
@@ -28,6 +29,9 @@ const MODES: [RenderMode, string][] = [['mat', '自動渲染'], ['layer', '圖�
 const SCENES: [SceneKey, string][] = [['front', '正立面'], ['bird', '鳥瞰圖'], ['side', '側向立面']];
 const PALETTE = [0xeeebe5, 0xc98a4b, 0x6b4f3a, 0x2f6fd6, 0x41557a, 0x6f7d93, 0x16a34a, 0xdc2626, 0xf5b83d, 0x1d2533];
 const hex = (c: number) => '#' + c.toString(16).padStart(6, '0');
+/** sun study dates: the 21st of each month, day of the year */
+const SUN_DAYS = Array.from({ length: 12 }, (_, i) => ({ m: i + 1, day: Math.round(i * 30.42 + 21), tag: ({ 3: '春分', 6: '夏至', 9: '秋分', 12: '冬至' } as Record<number, string>)[i + 1] || '' }));
+const clock = (h: number) => `${Math.floor(h)}:${String(Math.round((h % 1) * 60)).padStart(2, '0')}`;
 
 type SaveState = 'saved' | 'dirty' | 'saving' | 'error';
 
@@ -52,6 +56,22 @@ export function Editor({ projectId, importNow, trial = false, onExit }: { projec
   const [drawKind, setDrawKind] = useState<DrawKind>('wall');
   const [drawThick, setDrawThick] = useState(''), [drawH, setDrawH] = useState('');
   const [paint, setPaint] = useState(0x2f6fd6);
+  const [fixKind, setFixKind] = useState<FixKind>('wall');
+  const [explode, setExplode] = useState(0);
+  const [xray, setXray] = useState(false);
+  // sun study: date (day of the year), solar hour, plan north turned clockwise (degrees), playing through the day
+  const [sun, setSun] = useState({ on: false, day: 172, hour: 10, north: 0, play: false, alt: 0, az: 0 });
+  const sunTo = (next: Partial<typeof sun>) => setSun(s => {
+    const n = { ...s, ...next };
+    const r = v().setSunStudy(n.on ? { day: n.day, hour: n.hour, northDeg: n.north } : null);
+    if (r) { n.alt = r.alt; n.az = r.az; }
+    return n;
+  });
+  useEffect(() => {
+    if (!sun.play) return;
+    const t = window.setInterval(() => sunTo({ hour: sun.hour >= 18.5 ? 5.5 : Math.round((sun.hour + 0.25) * 4) / 4 }), 180);
+    return () => clearInterval(t);
+  }, [sun.play, sun.hour]); // eslint-disable-line react-hooks/exhaustive-deps
   const [info, setInfo] = useState(TOOL_HINT.orbit);
   const [delta, setDelta] = useState('ΔX 0 · ΔZ 0 cm');
   const [toast, setToast] = useState({ text: '', show: false });
@@ -91,6 +111,15 @@ export function Editor({ projectId, importNow, trial = false, onExit }: { projec
         showToast('已匯出 .skp：每層、每類構件各一個標記（Tag），可在 SketchUp 分開顯示');
     } catch (e) {
       showToast(`匯出 .skp 失敗：${(e as Error).message}`);
+    }
+  };
+  const exportIfc = async () => {
+    try {
+      const vw = v();
+      if (await download(`${name || 'model'}.ifc`, async () => (await import('../lib/ifcExport')).buildIfc(vw.objects, vw.cad, name || '未命名專案'), 'application/x-step'))
+        showToast('已匯出 IFC4：每層一個樓層，柱、梁、牆、樓板、門窗各自分類，可在 Revit、ArchiCAD、BIM 檢視器開啟');
+    } catch (e) {
+      showToast(`匯出 IFC 失敗：${(e as Error).message}`);
     }
   };
   const showToast = useCallback((text: string) => {
@@ -224,9 +253,15 @@ export function Editor({ projectId, importNow, trial = false, onExit }: { projec
             <span className="lbl">樓層</span>
             <div className="seg" role="group" aria-label="樓層">
               {[null, ...viewer.current.floors.map(f => f.key)].map(k => (
-                <button key={k || 'all'} className={floor === k ? 'on' : ''} aria-pressed={floor === k} onClick={() => { v().setFloor(k); setFloor(k); v().goScene(scene); }}>{k || '整棟'}</button>
+                <button key={k || 'all'} className={floor === k ? 'on' : ''} aria-pressed={floor === k} onClick={() => { v().setFloor(k); setFloor(k); if (tool !== 'walk') v().goScene(scene); }}>{k || '整棟'}</button>
               ))}
             </div>
+            {!floor && viewer.current.floors.length > 1 && <>
+              <button className={`chip sm ${explode ? 'on' : ''}`} aria-pressed={!!explode} title="各樓層上下拉開，看每層的構件"
+                onClick={() => { const g = explode ? 0 : 300; v().setExplode(g); setExplode(g); if (g) { v().goScene('bird'); setScene('bird'); } }}>分層展開</button>
+              {explode > 0 && <input id="explode-gap" type="range" min={50} max={1000} step={10} value={explode} aria-label="樓層間距" style={{ width: 110 }}
+                onChange={e => { v().setExplode(+e.target.value); setExplode(+e.target.value); }} />}
+            </>}
           </div>}
           <div className="ctlRow">
             {present.size > 1 && <><span className="lbl">構件</span>
@@ -235,11 +270,16 @@ export function Editor({ projectId, importNow, trial = false, onExit }: { projec
               {hidden.size > 0 && <button className="all" onClick={() => { setHidden(new Set()); v().setHidden([]); }}>全部顯示</button>}
             </div></>}
             <span className="grow" />
+            <button className={`chip sm ${xray ? 'on' : ''}`} aria-pressed={xray} title="柱、梁、基礎實體上色，其他構件半透明"
+              onClick={() => { v().setXray(!xray); setXray(!xray); showToast(xray ? '結構透視關閉' : '結構透視：柱（藍）梁（橘）基礎（棕），其他半透明'); }}>結構透視</button>
+            <button className={`chip sm ${sun.on ? 'on' : ''}`} aria-pressed={sun.on} title="依日期與時間模擬日照與陰影"
+              onClick={() => { const on = !sun.on; if (on && mode !== 'mat') { v().setMode('mat'); setMode('mat'); } sunTo({ on, play: false }); }}>日照</button>
             <button className={`chip sm ${labels ? 'on' : ''}`} aria-pressed={labels} onClick={() => { v().setShowLabels(!labels); setLabels(!labels); }}>標籤</button>
             <details className="menu">
               <summary className="chip sm">匯出 ▾</summary>
               <div className="menuPop" onClick={e => (e.currentTarget.parentElement as HTMLDetailsElement).open = false}>
                 <button onClick={exportSkp}>SketchUp 檔（.skp）</button>
+                <button onClick={exportIfc}>BIM 檔（IFC4 .ifc）</button>
                 <button onClick={() => download(`${name || 'model'}.obj`, v().exportOBJ(name), 'text/plain')}>OBJ 檔（.obj）</button>
               </div>
             </details>
@@ -260,7 +300,7 @@ export function Editor({ projectId, importNow, trial = false, onExit }: { projec
             showToast(on ? '剖面開啟：可選水平或垂直剖面，拖曳滑桿移動切面' : '剖面關閉');
           }}
           onHome={() => { chooseTool('orbit'); v().goScene('bird'); setScene('bird'); }} />}
-        {module === '3d' && (tool === 'draw' || tool === 'paint' || tool === 'measure' || section.on) && (
+        {module === '3d' && (tool === 'draw' || tool === 'paint' || tool === 'measure' || tool === 'fix' || section.on || sun.on) && (
           <div className="sub"><div className="subInner">
             {tool === 'draw' && <><span className="t">畫什麼</span>{(Object.keys(DRAW_KINDS) as DrawKind[]).map(k =>
               <button key={k} className={`chip ${drawKind === k ? 'on' : ''}`} onClick={() => { v().drawKind = k; v().drawThick = 0; v().drawH = 0; setDrawKind(k); setDrawThick(''); setDrawH(''); }}>{DRAW_KINDS[k].label}</button>)}
@@ -270,6 +310,19 @@ export function Editor({ projectId, importNow, trial = false, onExit }: { projec
                 onChange={e => { setDrawH(e.target.value); v().drawH = +e.target.value > 0 ? +e.target.value : 0; }} /> cm</label>}</>}
             {tool === 'paint' && <><span className="t">顏色</span>{PALETTE.map(c =>
               <button key={c} className={`sw ${paint === c ? 'on' : ''}`} style={{ background: hex(c) }} aria-label={`顏色 ${hex(c)}`} onClick={() => { v().paintColor = c; setPaint(c); }} />)}</>}
+            {tool === 'fix' && <><span className="t">補什麼</span>
+              {([['wall', '柱間補牆'], ['slab', '點房間補樓板']] as const).map(([k, l]) =>
+                <button key={k} className={`chip ${fixKind === k ? 'on' : ''}`} onClick={() => { v().fixKind = k; v().setTool('fix'); setFixKind(k); }}>{l}</button>)}
+              <span className="t">{fixKind === 'wall' ? '依序點兩根柱（或牆端）' : floor ? `點 ${floor} 的房間地面` : '先在「樓層」選一層'}</span></>}
+            {sun.on && <><span className="t">日照</span>
+              <select id="sun-day" aria-label="日期" value={sun.day} onChange={e => sunTo({ day: +e.target.value })}>
+                {SUN_DAYS.map(d => <option key={d.m} value={d.day}>{d.m}月21日{d.tag && ` ${d.tag}`}</option>)}
+              </select>
+              <input id="sun-hour" type="range" min={5} max={19} step={0.25} value={sun.hour} aria-label="時間" style={{ width: 130 }} onChange={e => sunTo({ hour: +e.target.value, play: false })} />
+              <b style={{ fontFamily: 'var(--mono)', fontSize: 12 }}>{clock(sun.hour)}</b>
+              <button className={`chip ${sun.play ? 'on' : ''}`} onClick={() => sunTo({ play: !sun.play })}>{sun.play ? '❚❚ 暫停' : '▶ 播放一天'}</button>
+              <label className="t">北方 <input id="sun-north" type="number" inputMode="numeric" min={-180} max={180} step={5} value={sun.north} style={{ width: 52 }} onChange={e => sunTo({ north: +e.target.value || 0 })} />°</label>
+              <span className="t">{sun.alt > 0 ? `太陽高度 ${sun.alt.toFixed(0)}°｜方位 ${sun.az.toFixed(0)}°` : '太陽在地平線下'}</span></>}
             {tool === 'measure' && <><span className="t">捲尺</span><button className="chip" onClick={() => { v().clearMeasure(); setInfo('量測已清除'); }}>清除量測</button></>}
             {section.on && <><span className="t">剖面</span>
               {([['h', '水平'], ['x', '垂直 X'], ['z', '垂直 Y']] as const).map(([k, l]) =>
@@ -283,15 +336,7 @@ export function Editor({ projectId, importNow, trial = false, onExit }: { projec
               })()}</>}
           </div></div>
         )}
-        {module === '3d' && tool === 'walk' && (
-          <div className="pad">
-            {['', 'f', '', 'l', 'b', 'r'].map((k, i) => k
-              ? <button key={i} className="dbtn" aria-label={{ f: '前進', b: '後退', l: '左移', r: '右移' }[k]}
-                  onPointerDown={e => { e.preventDefault(); v().walkKey(k, true); }} onPointerUp={() => v().walkKey(k, false)} onPointerCancel={() => v().walkKey(k, false)} onPointerLeave={() => v().walkKey(k, false)}>
-                  {{ f: '▲', b: '▼', l: '◀', r: '▶' }[k]}</button>
-              : <span key={i} />)}
-          </div>
-        )}
+        {module === '3d' && tool === 'walk' && <Stick onMove={(x, y) => v().walkStick(x, y)} />}
         {module === '3d' && sel && viewer.current && (
           <PropsPanel o={sel} floors={viewer.current.floors} readOnly={readOnly}
             onApply={patch => { const renamed = patch.name && patch.name !== sel.name; v().updateObject(sel.id, patch); showToast(renamed ? `已套用，名稱改為「${patch.name}」` : '已套用，數量會依新尺寸重算'); }}
