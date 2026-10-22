@@ -32,6 +32,16 @@ export function ProjectsPage({ email, account, onAccount, onOpen }: { email: str
   const [lock, setLock] = useState(false);
   const [q, setQ] = useState(''), [cat, setCat] = useState(''), [status, setStatus] = useState('');
 
+  // project lock: kept in the project's meta and, in case the meta column is missing, on this device too
+  const [locks, setLocks] = useState<Record<string, boolean>>(() => { try { return JSON.parse(localStorage.getItem('zb-locks') || '{}'); } catch { return {}; } });
+  const locked = (p: ProjectMeta) => locks[p.id] ?? !!p.meta?.locked;
+  const toggleLock = async (p: ProjectMeta) => {
+    const on = !locked(p), next = { ...locks, [p.id]: on };
+    setLocks(next); setConfirmId(null);
+    try { localStorage.setItem('zb-locks', JSON.stringify(next)); } catch { /* private window */ }
+    await store.save(p.id, { meta: { ...(p.meta || {}), locked: on } }).catch(() => {});
+    refresh();
+  };
   const refresh = () => store.list().then(setList).catch(e => setErr(String(e.message || e)));
   useEffect(() => { refresh(); store.me().then(setMe); }, []);
 
@@ -74,7 +84,8 @@ export function ProjectsPage({ email, account, onAccount, onOpen }: { email: str
         <button className="chip on" onClick={() => onOpen(p.id)}>開啟</button>
         {(!me || !p.owner || p.owner === me) && <>
           <button className="chip" onClick={() => setRenaming({ id: p.id, name: p.name })}>改名</button>
-          {confirmId === p.id
+          <button className={`chip${locked(p) ? ' on' : ''}`} title={locked(p) ? '已鎖定：不能刪除，按一下解除鎖定' : '鎖定後不能刪除，避免誤按'} onClick={() => toggleLock(p)}>{locked(p) ? '🔒 已鎖定' : '🔓 鎖定'}</button>
+          {locked(p) ? null : confirmId === p.id
             ? <><button className="chip danger" onClick={async () => { await store.remove(p.id); setConfirmId(null); refresh(); }}>確定刪除</button><button className="chip ghost" onClick={() => setConfirmId(null)}>取消</button></>
             : <button className="chip ghost danger" onClick={() => setConfirmId(p.id)}>刪除</button>}
         </>}

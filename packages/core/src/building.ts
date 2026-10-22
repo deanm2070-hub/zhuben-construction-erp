@@ -608,7 +608,7 @@ export function buildingArea(segs: DxfSeg[], gap: number): { x0: number; y0: num
   return area.dropped || byPairs ? area : null;
 }
 
-function planGeo(d: DxfDrawing, v: SheetView): PlanGeo {
+export function planGeo(d: DxfDrawing, v: SheetView): PlanGeo {
   let segs = d.segs.filter(s => inBox(v.box, s.a[0], s.a[1]) && inBox(v.box, s.b[0], s.b[1]));
   const k = scaleNow || UNIT_SCALE[guessUnits(d)] || 1, area = buildingArea(segs, 400 / k), m = 200 / k;
   if (area) segs = segs.filter(s => [s.a, s.b].every(q => q[0] >= area.x0 - m && q[0] <= area.x1 + m && q[1] >= area.y0 - m && q[1] <= area.y1 + m));
@@ -634,10 +634,24 @@ function planGeo(d: DxfDrawing, v: SheetView): PlanGeo {
   }
   const ws = segs.filter(s => isWallLayer(s.layer));
   // X1 X2 … / Y1 Y2 … grid bubbles on any layer (also "X" with the number as a separate text beside it)
+  // the bubbles of one axis often sit just outside the sheet region found for the view (Y bubbles left of a plan
+  // drawn close to its frame): look a bit further out across that axis, and take the column of bubbles nearest the view
+  const [bx0, by0, bx1, by1] = v.box, mw = (bx1 - bx0) * 0.3, mh = (by1 - by0) * 0.3;
   const xy = (axis: 'X' | 'Y') => {
+    const inside = xyIn(axis, v.box);
+    if (inside.length >= 2) return inside;
+    const wide = xyIn(axis, axis === 'Y' ? [bx0 - mw, by0, bx1 + mw, by1] : [bx0, by0 - mh, bx1, by1 + mh]);
+    const off = (p: { x: number; y: number }) => axis === 'Y' ? Math.max(0, bx0 - p.x, p.x - bx1) : Math.max(0, by0 - p.y, p.y - by1);
+    const lines = new Map<number, typeof wide>();
+    for (const p of wide) { const k = Math.round((axis === 'Y' ? p.x : p.y) / 20); (lines.get(k) || lines.set(k, []).get(k)!).push(p); }
+    // the same bubble is often drawn twice (on two layers): one per number
+    const best = [...lines.values()].map(l => [...new Map(l.map(p => [p.n, p])).values()]).filter(l => l.length >= 2).sort((a, b) => off(a[0]) - off(b[0]))[0];
+    return best ? best.sort((a, b) => a.n - b.n) : inside;
+  };
+  const xyIn = (axis: 'X' | 'Y', box: number[]) => {
     const out: { n: number; x: number; y: number }[] = [];
     for (const t of d.texts) {
-      if (!inBox(v.box, t.x, t.y)) continue;
+      if (!inBox(box as SheetView['box'], t.x, t.y)) continue;
       const m = new RegExp(`^${axis}\\s*-?(\\d{1,2})$`).exec(t.s.trim());
       if (m) { out.push({ n: +m[1], x: t.x, y: t.y }); continue; }
       if (t.s.trim() !== axis) continue;

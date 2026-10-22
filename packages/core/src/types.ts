@@ -165,7 +165,7 @@ export interface ProjectModel {
 }
 
 export const PROJECT_STATUS = ['估算中', '已報價', '已得標', '施工中', '已結案'] as const;
-export interface ProjectInfo { category?: string; status?: string; client?: string; site?: string; note?: string }
+export interface ProjectInfo { category?: string; status?: string; client?: string; site?: string; note?: string; /** locked: cannot be deleted until unlocked */ locked?: boolean }
 
 export const isDoor = (o: ModelObject): o is DoorObject => o.layer === 'door';
 export const isBox = (o: ModelObject): o is BoxObject => o.layer !== 'door';

@@ -2,8 +2,9 @@ import { isBox, isDoor, type ModelObject } from './types';
 import type { BudgetLine, CalcRow } from './takeoff';
 
 /** Unit prices of one budget line, NT$ per unit; waste is a percentage added to the quantity. */
-/** qty: a quantity typed in by hand, used instead of the model's (for items the model gives none or gets wrong) */
-export interface PriceRate { mat?: number; lab?: number; eq?: number; waste?: number; note?: string; qty?: number }
+/** qty: a quantity typed in by hand, used instead of the model's (for items the model gives none or gets wrong);
+ *  hidden: the item was deleted from the list by the user (kept here so it can be put back) */
+export interface PriceRate { mat?: number; lab?: number; eq?: number; waste?: number; note?: string; qty?: number; hidden?: boolean }
 /** A line typed in by hand: an item the model does not measure (or a correction to one). */
 export interface CustomLine extends PriceRate { id: string; sec: string; name: string; unit: string; q: number }
 export interface QuoteInfo { company?: string; client?: string; site?: string; date?: string; valid?: string; contact?: string; terms?: string }
@@ -43,11 +44,13 @@ export interface PricedBudget {
   mgmt: number; profit: number; tax: number; grand: number;
   /** lines with any unit price, of all lines */
   priced: number; count: number;
+  /** items the user deleted, which can be put back */
+  hidden: { key: string; sec: string; name: string; unit: string }[];
 }
 
 /** Prices the budget lines of a takeoff and the hand-typed lines, section by section, then adds the fees and tax. */
 export function priceBudget(budget: BudgetLine[], P: Pricing): PricedBudget {
-  const sections: PricedSection[] = [];
+  const sections: PricedSection[] = [], hidden: PricedBudget['hidden'] = [];
   let cur: PricedSection | null = null;
   const line = (sec: string, i: number, name: string, unit: string, q0: number | string | undefined, note: string, rate: PriceRate, custom?: CustomLine, tpl?: boolean): PricedLine => {
     const manual = !custom && rate.qty != null && rate.qty > 0;
@@ -61,7 +64,9 @@ export function priceBudget(budget: BudgetLine[], P: Pricing): PricedBudget {
   for (const b of budget) {
     if (b.sec) { cur = { sec: b.sec, lines: [], mat: 0, lab: 0, eq: 0, total: 0 }; sections.push(cur); continue; }
     if (!cur) continue;
-    cur.lines.push(line(cur.sec, b.i || cur.lines.length + 1, b.name || '', b.unit || '', b.q, b.note || '', P.rates[budgetKey(cur.sec, b.name || '', b.unit || '')] || {}, undefined, b.tpl));
+    const key = budgetKey(cur.sec, b.name || '', b.unit || ''), rate = P.rates[key] || {};
+    if (rate.hidden) { hidden.push({ key, sec: cur.sec, name: b.name || '', unit: b.unit || '' }); continue; }
+    cur.lines.push(line(cur.sec, cur.lines.length + 1, b.name || '', b.unit || '', b.q, b.note || '', rate, undefined, b.tpl));
   }
   for (const c of P.custom) {
     let s = sections.find(x => x.sec === c.sec);
@@ -77,7 +82,7 @@ export function priceBudget(budget: BudgetLine[], P: Pricing): PricedBudget {
   const direct = mat + lab + eq;
   const mgmt = r0(direct * P.fees.mgmt / 100), profit = r0(direct * P.fees.profit / 100);
   const tax = r0((direct + mgmt + profit) * P.fees.tax / 100);
-  return { sections: sections.filter(s => s.lines.length), mat, lab, eq, direct, mgmt, profit, tax, grand: direct + mgmt + profit + tax, priced, count };
+  return { sections: sections.filter(s => s.lines.length), mat, lab, eq, direct, mgmt, profit, tax, grand: direct + mgmt + profit + tax, priced, count, hidden };
 }
 
 /** Unit prices carried over from another project: same item name and unit, any section. */
@@ -89,7 +94,7 @@ export function carryRates(from: Pricing, budget: BudgetLine[]): Record<string, 
   for (const b of budget) {
     if (b.sec) { sec = b.sec; continue; }
     const r = byName.get(`${b.name}|${b.unit}`);
-    if (r) { const { qty: _, ...price } = r; out[budgetKey(sec, b.name || '', b.unit || '')] = price; }
+    if (r) { const { qty: _, hidden: _h, ...price } = r; out[budgetKey(sec, b.name || '', b.unit || '')] = price; }
   }
   return out;
 }

@@ -1,4 +1,5 @@
-import { EXT_FINISHES, FINISH_SHORT, FINISHES, groupQuantities, PING, REBAR_KINDS, REBAR_STD, rebarSummary, type FinishChoice, type GroupBy, type PricedBudget, type Pricing, type Takeoff as T, type TakeoffSettings } from '@cloud-modeler/core';
+import { EXT_FINISHES, FINISH_SHORT, FINISHES, groupQuantities, PING, REBAR_KINDS, REBAR_STD, rebarSummary, type FinishChoice, type GroupBy, type PricedBudget, type Pricing, type Takeoff as T, type PriceRate, type TakeoffSettings } from '@cloud-modeler/core';
+import { Deleted } from './BudgetPane';
 import { useState } from 'react';
 import { download } from '../lib/files';
 import { reportWorkbook } from '../lib/report';
@@ -23,9 +24,10 @@ function toTsv(t: T, tab: string) {
 
 type Tab = 'budget' | 'calc' | 'floor' | 'member' | 'area' | 'rebar' | 'rebarSum' | 'detail' | 'spaces';
 
-export function Takeoff({ takeoff: t, pb, pricing, project, subtitle, settings, readOnly, onSettings, onFinish, toast }: {
+export function Takeoff({ takeoff: t, pb, pricing, project, subtitle, settings, readOnly, onSettings, onPricing, onFinish, toast }: {
   takeoff: T; pb: PricedBudget; pricing: Pricing; project: string; subtitle: string; settings: TakeoffSettings; readOnly: boolean;
   onSettings: (s: TakeoffSettings) => void;
+  onPricing: (p: Pricing) => void;
   onFinish: (room: string, patch: Partial<FinishChoice>) => void;
   toast: (s: string) => void;
 }) {
@@ -41,6 +43,13 @@ export function Takeoff({ takeoff: t, pb, pricing, project, subtitle, settings, 
   const calcRows = t.calc.filter(c => calcFloor === '全部' || c.fl === calcFloor);
   // item headers with subtotals, in budget order
   const calcItems = [...new Set(calcRows.map(c => `${c.item}|${c.unit}`))];
+  // the item list is shared with 預算報價: deleting or adding an item here does the same there
+  const P = pricing;
+  const setRate = (key: string, patch: Partial<PriceRate> & { name?: string; unit?: string; q?: number }) => key.startsWith('custom|')
+    ? onPricing({ ...P, custom: P.custom.map(c => `custom|${c.id}` === key ? { ...c, ...patch } : c) })
+    : onPricing({ ...P, rates: { ...P.rates, [key]: { ...(P.rates[key] || {}), ...patch } } });
+  const del = (key: string) => key.startsWith('custom|') ? onPricing({ ...P, custom: P.custom.filter(c => `custom|${c.id}` !== key) }) : setRate(key, { hidden: true });
+  const addCustom = (sec: string) => onPricing({ ...P, custom: [...P.custom, { id: Math.random().toString(36).slice(2, 10), sec, name: '新工項', unit: '式', q: 1 }] });
   const copy = async () => {
     try { await navigator.clipboard.writeText(toTsv(t, tab)); toast('已複製，可直接貼進 Excel'); }
     catch { toast('瀏覽器不允許寫入剪貼簿，請改用「下載 Excel」'); }
@@ -81,12 +90,25 @@ export function Takeoff({ takeoff: t, pb, pricing, project, subtitle, settings, 
           <tbody>{g.rows.map((r, i) => <tr key={i}><td>{r.item}</td><td className="num">{f2(r.q)}</td><td>{r.unit}</td><td className="num">{r.n}</td></tr>)}</tbody>
         </table></div>
       ))}
-      {tab === 'budget' && <div className="tbl"><table>
-        <thead><tr><th>項次</th><th>名稱及規格</th><th>單位</th><th className="num">數量</th><th>計算依據</th></tr></thead>
-        <tbody>{t.budget.map((b, i) => b.sec
-          ? <tr className="total" key={i}><td colSpan={5}>{b.sec}</td></tr>
-          : <tr key={i} className={b.tpl ? 'tplRow' : ''}><td className="num">{b.i}</td><td>{b.name}</td><td>{b.unit}</td><td className="num">{b.tpl ? '' : f2(b.q)}</td><td className="note">{b.note}</td></tr>)}</tbody>
-      </table></div>}
+      {tab === 'budget' && <><div className="tbl"><table>
+        <thead><tr><th>項次</th><th>名稱及規格</th><th>單位</th><th className="num">數量</th><th>計算依據</th>{!readOnly && <th></th>}</tr></thead>
+        <tbody>{pb.sections.map(s => [
+          <tr className="total" key={s.sec}><td colSpan={5}>{s.sec}</td>{!readOnly && <td><button className="chip ghost sm" onClick={() => addCustom(s.sec)}>＋ 工項</button></td>}</tr>,
+          ...s.lines.map(l => {
+            const c = l.custom, blank = l.tpl && !l.manual && l.q0 == null;
+            return <tr key={l.key} className={blank ? 'tplRow' : ''}>
+              <td className="num">{l.i}</td>
+              <td>{c && !readOnly ? <input id={`tn-${c.id}`} type="text" value={c.name} onChange={e => setRate(l.key, { name: e.target.value })} /> : l.name}</td>
+              <td>{c && !readOnly ? <input id={`tu-${c.id}`} type="text" value={c.unit} style={{ width: 44 }} onChange={e => setRate(l.key, { unit: e.target.value })} /> : l.unit}</td>
+              <td className="num">{c && !readOnly ? <input id={`tq-${c.id}`} type="number" min={0} step="any" value={c.q || ''} style={{ width: 80 }} onChange={e => setRate(l.key, { q: parseFloat(e.target.value) || 0 })} /> : blank ? '' : f2(l.q)}</td>
+              <td className="note">{c ? '自訂工項' : l.note}</td>
+              {!readOnly && <td><button className="chip ghost danger sm" title="從清單刪除這一項（可在表格下方還原）" onClick={() => del(l.key)}>刪除</button></td>}
+            </tr>;
+          }),
+        ])}</tbody>
+      </table></div>
+      <Deleted pb={pb} readOnly={readOnly} onRestore={keys => { const rates = { ...P.rates }; for (const k of keys) rates[k] = { ...rates[k], hidden: false }; onPricing({ ...P, rates }); }} />
+      </>}
       {tab === 'calc' && <>
         <div className="kv">
           <label>樓層 <select id="calc-floor" value={calcFloor} onChange={e => setCalcFloor(e.target.value)}>

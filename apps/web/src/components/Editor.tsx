@@ -351,6 +351,7 @@ export function Editor({ projectId, importNow, trial = false, onExit }: { projec
           {module === 'qty' && t && pb && <Takeoff takeoff={t} pb={pb} pricing={pricing} project={name || '未命名專案'} settings={settings} readOnly={readOnly}
             subtitle={subtitle}
             onSettings={setSettings}
+            onPricing={setPricing}
             onFinish={(room, patch) => setFinishes(f => ({ ...f, [room]: { ...(f[room] || {}), ...patch } }))}
             toast={showToast} />}
           {module === 'budget' && t && pb && <BudgetPane t={t} pb={pb} pricing={pricing} project={name || '未命名專案'} projectId={projectId} readOnly={readOnly} onPricing={setPricing} toast={showToast} />}

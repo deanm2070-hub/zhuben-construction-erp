@@ -37,6 +37,9 @@ export function BudgetPane({ t, pb, pricing: P, project, projectId, readOnly, on
     for (const l of s.lines) if (!l.custom) rates[l.key] = { ...(rates[l.key] || {}), waste };
     onPricing({ ...P, rates, custom: P.custom.map(c => c.sec === sec ? { ...c, waste } : c) });
   };
+  const del = (key: string) => key.startsWith('custom|')
+    ? onPricing({ ...P, custom: P.custom.filter(x => `custom|${x.id}` !== key) })
+    : setRate(key, { hidden: true });
   const addCustom = (sec: string) => onPricing({ ...P, custom: [...P.custom, { id: Math.random().toString(36).slice(2, 10), sec, name: '新工項', unit: '式', q: 1 }] });
   const carry = async (id: string) => {
     try {
@@ -107,7 +110,7 @@ export function BudgetPane({ t, pb, pricing: P, project, projectId, readOnly, on
       <div className="tbl boq"><table>
         <thead><tr>
           <th></th><th>項次</th><th>名稱及規格</th><th className="num">數量</th><th className="num">損耗%</th><th className="num">含損數量</th><th>單位</th>
-          <th className="h-mat num">材料單價</th><th className="num">材料複價</th><th className="h-lab num">工資單價</th><th className="num">工資複價</th><th className="h-eq num">機具單價</th><th className="num">機具複價</th><th className="h-tot num">複價</th><th>備註</th>
+          <th className="h-mat num">材料單價</th><th className="num">材料複價</th><th className="h-lab num">工資單價</th><th className="num">工資複價</th><th className="h-eq num">機具單價</th><th className="num">機具複價</th><th className="h-tot num">複價</th><th>備註</th>{!readOnly && <th></th>}
         </tr></thead>
         <tbody>{pb.sections.map(s => {
           const open = !fold.has(s.sec), lines = onlyEmpty ? s.lines.filter(l => !l.up) : s.lines;
@@ -119,6 +122,7 @@ export function BudgetPane({ t, pb, pricing: P, project, projectId, readOnly, on
               <td colSpan={2} className="num c-mat">{f0(s.mat)}</td><td colSpan={2} className="num c-lab">{f0(s.lab)}</td><td colSpan={2} className="num c-eq">{f0(s.eq)}</td>
               <td className="num"><b>{f0(s.total)}</b></td>
               <td>{!readOnly && <button className="chip ghost sm" onClick={() => addCustom(s.sec)}>＋ 工項</button>}</td>
+              {!readOnly && <td />}
             </tr>,
             ...(open ? lines.map(l => {
               const c = l.custom;
@@ -142,13 +146,25 @@ export function BudgetPane({ t, pb, pricing: P, project, projectId, readOnly, on
                 <td className="num"><Num id={`e-${l.key}`} cls="in-eq" value={l.eq} disabled={readOnly} onChange={v => setRate(l.key, { eq: v })} /></td>
                 <td className="num">{f0(l.eqT)}</td>
                 <td className="num tot">{f0(l.total)}</td>
-                <td className="note">{c && !readOnly ? <button className="chip ghost danger sm" onClick={() => onPricing({ ...P, custom: P.custom.filter(x => x.id !== c.id) })}>刪除</button> : l.note}</td>
+                <td className="note">{c ? '自訂工項' : l.note}</td>
+                {!readOnly && <td><button className="chip ghost danger sm" title="從清單刪除這一項（可在表格下方還原）" onClick={() => del(l.key)}>刪除</button></td>}
               </tr>;
             }) : []),
           ];
         })}</tbody>
       </table></div>
+      <Deleted pb={pb} readOnly={readOnly} onRestore={keys => { const rates = { ...P.rates }; for (const k of keys) rates[k] = { ...rates[k], hidden: false }; onPricing({ ...P, rates }); }} />
       <p className="note">複價 = 含損數量 × 單價（四捨五入到元）。管理費、利潤以直接工程費計，營業稅以（直接工程費＋管理費＋利潤）計。單位為「式」的工項未填數量時以 1 式計價。數量欄灰字是模型數量，填入數字改用手動數量（橘色），清空即還原。工程數量改變時（重新匯入、修改模型），已填的單價會自動套用到同名稱的工項。</p>
     </div>
   );
+}
+
+/** The items the user deleted from the list, each with a button to put it back. Shared by 工程數量 and 預算報價. */
+export function Deleted({ pb, readOnly, onRestore }: { pb: PricedBudget; readOnly: boolean; onRestore: (keys: string[]) => void }) {
+  if (!pb.hidden.length) return null;
+  return <div className="kv deleted">
+    <span className="note">已刪除 {pb.hidden.length} 項：</span>
+    {pb.hidden.map(h => <button key={h.key} className="chip ghost sm" disabled={readOnly} title={`${h.sec}，按一下還原`} onClick={() => onRestore([h.key])}>↺ {h.name}（{h.unit}）</button>)}
+    {!readOnly && pb.hidden.length > 1 && <button className="chip sm" onClick={() => onRestore(pb.hidden.map(h => h.key))}>全部還原</button>}
+  </div>;
 }

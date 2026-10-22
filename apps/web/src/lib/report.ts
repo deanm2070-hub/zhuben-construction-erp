@@ -25,6 +25,10 @@ const r2 = (v: number) => Math.round(v * 100) / 100;
 export const money = (v: number) => `NT$ ${Math.round(v).toLocaleString('zh-TW')}`;
 const GROUP_TITLE: Record<GroupBy, string> = { item: '工項', floor: '樓層', member: '構件', area: '施工區域' };
 
+/** 工程數量表 rows from the item list as the user edited it (deleted items left out, own items added): [sec] or [i, name, unit, q, note] */
+function boqRows(pb: PricedBudget): (string | number)[][] {
+  return pb.sections.flatMap(s => [[s.sec], ...s.lines.map(l => [l.i, l.name, l.unit, l.tpl && !l.manual && l.q0 == null ? '' : l.q, l.custom ? '自訂工項' : l.note])]);
+}
 function table(head: string[], rows: string[], cls = '') {
   return `<table class="${cls}"><thead><tr>${head.map(h => `<th${/數量|單價|複價|合計|長|重|支數|%|面積|坪|金額|周長/.test(h) ? ' class="num"' : ''}>${esc(h)}</th>`).join('')}</tr></thead><tbody>${rows.join('')}</tbody></table>`;
 }
@@ -60,9 +64,9 @@ function section(key: ReportKey, c: ReportCtx): string {
     return `${head}${table(['項次', '名稱及規格', '單位', '數量', '損耗', '含損數量', '材料單價', '工資單價', '機具單價', '單價', '複價', '備註'], rows, 'quote')}${sum}${terms}<div class="sign"><span>業主簽認：</span><span>報價人：</span></div>`;
   }
   if (key === 'boq') {
-    return table(['項次', '名稱及規格', '單位', '數量', '計算依據'], t.budget.map(b => b.sec
-      ? `<tr class="sec"><td colspan="5">${esc(b.sec)}</td></tr>`
-      : `<tr>${td(b.i)}${td(b.name)}${td(b.unit)}${td(b.tpl ? '' : b.q, true)}${td(b.note)}</tr>`));
+    return table(['項次', '名稱及規格', '單位', '數量', '計算依據'], boqRows(c.pb).map(b => b.length === 1
+      ? `<tr class="sec"><td colspan="5">${esc(b[0])}</td></tr>`
+      : `<tr>${td(b[0])}${td(b[1])}${td(b[2])}${td(b[3], true)}${td(b[4])}</tr>`));
   }
   if (key === 'floor' || key === 'member' || key === 'area') {
     return groupQuantities(t.calc, key).map(g => `<h3>${esc(GROUP_TITLE[key])}：${esc(g.key)}</h3>${table(['工程項目', '數量', '單位', '筆數'], g.rows.map(r => `<tr>${td(r.item)}${td(r.q, true)}${td(r.unit)}${td(r.n, true)}</tr>`))}`).join('');
@@ -180,7 +184,7 @@ export function reportWorkbook(keys: ReportKey[], c: ReportCtx) {
       if (q.terms) rows.push([], ['附註', q.terms]);
       ws = sheet(rows, [6, 40, 6, 10, 7, 10, 10, 12, 10, 12, 10, 12, 14, 30]);
     } else if (k === 'boq') {
-      ws = sheet([[`${c.project}  工程數量表`], [], ['項次', '名稱及規格', '單位', '數量', '計算依據'], ...t.budget.map(b => b.sec ? [b.sec] : [b.i!, b.name!, b.unit!, b.tpl ? '' : b.q!, b.note || ''])], [6, 48, 6, 12, 36]);
+      ws = sheet([[`${c.project}  工程數量表`], [], ['項次', '名稱及規格', '單位', '數量', '計算依據'], ...boqRows(c.pb)], [6, 48, 6, 12, 36]);
     } else if (k === 'floor' || k === 'member' || k === 'area') {
       const rows: Cell[][] = [[`${c.project}  ${title}`], [], [GROUP_TITLE[k], '工程項目', '數量', '單位', '筆數']];
       for (const g of groupQuantities(t.calc, k)) for (const r of g.rows) rows.push([g.key, r.item, r.q, r.unit, r.n]);
