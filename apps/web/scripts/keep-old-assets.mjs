@@ -13,7 +13,7 @@ const { build } = JSON.parse(readFileSync(join(dist, 'version.json'), 'utf8'));
 const mine = readdirSync(assets);
 
 const get = async (path, type) => {
-  const r = await fetch(`${SITE}/${path}`, { signal: AbortSignal.timeout(30000) });
+  const r = await fetch(`${SITE}/${path}`, { signal: AbortSignal.timeout(20000) });
   if (!r.ok) throw new Error(`${path}: ${r.status}`);
   return type === 'json' ? r.json() : type === 'text' ? r.text() : Buffer.from(await r.arrayBuffer());
 };

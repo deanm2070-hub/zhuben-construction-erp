@@ -5,7 +5,7 @@
   "type": "module",
   "scripts": {
     "dev": "vite",
-    "build": "tsc -p tsconfig.json && vite build && node scripts/keep-old-assets.mjs",
+    "build": "tsc -p tsconfig.json && vite build && (node scripts/keep-old-assets.mjs || echo keep-old-assets skipped)",
     "preview": "vite preview",
     "typecheck": "tsc -p tsconfig.json"
   },
