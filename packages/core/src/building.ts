@@ -1322,7 +1322,12 @@ function railingFor(w: BoxObject, notes: { x: number; z: number; s: string }[], 
 }
 
 /** Stairs of a storey from the tread lines; 上 labels mark where the climb starts. */
-function stairsOf(segs: { x1: number; z1: number; x2: number; z2: number }[], notes: { x: number; z: number; s: string }[], H: number): (StairPlan & { labelled: number })[] {
+/**
+ * The stairs drawn on one storey's plan. `ups` are the heights from this floor up to each storey above (the first is
+ * the storey height): a riser count written on the plan (UP45) that is too many for one storey climbs on past a
+ * mezzanine to the floor it fits (45 risers over 1F + 1MF, 800 cm, each 17.8 cm).
+ */
+function stairsOf(segs: { x1: number; z1: number; x2: number; z2: number }[], notes: { x: number; z: number; s: string }[], H: number, ups: number[] = [H]): (StairPlan & { labelled: number; climb: number })[] {
   const flights = findFlights(segs);
   if (!flights.length) return [];
   const start = notes.filter(n => /^(上|UP)\s*\d*$/i.test(n.s.trim()));
@@ -1344,7 +1349,19 @@ function stairsOf(segs: { x1: number; z1: number; x2: number; z2: number }[], no
     const xs = sp.holes.flatMap(h => [h.x0, h.x1]), zs = sp.holes.flatMap(h => [h.z0, h.z1]);
     const lab = start.find(n => n.x > minOf(xs) - 60 && n.x < maxOf(xs) + 60 && n.z > minOf(zs) - 60 && n.z < maxOf(zs) + 60);
     const N = lab ? +(/\d+/.exec(lab.s)?.[0] || 0) : 0;
-    return { ...sp, labelled: N >= 4 && N <= 40 ? N : 0 };
+    if (!(N >= 4 && N <= 80)) {
+      // a few steps with no count written that would need risers over 21 cm to reach the floor above are only a
+      // short run of steps (an entrance, a change of level): about 17 cm each
+      if (H / sp.risers <= 21) return { ...sp, labelled: 0, climb: H };
+      const short = planStairs(flights, sp.risers * 17, [], extent).find(q => q.risers === sp.risers && q.holes.some(h => sp.holes.some(o => h.x0 < o.x1 && h.x1 > o.x0 && h.z0 < o.z1 && h.z1 > o.z0)));
+      return { ...(short || sp), labelled: 0, climb: sp.risers * 17 };
+    }
+    // the floor it reaches: the first whose height gives a riser of 14 to 21 cm
+    const climb = ups.find(h => h / N >= 14 && h / N <= 21) ?? H;
+    if (climb === H) return { ...sp, labelled: N, climb };
+    const box = { x0: minOf(xs), x1: maxOf(xs), z0: minOf(zs), z1: maxOf(zs) };
+    const again = planStairs(flights, climb, [lab!], extent).find(q => q.holes.some(h => h.x0 < box.x1 && h.x1 > box.x0 && h.z0 < box.z1 && h.z1 > box.z0));
+    return again ? { ...again, labelled: N, climb } : { ...sp, labelled: N, climb: H };
   });
 }
 
@@ -1610,6 +1627,8 @@ export function buildBuilding(d: DxfDrawing, a: BuildingAnalysis, name: string, 
   const linesOf = new Map<string, PlanLine[]>();
   let nWalls = 0, nDoors = 0, nWins = 0, nRails = 0, cutHeads = 0;
   let below: StairPlan['holes'] = [];
+  /** a stair that climbs past a storey (over a mezzanine): holes in the storeys it passes and in the one it arrives at */
+  const passHoles = new Map<string, StairPlan['holes']>();
   const railing = railingDefault(d, a), beamDepth = beamDepthOf(d, a);
   // 女兒牆高度 written anywhere (plans, elevations, sections)
   const parapetNote = d.texts.some(t => /女兒牆/.test(HEIGHT_NOTE.exec(t.s)?.[1] || '')) ? a.parapet : null;
@@ -1636,7 +1655,8 @@ export function buildBuilding(d: DxfDrawing, a: BuildingAnalysis, name: string, 
     const segs = g.segs.filter(s => STAIR_LAYER.test(s.layer)).map(s => ({ x1: X(s.a[0]), z1: Z(s.a[1]), x2: X(s.b[0]), z2: Z(s.b[1]) }));
     const notes = d.texts.filter(t => inBox(plan.box, t.x, t.y)).map(t => ({ x: X(t.x), z: Z(t.y), s: t.s }));
     stairIn.set(st.key, { segs, labelled: notes.some(n => /^(上|下|UP|DN)\s*\d*$/i.test(n.s.trim())) });
-    stairPre.set(st.key, stairsOf(segs, notes, st.h));
+    const i = a.storeys.indexOf(st), ups = a.storeys.slice(i, i + 3).filter(u => u.key !== 'RF').map(u => u.base + u.h - st.base);
+    stairPre.set(st.key, stairsOf(segs, notes, st.h, ups));
   }
   a.storeys.forEach((st, i) => {
     const nx = a.storeys[i + 1], q = stairPre.get(st.key), p = nx && stairPre.get(nx.key), qi = stairIn.get(st.key), pi = nx && stairIn.get(nx.key);
@@ -1879,24 +1899,30 @@ export function buildBuilding(d: DxfDrawing, a: BuildingAnalysis, name: string, 
     const stairSegs = g.segs.filter(s => STAIR_LAYER.test(s.layer)).map(s => ({ x1: X(s.a[0]), z1: Z(s.a[1]), x2: X(s.b[0]), z2: Z(s.b[1]) }));
     const stairs = parapet ? [] : stairPre.get(st.key) ?? stairsOf(stairSegs, notes, H);
     for (const sp of stairs) {
-      stairList.push({ from: st.key, to: a.storeys[a.storeys.indexOf(st) + 1]?.key || '', risers: sp.labelled || sp.risers });
-      const r = H / sp.risers;
+      const climb = 'climb' in sp ? (sp as { climb: number }).climb : H, si = a.storeys.indexOf(st);
+      // the storey it arrives at; storeys it passes (a mezzanine) are open over it too
+      let to = si + 1;
+      while (to < a.storeys.length - 1 && a.storeys[to].base - st.base < climb - 5) { (passHoles.get(a.storeys[to].key) || passHoles.set(a.storeys[to].key, []).get(a.storeys[to].key)!).push(...sp.holes); to++; }
+      if (to > si + 1 && a.storeys[to]) (passHoles.get(a.storeys[to].key) || passHoles.set(a.storeys[to].key, []).get(a.storeys[to].key)!).push(...sp.holes);
+      stairList.push({ from: st.key, to: a.storeys[to]?.key || '', risers: sp.labelled || sp.risers });
+      const r = climb / sp.risers;
       // quantities follow the riser count written on the plan (上16); the drawing may leave treads out
       const N = sp.labelled || sp.risers, flights = sp.landings.length ? 2 : 1;
-      const info = { risers: N, flights, width: sp.width, run: sp.run, rise: H / N, landing: sp.landings.reduce((s, t) => s + (t.x1 - t.x0) * (t.z1 - t.z0) / 1e4, 0) };
+      const info = { risers: N, flights, width: sp.width, run: sp.run, rise: climb / N, landing: sp.landings.reduce((s, t) => s + (t.x1 - t.x0) * (t.z1 - t.z0) / 1e4, 0) };
       sp.steps.forEach((t, i) => add({ layer: 'stair', name: '樓梯踏階（CAD）', x: (t.x0 + t.x1) / 2, z: (t.z0 + t.z1) / 2, w: t.x1 - t.x0, d: t.z1 - t.z0, h: Math.min(t.top, r + SLAB), y: t.top - Math.min(t.top, r + SLAB), color: 0xd9d4ca, rise: r, ...(t.soffit ? { soffit: { ...t.soffit, lo: t.soffit.lo + st.base, hi: t.soffit.hi + st.base } } : {}), ...(i ? {} : { stair: info }) }));
       for (const t of sp.landings) add({ layer: 'stair', name: '樓梯平台（CAD）', x: (t.x0 + t.x1) / 2, z: (t.z0 + t.z1) / 2, w: t.x1 - t.x0, d: t.z1 - t.z0, h: SLAB, y: t.top - SLAB, color: 0xd9d4ca });
       for (const t of sp.rails) add({ layer: 'rail', name: '樓梯扶手（CAD）', x: (t.x0 + t.x1) / 2, z: (t.z0 + t.z1) / 2, w: Math.max(4, t.x1 - t.x0), d: Math.max(4, t.z1 - t.z0), h: 90, y: t.top, color: 0x4b5563, rise: r });
     }
     if (!parapet) beamLines.push({ st, xs: g.gx.map(X), zs: g.gy.map(Z) });
-    const holes = below;
+    const holes = [...below, ...(passHoles.get(st.key) || [])];
     holesOf.set(st.key, holes);
     slabsOf.set(st.key, []);
     // indoor room names (客廳, 廚房, 臥室 …): short labels of two to five characters naming a space
     roomsOf.set(st.key, d.texts.filter(t => inBox(plan.box, t.x, t.y) && /^[一-鿿]{2,5}$/.test(t.s.trim()) && /[廳房室廚廁浴衛鋪舖間廊道梯]/.test(t.s) && !OUTDOOR.test(t.s) && !/平面圖|立面|剖面|投影|上方/.test(t.s)).map(t => ({ x: X(t.x), z: Z(t.y) })));
     outdoorOf.set(st.key, d.texts.filter(t => inBox(plan.box, t.x, t.y) && t.s.trim().length <= 8 && OUTDOOR.test(t.s) && !PLAN_NOTES.projection.test(t.s)).map(t => ({ x: X(t.x), z: Z(t.y) })));
     terraces.set(st.key, texts.filter(t => /露台|平台/.test(t.s) && !/屋突屋頂平台|上方/.test(t.s) || /屋突屋頂平台/.test(t.s)));
-    below = stairs.flatMap(sp => sp.holes);
+    // (a short run of steps leaves the floor above whole)
+    below = stairs.filter(sp => !('climb' in sp) || Math.abs((sp as { climb: number }).climb - H) <= 5).flatMap(sp => sp.holes);
     {
       const crosses = crossRects(g.segs.filter(q => !/GRID|AXIS|DIM|軸|尺寸|FURN|傢俱|家具/i.test(q.layer)).map(q => ({ x1: X(q.a[0]), z1: Z(q.a[1]), x2: X(q.b[0]), z2: Z(q.b[1]), dashed: q.dashed })))
         .filter(r => r.x1 > -50 && r.z1 > -50 && r.x0 < W + 50 && r.z0 < D + 50);

@@ -93,13 +93,18 @@ export function planStairs(flights: StairFlight[], H: number, start: { x: number
     ? { x0: across, x1: across, z0: a, z1: b, top }
     : { x0: a, x1: b, z0: across, z1: across, top };
 
-  for (const A of flights) {
+  for (let A of flights) {
     if (used.has(A)) continue;
-    const n = A.at.length;
-    const B = flights.find(q => q !== A && !used.has(q) && q.axis === A.axis && q.at.length === n
-      && Math.abs(q.at[0] - A.at[0]) < 3 && Math.abs(q.at[n - 1] - A.at[n - 1]) < 3
+    let n = A.at.length;
+    const ov = (q: StairFlight) => Math.min(q.at[q.at.length - 1], A.at[n - 1]) - Math.max(q.at[0], A.at[0]);
+    // the two flights of a U stair lie side by side; one may show a tread or two fewer (cut short on the plan)
+    const B = flights.find(q => q !== A && !used.has(q) && q.axis === A.axis
+      && (q.at.length === n ? Math.abs(q.at[0] - A.at[0]) < 3 && Math.abs(q.at[n - 1] - A.at[n - 1]) < 3
+        : Math.abs(q.at.length - n) <= 3 && ov(q) > 0.7 * Math.min(q.at[q.at.length - 1] - q.at[0], A.at[n - 1] - A.at[0]))
       && (Math.abs(q.lo - A.hi) < 40 || Math.abs(A.lo - q.hi) < 40));
     used.add(A);
+    // unequal flights: both take the treads of the longer one
+    if (B && B.at.length > n) { A = { ...A, at: B.at }; n = A.at.length; }
     const first = A.at[0], last = A.at[n - 1];
     const steps: StairStep[] = [], landings: StairStep[] = [], rails: StairPlan['rails'] = [], holes: StairPlan['holes'] = [];
     if (!B) {
