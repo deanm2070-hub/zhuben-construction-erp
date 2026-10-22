@@ -113,7 +113,7 @@ export function planStairs(flights: StairFlight[], H: number, start: { x: number
       const up = start.some(p => near(A, p) && Math.abs((A.axis === 'z' ? p.z : p.x) - last) < Math.abs((A.axis === 'z' ? p.z : p.x) - first)) ? -1 : 1;
       const at = up > 0 ? A.at : [...A.at].reverse();
       for (let j = 1; j < n; j++) steps.push({ ...rect(A, at[j - 1], at[j]), top: j * r, soffit: sof(A, at[j - 1], at[j], (j - 1) * r, j * r) });
-      for (let j = 1; j < n; j++) rails.push(railAt(A, A.hi, at[j - 1], at[j], j * r));
+      for (const side of [A.lo, A.hi]) for (let j = 1; j < n; j++) rails.push(railAt(A, side, at[j - 1], at[j], j * r));
       holes.push(rect(A, at[0], at[n - 1]));
       plans.push({ steps, landings, rails, holes, risers, width: A.hi - A.lo, run: (A.at[n - 1] - A.at[0]) / (n - 1) });
       continue;

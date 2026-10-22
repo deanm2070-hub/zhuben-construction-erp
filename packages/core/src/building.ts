@@ -362,6 +362,7 @@ export function analyzeBuilding(d: DxfDrawing, defaultH = WALL_H): BuildingAnaly
   growPlans(d, planViews);
   const { scale, wallLayers } = learnWalls(d, planViews);
   const colLayers = wallLayers.length ? learnColumns(d, planViews, scale) : [];
+  if (wallLayers.length) wallLayers.push(...bridgeLayers(d, planViews, scale, wallLayers, colLayers));
   extraWall = new Set(wallLayers); scaleNow = scale;
   // when two files both have a plan of a storey (architectural and structural), the one with the most wall lines wins
   const walls = (v: SheetView) => d.segs.filter(s => isWallLayer(s.layer) && inBox(v.box, s.a[0], s.a[1]) && inBox(v.box, s.b[0], s.b[1])).length;
@@ -480,6 +481,44 @@ function learnWalls(d: DxfDrawing, plans: SheetView[]): { scale: number; wallLay
     if (total > best.total * 1.2 && (best.total === 0 || k === 1 || k === header || best.total < 1000)) best = { scale: k, layers, total };
   }
   return { scale: best.scale, wallLayers: best.layers };
+}
+
+/**
+ * Small layers too short to be learnt as walls (a 10 cm partition drawn on its own layer between two columns): a layer
+ * whose lines are mostly double lines 8–30 cm apart and whose ends butt onto columns or learnt walls is walls too.
+ */
+function bridgeLayers(d: DxfDrawing, plans: SheetView[], k: number, walls: string[], cols: string[]): string[] {
+  const wallSet = new Set(walls), colSet = new Set(cols), byLayer = new Map<string, DxfSeg[]>();
+  const anchors: DxfSeg[] = [], boxes: number[][] = [];
+  const inPlans = (x: number, y: number) => plans.some(v => inBox(v.box, x, y));
+  for (const sg of d.segs) {
+    if (!inPlans(sg.a[0], sg.a[1]) || !inPlans(sg.b[0], sg.b[1])) continue;
+    if (wallSet.has(sg.layer) || guessLayerKind(sg.layer) === 'wall') { anchors.push(sg); continue; }
+    if (colSet.has(sg.layer) || guessLayerKind(sg.layer) !== 'line' || /TEXT|AREA|PEN|DIM|圖框|TOIL|DOOR|DW|STAIR|SYM|AID|PAVE|變更|WIN|窗|門|FURN|家具|衛浴|PLUM|FIX|曲線|等高|CONT|TOPO|地形|地界|ROAD|道路|GRID|AXIS|軸|HAT|欄杆|RAIL/i.test(sg.layer)) continue;
+    (byLayer.get(sg.layer) || byLayer.set(sg.layer, []).get(sg.layer)!).push(sg);
+  }
+  for (const p of d.polys) if (colSet.has(p.layer) && p.pts.length && inPlans(p.pts[0][0], p.pts[0][1])) {
+    const xs = p.pts.map(q => q[0] * k), ys = p.pts.map(q => q[1] * k);
+    boxes.push([minOf(xs), minOf(ys), maxOf(xs), maxOf(ys)]);
+  }
+  const near = (x: number, z: number, r: number) =>
+    boxes.some(b => x >= b[0] - r && x <= b[2] + r && z >= b[1] - r && z <= b[3] + r) ||
+    anchors.some(s => {
+      const ax = s.a[0] * k, az = s.a[1] * k, dx = s.b[0] * k - ax, dz = s.b[1] * k - az, L2 = dx * dx + dz * dz || 1;
+      const t = Math.max(0, Math.min(1, ((x - ax) * dx + (z - az) * dz) / L2));
+      return Math.hypot(ax + dx * t - x, az + dz * t - z) <= r;
+    });
+  const out: string[] = [];
+  for (const [l, ss] of byLayer) {
+    if (ss.length < 4 || ss.length > 400) continue;
+    const total = ss.reduce((n, s) => n + Math.hypot(s.b[0] - s.a[0], s.b[1] - s.a[1]) * k, 0);
+    const ws = pairWalls(ss.map(sg => ({ x1: sg.a[0] * k, z1: sg.a[1] * k, x2: sg.b[0] * k, z2: sg.b[1] * k }))).filter(x => !x.single && x.t >= 8 && x.t <= 30);
+    const len = ws.reduce((n, x) => n + Math.hypot(x.bx - x.ax, x.bz - x.az), 0);
+    let ends = 0;
+    for (const w of ws) for (const [x, z] of [[w.ax, w.az], [w.bx, w.bz]]) if (near(x, z, w.t / 2 + 8)) ends++;
+    if (len >= 150 && ends >= 2 && len * 2 >= total * 0.6) out.push(l);
+  }
+  return out;
 }
 
 const isOpenLayer = (l: string) => /OPEN|DOOR|WIN|門|窗|^DW$/i.test(l) && !/編號|TAG|TEXT|-T$/i.test(l);
@@ -1344,7 +1383,7 @@ function railingFor(w: BoxObject, notes: { x: number; z: number; s: string }[], 
 function stairsOf(segs: { x1: number; z1: number; x2: number; z2: number }[], notes: { x: number; z: number; s: string }[], H: number, ups: number[] = [H]): (StairPlan & { labelled: number; climb: number })[] {
   const flights = findFlights(segs);
   if (!flights.length) return [];
-  const start = notes.filter(n => /^(上|UP)\s*\d*$/i.test(n.s.trim()));
+  const start = notes.filter(n => /^(上|UP)\s*\d*$|^U\d{1,2}$/i.test(n.s.trim()));
   // only 下 arrows: the top of the stair (屋突), nothing climbs from here
   if (!start.length && notes.some(n => /^(下|DN)\s*\d*$/i.test(n.s.trim()))) return [];
   // how far the stair linework reaches past the last tread, toward the half landing
@@ -1361,7 +1400,9 @@ function stairsOf(segs: { x1: number; z1: number; x2: number; z2: number }[], no
   return planStairs(flights, H, start, extent).map(sp => {
     // the 上 label of this stair gives its riser count
     const xs = sp.holes.flatMap(h => [h.x0, h.x1]), zs = sp.holes.flatMap(h => [h.z0, h.z1]);
-    const lab = start.find(n => n.x > minOf(xs) - 60 && n.x < maxOf(xs) + 60 && n.z > minOf(zs) - 60 && n.z < maxOf(zs) + 60);
+    const lab = start.find(n => n.x > minOf(xs) - 60 && n.x < maxOf(xs) + 60 && n.z > minOf(zs) - 60 && n.z < maxOf(zs) + 60)
+      // a riser count (U22) may sit a little further off, by the first step between two columns
+      ?? start.find(n => /^U\d/i.test(n.s.trim()) && n.x > minOf(xs) - 150 && n.x < maxOf(xs) + 150 && n.z > minOf(zs) - 150 && n.z < maxOf(zs) + 150);
     const N = lab ? +(/\d+/.exec(lab.s)?.[0] || 0) : 0;
     if (!(N >= 4 && N <= 80)) {
       // a few steps with no count written that would need risers over 21 cm to reach the floor above are only a
@@ -1372,6 +1413,19 @@ function stairsOf(segs: { x1: number; z1: number; x2: number; z2: number }[], no
     }
     // the floor it reaches: the first whose height gives a riser of 14 to 21 cm
     const climb = ups.find(h => h / N >= 14 && h / N <= 21) ?? H;
+    // a straight flight drawn with a few treads fewer than its count starts that many treads earlier, toward the label
+    // (U22 written between the columns where the first step is, the tread lines starting past it)
+    if (climb === H && !sp.landings.length && N > sp.risers && N - sp.risers <= 6) {
+      const f = flights.find(q => sp.holes.some(h => (q.axis === 'z' ? (q.lo + q.hi) / 2 > h.x0 && (q.lo + q.hi) / 2 < h.x1 : (q.lo + q.hi) / 2 > h.z0 && (q.lo + q.hi) / 2 < h.z1)));
+      if (f && lab) {
+        const k = N - sp.risers, run = sp.run, along = f.axis === 'z' ? lab.z : lab.x, first = f.at[0], last = f.at[f.at.length - 1];
+        const pre = Math.abs(along - first) <= Math.abs(along - last);
+        const at = pre ? [...Array.from({ length: k }, (_, j) => first - (k - j) * run), ...f.at] : [...f.at, ...Array.from({ length: k }, (_, j) => last + (j + 1) * run)];
+        const ext: StairFlight = { ...f, at }, mid = (f.lo + f.hi) / 2, s0 = pre ? at[0] : at[at.length - 1];
+        const go = planStairs([ext], H, [f.axis === 'z' ? { x: mid, z: s0 } : { x: s0, z: mid }], extent)[0];
+        if (go) return { ...go, labelled: N, climb };
+      }
+    }
     if (climb === H) return { ...sp, labelled: N, climb };
     const box = { x0: minOf(xs), x1: maxOf(xs), z0: minOf(zs), z1: maxOf(zs) };
     const again = planStairs(flights, climb, [lab!], extent).find(q => q.holes.some(h => h.x0 < box.x1 && h.x1 > box.x0 && h.z0 < box.z1 && h.z1 > box.z0));
@@ -1460,7 +1514,12 @@ function readBeams(d: DxfDrawing, v: SheetView, X: (x: number) => number, Z: (y:
       .sort((p, q) => Math.hypot(p.o.x - t.x, p.o.y - t.y) - Math.hypot(q.o.x - t.x, q.o.y - t.y))[0];
     if (sz) marks.push({ code: t.s.trim(), w: +sz.m![1], h: sz.m![3] ? (+sz.m![2] + +sz.m![3]) / 2 : +sz.m![2], x: X(t.x), z: Z(t.y) });
   }
-  const lines = pairWalls(segs.map(s => ({ x1: X(s.a[0]), z1: Z(s.a[1]), x2: X(s.b[0]), z2: Z(s.b[1]) }))).filter(l => !l.single && l.t >= 15 && l.t <= 80);
+  // pairWalls carries a wall half its thickness past the drawn lines to close corners; a beam ends where its lines
+  // end (a cantilever stops at the slab edge, not 20 cm beyond it)
+  const lines = pairWalls(segs.map(s => ({ x1: X(s.a[0]), z1: Z(s.a[1]), x2: X(s.b[0]), z2: Z(s.b[1]) }))).filter(l => !l.single && l.t >= 15 && l.t <= 80).map(l => {
+    const L0 = Math.hypot(l.bx - l.ax, l.bz - l.az), e = Math.min(l.t / 2, L0 / 4), fx = (l.bx - l.ax) / L0 * e, fz = (l.bz - l.az) / L0 * e;
+    return { ...l, ax: l.ax + fx, az: l.az + fz, bx: l.bx - fx, bz: l.bz - fz };
+  });
   return lines.map(l => {
     const len = Math.hypot(l.bx - l.ax, l.bz - l.az), ux = (l.bx - l.ax) / len, uz = (l.bz - l.az) / len;
     // the mark is written beside the beam, within its length
@@ -1661,24 +1720,26 @@ export function buildBuilding(d: DxfDrawing, a: BuildingAnalysis, name: string, 
 
   // an unlabelled stair is drawn in full on the plan of the storey it arrives at (the lower plan cuts it short): it climbs the storey below
   const stairPre = new Map<string, ReturnType<typeof stairsOf>>();
-  const stairIn = new Map<string, { segs: { x1: number; z1: number; x2: number; z2: number }[]; labelled: boolean }>();
+  const stairIn = new Map<string, { segs: { x1: number; z1: number; x2: number; z2: number }[]; notes: { x: number; z: number; s: string }[]; labelled: boolean }>();
   for (const st of a.storeys) {
     if (st.key === 'RF') continue;
     const plan = a.plans.find(p => p.floors.includes(st.key))!, g = geos.get(plan)!;
     const X = (x: number) => (x - g.ox - minX) * S, Z = (y: number) => (maxY - (y - g.oy)) * S;
     const segs = g.segs.filter(s => STAIR_LAYER.test(s.layer)).map(s => ({ x1: X(s.a[0]), z1: Z(s.a[1]), x2: X(s.b[0]), z2: Z(s.b[1]) }));
     const notes = d.texts.filter(t => inBox(plan.box, t.x, t.y)).map(t => ({ x: X(t.x), z: Z(t.y), s: t.s }));
-    stairIn.set(st.key, { segs, labelled: notes.some(n => /^(上|下|UP|DN)\s*\d*$/i.test(n.s.trim())) });
+    stairIn.set(st.key, { segs, notes, labelled: notes.some(n => /^(上|下|UP|DN)\s*\d*$|^U\d{1,2}$/i.test(n.s.trim())) });
     const i = a.storeys.indexOf(st), ups = a.storeys.slice(i, i + 3).filter(u => u.key !== 'RF').map(u => u.base + u.h - st.base);
     stairPre.set(st.key, stairsOf(segs, notes, st.h, ups));
   }
   a.storeys.forEach((st, i) => {
     const nx = a.storeys[i + 1], q = stairPre.get(st.key), p = nx && stairPre.get(nx.key), qi = stairIn.get(st.key), pi = nx && stairIn.get(nx.key);
-    if (!nx || !q?.length || p?.length !== 1 || qi!.labelled || pi!.labelled || p[0].risers <= q[0].risers) return;
+    // a labelled lower plan (U22) cut short keeps its label: its count and start go with the full flight drawn above
+    if (!nx || !q?.length || p?.length !== 1 || pi!.labelled || p[0].risers <= q[0].risers || (qi!.labelled && q.length !== 1)) return;
     const box = (sp: StairPlan) => ({ x0: minOf(sp.holes.map(h => h.x0)), x1: maxOf(sp.holes.map(h => h.x1)), z0: minOf(sp.holes.map(h => h.z0)), z1: maxOf(sp.holes.map(h => h.z1)) });
     const A = box(q[0]), B = box(p[0]);
     if (Math.min(A.x1, B.x1) - Math.max(A.x0, B.x0) < 30 || Math.min(A.z1, B.z1) - Math.max(A.z0, B.z0) < 30) return;
-    stairPre.set(st.key, stairsOf(pi!.segs, [], st.h));
+    const i2 = a.storeys.indexOf(st), ups = a.storeys.slice(i2, i2 + 3).filter(u => u.key !== 'RF').map(u => u.base + u.h - st.base);
+    stairPre.set(st.key, qi!.labelled ? stairsOf(pi!.segs, qi!.notes, st.h, ups) : stairsOf(pi!.segs, [], st.h));
     stairPre.set(nx.key, []);
   });
 
@@ -1947,7 +2008,9 @@ export function buildBuilding(d: DxfDrawing, a: BuildingAnalysis, name: string, 
       const info = { risers: N, flights, width: sp.width, run: sp.run, rise: climb / N, landing: sp.landings.reduce((s, t) => s + (t.x1 - t.x0) * (t.z1 - t.z0) / 1e4, 0) };
       sp.steps.forEach((t, i) => add({ layer: 'stair', name: '樓梯踏階（CAD）', x: (t.x0 + t.x1) / 2, z: (t.z0 + t.z1) / 2, w: t.x1 - t.x0, d: t.z1 - t.z0, h: Math.min(t.top, r + SLAB), y: t.top - Math.min(t.top, r + SLAB), color: 0xd9d4ca, rise: r, ...(t.soffit ? { soffit: { ...t.soffit, lo: t.soffit.lo + st.base, hi: t.soffit.hi + st.base } } : {}), ...(i ? {} : { stair: info }) }));
       for (const t of sp.landings) add({ layer: 'stair', name: '樓梯平台（CAD）', x: (t.x0 + t.x1) / 2, z: (t.z0 + t.z1) / 2, w: t.x1 - t.x0, d: t.z1 - t.z0, h: SLAB, y: t.top - SLAB, color: 0xd9d4ca });
-      for (const t of sp.rails) add({ layer: 'rail', name: '樓梯扶手（CAD）', x: (t.x0 + t.x1) / 2, z: (t.z0 + t.z1) / 2, w: Math.max(4, t.x1 - t.x0), d: Math.max(4, t.z1 - t.z0), h: 90, y: t.top, color: 0x4b5563, rise: r });
+      // a handrail along a wall is left to the wall (a straight flight gets one on each open side)
+      const byWall = (x: number, z: number) => walls.some(b => Math.abs(x - b.x) <= b.w / 2 + 12 && Math.abs(z - b.z) <= b.d / 2 + 12 && (!b.rot || Math.abs(Math.sin(b.rot * 2)) < 0.01));
+      for (const t of sp.rails) if (!byWall((t.x0 + t.x1) / 2, (t.z0 + t.z1) / 2)) add({ layer: 'rail', name: '樓梯扶手（CAD）', x: (t.x0 + t.x1) / 2, z: (t.z0 + t.z1) / 2, w: Math.max(4, t.x1 - t.x0), d: Math.max(4, t.z1 - t.z0), h: 90, y: t.top, color: 0x4b5563, rise: r });
     }
     if (!parapet) beamLines.push({ st, xs: g.gx.map(X), zs: g.gy.map(Z) });
     const holes = [...below, ...(passHoles.get(st.key) || [])];
@@ -1983,6 +2046,36 @@ export function buildBuilding(d: DxfDrawing, a: BuildingAnalysis, name: string, 
     }
     for (const op of openings) {
       const it = op.tag ? codes.get(op.tag)! : null;
+      // narrower than its schedule size with a column or wall just beyond one end: the opening runs up to that face
+      // (frame lines stopping short of a column leave a gap the window fills on site)
+      if (it && !it.legs && it.w > op.len + 5) {
+        const lack = it.w - op.len + 10, at = op.axis === 'x' ? op.cz : op.cx;
+        const lo = (o: BoxObject) => op.axis === 'x' ? o.x - o.w / 2 : o.z - o.d / 2, hi = (o: BoxObject) => op.axis === 'x' ? o.x + o.w / 2 : o.z + o.d / 2;
+        // a sliver of wall closing the end (the frame's side drawn as a wall pair) is part of the opening
+        for (const end of ['a', 'b'] as const) {
+          const stub = walls.find(o => !o.rot && /隔間|RC牆|外牆/.test(o.name) && Math.abs((op.axis === 'x' ? o.z : o.x) - at) <= (op.axis === 'x' ? o.d : o.w) / 2 + op.t / 2
+            && (end === 'b' ? Math.abs(lo(o) - op.b) <= 2 : Math.abs(hi(o) - op.a) <= 2) && hi(o) - lo(o) <= Math.min(lack, 40) && op.len + hi(o) - lo(o) <= it.w + 10);
+          if (!stub) continue;
+          if (end === 'b') op.b = hi(stub); else op.a = lo(stub);
+          op.len = op.b - op.a;
+          walls.splice(walls.indexOf(stub), 1);
+          const k = objects.findIndex(o => isBox(o) && o.floor === st.key && o.layer === 'wall' && Math.abs(o.x - stub.x) < 0.5 && Math.abs(o.z - stub.z) < 0.5 && Math.abs(o.w - stub.w) < 0.5 && Math.abs(o.d - stub.d) < 0.5);
+          if (k >= 0) { objects.splice(k, 1); nWalls--; }
+        }
+        const solid = [...walls, ...objects.filter((o): o is BoxObject => isBox(o) && o.floor === st.key && o.layer === 'wall' && /柱/.test(o.name))]
+          .filter(o => !o.rot && Math.abs((op.axis === 'x' ? o.z : o.x) - at) <= (op.axis === 'x' ? o.d : o.w) / 2 + op.t / 2);
+        // never into the wall or column beside it
+        for (const o of solid) { if (lo(o) < op.a && hi(o) > op.a && hi(o) < op.b) op.a = hi(o); if (lo(o) < op.b && hi(o) > op.b && lo(o) > op.a) op.b = lo(o); }
+        op.len = op.b - op.a;
+        // an end already against a part (a column the frame runs into) stays where it is
+        const shutB = solid.some(o => lo(o) <= op.b + 1 && hi(o) > op.b + 1), shutA = solid.some(o => hi(o) >= op.a - 1 && lo(o) < op.a - 1);
+        const right = shutB ? undefined : solid.map(lo).filter(v => v >= op.b - 1 && v - op.b <= lack).sort((p, q) => p - q)[0];
+        const left = shutA ? undefined : solid.map(hi).filter(v => v <= op.a + 1 && op.a - v <= lack).sort((p, q) => q - p)[0];
+        if (right !== undefined && right - op.b > 1) op.b = right;
+        if (left !== undefined && op.a - left > 1 && op.b - left <= it.w + 10) op.a = left;
+        op.len = op.b - op.a;
+        if (op.axis === 'x') op.cx = (op.a + op.b) / 2; else op.cz = (op.a + op.b) / 2;
+      }
       const door = it ? it.kind === 'door' : op.arc;
       const sill = it ? optNow.sills?.[it.code] ?? it.sill : door ? 0 : 90;
       const oh = Math.min(H - sill, it ? it.h : door ? 210 : 150);
@@ -2077,8 +2170,12 @@ export function buildBuilding(d: DxfDrawing, a: BuildingAnalysis, name: string, 
         // a beam drawn off the grid (e.g. along a slanted site line) is turned to follow it
         const ang = Math.atan2(b.bz - b.az, b.bx - b.ax), off = Math.abs(((ang % (Math.PI / 2)) + Math.PI / 2) % (Math.PI / 2) - 0), slant = Math.min(off, Math.PI / 2 - off) > 0.03 && b.len > 100;
         if (objects.some(o => isBox(o) && madeBy.get(o) !== v && o.rc?.kind === 'beam' && o.floor === host.key && Math.abs(o.x - bx) < 8 && Math.abs(o.z - bz) < 8 && Math.abs(Math.max(o.w, o.d) - b.len) < 15 && Math.abs(o.y + o.h - top) < 5)) continue;
+        // an edge beam drawn narrower than its marked size keeps its outer face on the slab edge (the extra width goes inward)
+        const spare = Math.max(0, (m.w - b.t) / 2) + 1, cx = (b.ax + b.bx) / 2, cz = (b.az + b.bz) / 2;
+        const sx = slant || along ? 0 : cx + m.w / 2 > W && cx + m.w / 2 - W <= spare ? W - m.w / 2 - cx : cx - m.w / 2 < 0 && -(cx - m.w / 2) <= spare ? m.w / 2 - cx : 0;
+        const sz = slant || !along ? 0 : cz + m.w / 2 > D && cz + m.w / 2 - D <= spare ? D - m.w / 2 - cz : cz - m.w / 2 < 0 && -(cz - m.w / 2) <= spare ? m.w / 2 - cz : 0;
         objects.push({ id: id++, layer: 'slab', name: `${ground ? '地梁' : '梁'} ${m.code}（結構圖）`, floor: host.key, y: top - m.h, h: m.h, color: 0xcfc9bd,
-          x: (b.ax + b.bx) / 2, z: (b.az + b.bz) / 2, ...(slant ? { w: b.len, d: m.w, rot: -ang } : along ? { w: b.len, d: m.w } : { w: m.w, d: b.len }), rc: { kind: 'beam', mark: m.code, fl: key } });
+          x: cx + sx, z: cz + sz, ...(slant ? { w: b.len, d: m.w, rot: -ang } : along ? { w: b.len, d: m.w } : { w: m.w, d: b.len }), rc: { kind: 'beam', mark: m.code, fl: key } });
         madeBy.set(objects[objects.length - 1], v);
       }
       // columns of this storey: the architectural column there takes the mark and the structural size, else one is added
