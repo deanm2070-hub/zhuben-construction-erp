@@ -867,24 +867,38 @@ function areaChecks(d: DxfDrawing, keys: string[], objects: ModelObject[]) {
 }
 
 export function slabRects(walls: BoxObject[], labels: { x: number; z: number; s: string }[], W: number, D: number, holes: { x0: number; x1: number; z0: number; z1: number }[] = []) {
-  const { C, M, nx, nz, N, wall, nb } = raster(walls, W, D);
-  const R = 5, dil = new Uint8Array(N);
-  for (let j = 0; j < nz; j++) for (let i = 0; i < nx; i++) if (wall[j * nx + i])
-    for (let b = Math.max(0, j - R); b <= Math.min(nz - 1, j + R); b++) for (let a = Math.max(0, i - R); a <= Math.min(nx - 1, i + R); a++)
-      if ((a - i) ** 2 + (b - j) ** 2 <= R * R) dil[b * nx + a] = 1;
-  // outside: flood from the border through the dilated walls, then grow back up to the walls
-  const out = new Uint8Array(N);
-  let q: number[] = [];
-  for (let k = 0; k < N; k++) { const i = k % nx, j = (k / nx) | 0; if ((i === 0 || j === 0 || i === nx - 1 || j === nz - 1) && !dil[k]) { out[k] = 1; q.push(k); } }
-  while (q.length) { const k = q.pop()!; for (const m of nb(k)) if (!out[m] && !dil[m]) { out[m] = 1; q.push(m); } }
-  for (let step = 0; step < R + 1; step++) {
-    const add: number[] = [];
-    for (let k = 0; k < N; k++) if (out[k]) for (const m of nb(k)) if (!out[m] && !wall[m]) add.push(m);
-    if (!add.length) break;
-    for (const m of add) out[m] = 1;
+  // the margin round the plan must be wider than the widest bridging, or the thickened walls seal off the border
+  const { C, M, nx, nz, N, wall, nb } = raster(walls, W, D, 200);
+  const inside = (R: number) => {
+    const dil = new Uint8Array(N);
+    for (let j = 0; j < nz; j++) for (let i = 0; i < nx; i++) if (wall[j * nx + i])
+      for (let b = Math.max(0, j - R); b <= Math.min(nz - 1, j + R); b++) for (let a = Math.max(0, i - R); a <= Math.min(nx - 1, i + R); a++)
+        if ((a - i) ** 2 + (b - j) ** 2 <= R * R) dil[b * nx + a] = 1;
+    // outside: flood from the border through the dilated walls, then grow back up to the walls
+    const out = new Uint8Array(N);
+    const q: number[] = [];
+    for (let k = 0; k < N; k++) { const i = k % nx, j = (k / nx) | 0; if ((i === 0 || j === 0 || i === nx - 1 || j === nz - 1) && !dil[k]) { out[k] = 1; q.push(k); } }
+    while (q.length) { const k = q.pop()!; for (const m of nb(k)) if (!out[m] && !dil[m]) { out[m] = 1; q.push(m); } }
+    for (let step = 0; step < R + 1; step++) {
+      const add: number[] = [];
+      for (let k = 0; k < N; k++) if (out[k]) for (const m of nb(k)) if (!out[m] && !wall[m]) add.push(m);
+      if (!add.length) break;
+      for (const m of add) out[m] = 1;
+    }
+    const keep = new Uint8Array(N);
+    let n = 0;
+    for (let k = 0; k < N; k++) if (!out[k]) { keep[k] = 1; n++; }
+    return { keep, n };
+  };
+  // gaps up to a metre are bridged first; a facade of columns, shop fronts and windows can leave wider ones that let
+  // the outside flood into the rooms: bridge wider gaps while that still adds a good part of the floor
+  let best = inside(5);
+  for (const R of [10, 15]) {
+    const t = inside(R);
+    if (t.n < best.n * 1.15) break;
+    best = t;
   }
-  const keep = new Uint8Array(N);
-  for (let k = 0; k < N; k++) keep[k] = out[k] ? 0 : 1;
+  const keep = best.keep;
   for (const h of holes)
     for (let j = Math.max(0, Math.round((h.z0 + M) / C)); j < Math.min(nz, Math.round((h.z1 + M) / C)); j++)
       for (let i = Math.max(0, Math.round((h.x0 + M) / C)); i < Math.min(nx, Math.round((h.x1 + M) / C)); i++) keep[j * nx + i] = 0;
@@ -903,6 +917,33 @@ export function slabRects(walls: BoxObject[], labels: { x: number; z: number; s:
 }
 
 type Rect = { x0: number; x1: number; z0: number; z1: number };
+/** The part of rectangles `a` not covered by rectangles `b`, on a 10 cm grid, as rectangles of at least 0.2 m². */
+function subtractRects(a: Rect[], b: Rect[], W: number, D: number): Rect[] {
+  if (!a.length) return [];
+  const M = 80, C = 10, nx = Math.ceil((W + 2 * M) / C), nz = Math.ceil((D + 2 * M) / C), m = new Uint8Array(nx * nz);
+  const paint = (rs: Rect[], v: number) => {
+    for (const r of rs)
+      for (let j = Math.max(0, Math.round((r.z0 + M) / C)); j < Math.min(nz, Math.round((r.z1 + M) / C)); j++)
+        for (let i = Math.max(0, Math.round((r.x0 + M) / C)); i < Math.min(nx, Math.round((r.x1 + M) / C)); i++) m[j * nx + i] = v;
+  };
+  paint(a, 1); paint(b, 0);
+  // slivers along the edges of the two (thinner than 60 cm) are rounding, not floor: open the mask by 30 cm
+  const morph = (src: Uint8Array, grow: boolean) => {
+    const out = new Uint8Array(src.length), R = 3;
+    for (let j = 0; j < nz; j++) for (let i = 0; i < nx; i++) {
+      let hit = !grow;
+      for (let b2 = j - R; b2 <= j + R && hit !== grow; b2++) for (let a2 = i - R; a2 <= i + R; a2++) {
+        const v = b2 >= 0 && a2 >= 0 && b2 < nz && a2 < nx ? src[b2 * nx + a2] : 0;
+        if (grow ? v : !v) { hit = grow; break; }
+      }
+      out[j * nx + i] = hit ? 1 : 0;
+    }
+    return out;
+  };
+  const opened = morph(morph(m, false), true);
+  for (let k = 0; k < m.length; k++) opened[k] &= m[k];
+  return maskRects(opened, nx, nz, C, M, 2000);
+}
 /** Cells of a raster merged into rectangles: runs per row, stacked while the next row has the same run. */
 function maskRects(keep: Uint8Array, nx: number, nz: number, C: number, M: number, minArea = 400): Rect[] {
   const rects: Rect[] = [];
@@ -1723,7 +1764,11 @@ export function buildBuilding(d: DxfDrawing, a: BuildingAnalysis, name: string, 
       if (near(x1, z1) && near(x2, z2)) { segs.push(x1, z1, x2, z2); planLines.push({ x1, z1, x2, z2, win: /WIN|窗/i.test(s.layer) && !/編號|TAG|TEXT/i.test(s.layer), layer: s.layer }); }
     }
     linesOf.set(st.key, planLines);
-    floors.push({ key: st.key, title: plan.title, y: st.base, h: H, segs, texts });
+    // shown on the plan view: room names inside the building, not the legal-review notes and legends round it
+    const wx0 = minOf(walls.map(o => o.x - o.w / 2)) - 50, wx1 = maxOf(walls.map(o => o.x + o.w / 2)) + 50, wz0 = minOf(walls.map(o => o.z - o.d / 2)) - 50, wz1 = maxOf(walls.map(o => o.z + o.d / 2)) + 50;
+    const shown = texts.filter(t => (!walls.length || (t.x >= wx0 && t.x <= wx1 && t.z >= wz0 && t.z <= wz1))
+      && !/檢討|規定|面積|計算|圖例|範圍|線|[≦≧<>]|透空|投影|裝飾|增築|項\s*目|小\s*計|平面圖|^[東西南北]$/.test(t.s));
+    floors.push({ key: st.key, title: plan.title, y: st.base, h: H, segs, texts: shown });
   }
   // beams from structural plans (二層結構平面圖 → under the 2F slab), lined up on the grid bubbles
   const drawn = new Set<string>();
@@ -1937,6 +1982,24 @@ export function buildBuilding(d: DxfDrawing, a: BuildingAnalysis, name: string, 
         objects.push({ id: id++, layer: 'slab', name: '屋簷（CAD）', floor: 'RF', x: (r.x0 + r.x1) / 2, z: (r.z0 + r.z1) / 2, w: r.x1 - r.x0, d: r.z1 - r.z0, h: SLAB, y: top.base - SLAB, color: 0xd6d1c7 });
         slabsOf.get('RF')!.push(r);
       }
+    }
+  }
+  // a storey's floor slab is the ceiling of the storey under it: where the walls on this level do not close off all
+  // of the indoor floor below (a roof terrace, a shop front, walls lost in the drawing), carry the slab up from there.
+  // A mezzanine covers only part of the storey under it, and a roof storey's terrace is not roofed over.
+  for (let i = 1; i < a.storeys.length; i++) {
+    const st = a.storeys[i];
+    if (/MF$/.test(st.key)) continue;
+    let j = i - 1;
+    while (j > 0 && /MF$/.test(a.storeys[j].key)) j--;
+    const lower = a.storeys[j];
+    // over a roof storey (its terrace inside the parapet looks indoor) only a roof with no slab of its own is filled
+    if (/^R\d+F$/.test(lower.key) && (st.key !== 'RF' || (slabsOf.get('RF') || []).length)) continue;
+    const add = subtractRects(slabsOf.get(lower.key) || [], slabsOf.get(st.key) || [], W, D);
+    if (!slabsOf.has(st.key)) slabsOf.set(st.key, []);
+    for (const r of add) {
+      objects.push({ id: id++, layer: 'slab', name: st.key === 'RF' ? '屋頂板（CAD）' : '樓板（CAD）', floor: st.key, x: (r.x0 + r.x1) / 2, z: (r.z0 + r.z1) / 2, w: r.x1 - r.x0, d: r.z1 - r.z0, h: SLAB, y: st.base - SLAB, color: 0xd6d1c7 });
+      slabsOf.get(st.key)!.push(r);
     }
   }
   for (const f of floors) id = fillBetweenColumns(objects, f, linesOf.get(f.key) || [], outdoorOf.get(f.key) || [], id);
