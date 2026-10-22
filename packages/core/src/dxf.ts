@@ -1,7 +1,9 @@
 /** Minimal ASCII DXF reader: lines, polylines, arcs, circles, text and block inserts. */
 export type Pt = [number, number];
 /** `color` is the AutoCAD colour index when the file gives one (1 red, 2 yellow, 3 green, 4 cyan, 5 blue, 6 magenta, 7 white) */
-export interface DxfSeg { layer: string; a: Pt; b: Pt; color?: number }
+/** line type names drawn as broken lines */
+export const DASHED_LT = /DASH|HIDDEN|虛/i;
+export interface DxfSeg { layer: string; a: Pt; b: Pt; color?: number; /** drawn in a dashed / hidden line type (a projection, not an edge on this storey) */ dashed?: boolean }
 export interface DxfPoly { layer: string; pts: Pt[]; closed: boolean }
 export interface DxfText { layer: string; x: number; y: number; s: string; /** text height */ h?: number; /** attribute tag (ATTRIB) */ tag?: string }
 export interface DxfArc { layer: string; c: Pt; r: number; sweep: number; /** start and end points */ p0?: Pt; p1?: Pt }
@@ -120,7 +122,7 @@ export function parseDxf(text: string): DxfDrawing {
       let layer = g[8] || '0';
       if (inherit && layer === '0') layer = inherit;
       const t = en.type;
-      if (t === 'LINE') { seg(layer, T(+g[10], +g[20]), T(+g[11], +g[21])); bump(layer); }
+      if (t === 'LINE') { seg(layer, T(+g[10], +g[20]), T(+g[11], +g[21])); if (DASHED_LT.test(g[6] || '')) out.segs[out.segs.length - 1].dashed = true; bump(layer); }
       else if (t === 'LWPOLYLINE') {
         const xs = all(en, 10), ys = all(en, 20);
         poly(layer, xs.map((x, i) => T(+x, +ys[i])), (+g[70] & 1) === 1); bump(layer);

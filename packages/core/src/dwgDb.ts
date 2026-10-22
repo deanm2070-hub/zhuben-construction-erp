@@ -1,10 +1,10 @@
-import { cleanText, type DxfDrawing, type Pt } from './dxf';
+import { cleanText, DASHED_LT, type DxfDrawing, type Pt } from './dxf';
 
 /* Subset of the database @mlightcad/libredwg-web returns from `convert()`. */
 interface V { x: number; y: number }
 interface DbEntity {
   type: string;
-  layer?: string; colorIndex?: number;
+  layer?: string; colorIndex?: number; lineType?: string;
   startPoint?: V; endPoint?: V;
   vertices?: (V & { bulge?: number })[]; flag?: number;
   center?: V; radius?: number; startAngle?: number; endAngle?: number;
@@ -17,7 +17,7 @@ interface DbEntity {
 interface DbBlock { name: string; basePoint?: V; entities?: DbEntity[] }
 export interface DwgDatabase {
   header?: { INSUNITS?: number; ACADVER?: string };
-  tables?: { BLOCK_RECORD?: { entries?: DbBlock[] }; LAYER?: { entries?: { name: string; colorIndex?: number }[] } };
+  tables?: { BLOCK_RECORD?: { entries?: DbBlock[] }; LAYER?: { entries?: { name: string; colorIndex?: number; lineType?: string }[] } };
   entities: DbEntity[];
 }
 
@@ -29,6 +29,7 @@ export function drawingFromDwg(db: DwgDatabase, version = ''): DxfDrawing {
   const blocks = new Map((db.tables?.BLOCK_RECORD?.entries || []).map(b => [b.name, b]));
   const out: DxfDrawing = { segs: [], polys: [], texts: [], arcs: [], dims: [], layers: new Map(), units: db.header?.INSUNITS || 0, version: db.header?.ACADVER || version, blockCount: blocks.size, inserts: 0 };
   const layerColor = new Map((db.tables?.LAYER?.entries || []).map(l => [l.name, Math.abs(l.colorIndex ?? 7)]));
+  const layerDashed = new Set((db.tables?.LAYER?.entries || []).filter(l => DASHED_LT.test(l.lineType || '')).map(l => l.name));
   const bump = (l: string) => out.layers.set(l, (out.layers.get(l) || 0) + 1);
 
   const walk = (ents: DbEntity[], m: M, parent: string | null, depth: number, pcolor?: number) => {
@@ -38,13 +39,15 @@ export function drawingFromDwg(db: DwgDatabase, version = ''): DxfDrawing {
       const raw = e.layer || '0', layer = raw === '0' && parent ? parent : raw;
       const t = e.type;
       // AutoCAD colour index: 256 = by layer, 0 = by block (the insert's colour)
+      // line type: its own, or the layer's when by layer (empty / ByLayer)
+      const lt = e.lineType || '', dashed = /^(BYLAYER)?$/i.test(lt) ? layerDashed.has(layer) || layerDashed.has(raw) : DASHED_LT.test(lt);
       const ci = e.colorIndex, color = ci === undefined || ci === 256 ? layerColor.get(layer) ?? layerColor.get(raw) : ci === 0 ? pcolor ?? layerColor.get(layer) : Math.abs(ci);
       if (t === 'LINE' && e.startPoint && e.endPoint) {
-        out.segs.push({ layer, a: P(e.startPoint.x, e.startPoint.y), b: P(e.endPoint.x, e.endPoint.y), color }); bump(layer);
+        out.segs.push(dashed ? { layer, a: P(e.startPoint.x, e.startPoint.y), b: P(e.endPoint.x, e.endPoint.y), color, dashed } : { layer, a: P(e.startPoint.x, e.startPoint.y), b: P(e.endPoint.x, e.endPoint.y), color }); bump(layer);
       } else if ((t === 'LWPOLYLINE' || t === 'POLYLINE2D') && e.vertices?.length) {
         const pts = e.vertices.map(v => P(v.x, v.y)), closed = ((e.flag || 0) & 1) === 1;
-        for (let i = 0; i + 1 < pts.length; i++) out.segs.push({ layer, a: pts[i], b: pts[i + 1], color });
-        if (closed && pts.length > 2) out.segs.push({ layer, a: pts[pts.length - 1], b: pts[0], color });
+        for (let i = 0; i + 1 < pts.length; i++) out.segs.push(dashed ? { layer, a: pts[i], b: pts[i + 1], color, dashed } : { layer, a: pts[i], b: pts[i + 1], color });
+        if (closed && pts.length > 2) out.segs.push(dashed ? { layer, a: pts[pts.length - 1], b: pts[0], color, dashed } : { layer, a: pts[pts.length - 1], b: pts[0], color });
         out.polys.push({ layer, pts, closed }); bump(layer);
       } else if ((t === 'ARC' || t === 'CIRCLE') && e.center && e.radius) {
         const a0 = t === 'ARC' ? e.startAngle || 0 : 0;

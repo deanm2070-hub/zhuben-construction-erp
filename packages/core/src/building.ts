@@ -918,15 +918,43 @@ export function slabRects(walls: BoxObject[], labels: { x: number; z: number; s:
 
 type Rect = { x0: number; x1: number; z0: number; z1: number };
 /**
+ * Rectangles crossed corner to corner by an X on a plan: drawn solid, the storey has no floor slab there (a void, a
+ * shaft); drawn dashed, it is the projection of the opening in the floor above. At least 80 cm each way (smaller
+ * crosses are columns, pipes and symbols).
+ */
+export function crossRects(segs: { x1: number; z1: number; x2: number; z2: number; dashed?: boolean }[]): (Rect & { dashed: boolean })[] {
+  const diag = segs.filter(q => Math.abs(q.x1 - q.x2) >= 80 && Math.abs(q.z1 - q.z2) >= 80);
+  const out: (Rect & { dashed: boolean })[] = [];
+  for (let i = 0; i < diag.length; i++) for (let j = i + 1; j < diag.length; j++) {
+    const p = diag[i], q = diag[j];
+    if (Math.sign((p.x1 - p.x2) * (p.z1 - p.z2)) === Math.sign((q.x1 - q.x2) * (q.z1 - q.z2))) continue;
+    const r = { x0: Math.min(p.x1, p.x2), x1: Math.max(p.x1, p.x2), z0: Math.min(p.z1, p.z2), z1: Math.max(p.z1, p.z2) };
+    const t = { x0: Math.min(q.x1, q.x2), x1: Math.max(q.x1, q.x2), z0: Math.min(q.z1, q.z2), z1: Math.max(q.z1, q.z2) };
+    if (Math.abs(r.x0 - t.x0) > 15 || Math.abs(r.x1 - t.x1) > 15 || Math.abs(r.z0 - t.z0) > 15 || Math.abs(r.z1 - t.z1) > 15) continue;
+    const dashed = !!(p.dashed && q.dashed);
+    if (!out.some(o => o.dashed === dashed && Math.abs(o.x0 - r.x0) < 15 && Math.abs(o.z0 - r.z0) < 15 && Math.abs(o.x1 - r.x1) < 15 && Math.abs(o.z1 - r.z1) < 15)) out.push({ ...r, dashed });
+  }
+  return out;
+}
+/**
  * Manual correction: the floor of the room around (x, z), bounded by a storey's walls, as rectangles. Doorways are
  * bridged (up to about 2.4 m, the narrowest bridging that closes the room is used); the slab runs under the walls'
  * inner halves. Parts already covered by `existing` slabs are left out. Empty when the point is not inside a room.
  */
-export function roomSlabAt(walls: BoxObject[], x: number, z: number, W: number, D: number, existing: Rect[] = []): Rect[] {
+export function roomSlabAt(walls: BoxObject[], x: number, z: number, W: number, D: number, existing: Rect[] = [], under = 2, within?: Rect[]): Rect[] {
   const { C, M, nx, nz, N, wall, nb, cell } = raster(walls, W, D, 200);
+  // within a floor plate: its edge closes the space like a wall (a terrace bounded by walls on one side, open on the other)
+  if (within) {
+    const inPlate = new Uint8Array(N);
+    for (const r of within)
+      for (let j = Math.max(0, Math.round((r.z0 + M) / C)); j < Math.min(nz, Math.round((r.z1 + M) / C)); j++)
+        for (let i = Math.max(0, Math.round((r.x0 + M) / C)); i < Math.min(nx, Math.round((r.x1 + M) / C)); i++) inPlate[j * nx + i] = 1;
+    for (let k = 0; k < N; k++) if (!inPlate[k]) wall[k] = 1;
+  }
   const k0 = cell(x, z);
   if (k0 < 0 || wall[k0]) return [];
-  for (const R of [0, 3, 5, 8, 12]) {
+  // inside a plate the space never opens to the outside: bridge doorways as widely as the seed allows
+  for (const R of within ? [12, 8, 5, 3, 0] : [0, 3, 5, 8, 12]) {
     const dil = new Uint8Array(N);
     if (R) {
       for (let j = 0; j < nz; j++) for (let i = 0; i < nx; i++) if (wall[j * nx + i])
@@ -959,7 +987,7 @@ export function roomSlabAt(walls: BoxObject[], x: number, z: number, W: number, 
       }
       for (const m of add) seen[m] = 1;
     }
-    for (let step = 0; step < 2; step++) {
+    for (let step = 0; step < under; step++) {
       const add: number[] = [];
       for (let k = 0; k < N; k++) if (seen[k]) for (const m of nb(k)) if (!seen[m] && wall[m]) add.push(m);
       for (const m of add) seen[m] = 1;
@@ -1105,7 +1133,7 @@ function beamDepthOf(d: DxfDrawing, a: BuildingAnalysis) {
   const mid = t[Math.floor(t.length / 2)];
   return mid >= 30 && mid <= 120 ? Math.round(mid / 5) * 5 : 60;
 }
-const STAIR_LAYER = /STAIR|樓梯|階梯/i;
+const STAIR_LAYER = /STAIR|樓梯|階梯|(^|\$)STA$/i;
 
 /**
  * Thin wall lines (12 cm or less) that border a space named 陽台 / 露台 / 平台 are its
@@ -1527,6 +1555,8 @@ export function buildBuilding(d: DxfDrawing, a: BuildingAnalysis, name: string, 
   const slabsOf = new Map<string, { x0: number; x1: number; z0: number; z1: number }[]>();
   const holesOf = new Map<string, { x0: number; x1: number; z0: number; z1: number }[]>();
   const terraces = new Map<string, { x: number; z: number; s: string }[]>();
+  /** floor openings: the storey's own (solid X), the storey above's (dashed X), the open sky over a 露台 */
+  const voidsOf = new Map<string, Rect[]>(), voidsUp = new Map<string, Rect[]>(), openAt = new Map<string, { x: number; z: number }[]>();
   /** names of open-air spaces on each storey (外廊, 露台 …) on any layer: they are not under the roof */
   const outdoorOf = new Map<string, { x: number; z: number }[]>(), roomsOf = new Map<string, { x: number; z: number }[]>();
   const slants: { key: string; side: 'w' | 'e'; x1: number; z1: number; x2: number; z2: number }[] = [];
@@ -1572,7 +1602,7 @@ export function buildBuilding(d: DxfDrawing, a: BuildingAnalysis, name: string, 
       if (x < -100 || z < -100 || x > W + 100 || z > D + 100) continue;
       if (!tags.some(o => o.code === c && Math.hypot(o.x - x, o.z - z) < 5)) tags.push({ code: c, x, z });
     }
-    const texts = d.texts.filter(t => inBox(plan.box, t.x, t.y) && /^TEXT$|ROOM|室名|空間/i.test(t.layer) && /[一-鿿]/.test(t.s) && t.s.length <= 12 && !/[0-9]{2,}|㎡|坪|高度|詳|說明|同|$^/.test(t.s))
+    const texts = d.texts.filter(t => inBox(plan.box, t.x, t.y) && /(^|\$)TEXT$|ROOM|室名|空間/i.test(t.layer) && /[一-鿿]/.test(t.s) && t.s.length <= 12 && !/[0-9]{2,}|㎡|坪|高度|詳|說明|同|$^/.test(t.s))
       .map(t => ({ x: X(t.x), z: Z(t.y), s: t.s }))
       .filter(t => t.x > -50 && t.z > -50 && t.x < W + 50 && t.z < D + 50);
     const add = (o: Omit<BoxObject, 'id' | 'floor'>) => objects.push({ ...o, id: id++, floor: st.key, y: st.base + o.y });
@@ -1786,6 +1816,14 @@ export function buildBuilding(d: DxfDrawing, a: BuildingAnalysis, name: string, 
     outdoorOf.set(st.key, d.texts.filter(t => inBox(plan.box, t.x, t.y) && t.s.trim().length <= 8 && OUTDOOR.test(t.s) && !PLAN_NOTES.projection.test(t.s)).map(t => ({ x: X(t.x), z: Z(t.y) })));
     terraces.set(st.key, texts.filter(t => /露台|平台/.test(t.s) && !/屋突屋頂平台|上方/.test(t.s) || /屋突屋頂平台/.test(t.s)));
     below = stairs.flatMap(sp => sp.holes);
+    {
+      const crosses = crossRects(g.segs.filter(q => !/GRID|AXIS|DIM|軸|尺寸|FURN|傢俱|家具/i.test(q.layer)).map(q => ({ x1: X(q.a[0]), z1: Z(q.a[1]), x2: X(q.b[0]), z2: Z(q.b[1]), dashed: q.dashed })))
+        .filter(r => r.x1 > -50 && r.z1 > -50 && r.x0 < W + 50 && r.z0 < D + 50);
+      voidsOf.set(st.key, crosses.filter(r => !r.dashed));
+      voidsUp.set(st.key, crosses.filter(r => r.dashed));
+      // a 露台 is open to the sky: the storey above has no floor over it
+      openAt.set(st.key, texts.filter(t => /露台/.test(t.s) && !/上方|投影|範圍|面積|計算/.test(t.s)));
+    }
     for (const r of slabRects(walls.length ? [...walls, ...shut, ...slabEdges] : walls, texts, W, D, holes)) {
       add({ layer: 'slab', name: st.key === '1F' ? '地坪（CAD）' : st.key === 'RF' ? '屋頂板（CAD）' : '樓板（CAD）', x: (r.x0 + r.x1) / 2, z: (r.z0 + r.z1) / 2, w: r.x1 - r.x0, d: r.z1 - r.z0, h: SLAB, y: -SLAB, color: 0xd6d1c7 });
       slabsOf.get(st.key)!.push(r);
@@ -1822,7 +1860,7 @@ export function buildBuilding(d: DxfDrawing, a: BuildingAnalysis, name: string, 
     // shown on the plan view: room names inside the building, not the legal-review notes and legends round it
     const wx0 = minOf(walls.map(o => o.x - o.w / 2)) - 50, wx1 = maxOf(walls.map(o => o.x + o.w / 2)) + 50, wz0 = minOf(walls.map(o => o.z - o.d / 2)) - 50, wz1 = maxOf(walls.map(o => o.z + o.d / 2)) + 50;
     const shown = texts.filter(t => (!walls.length || (t.x >= wx0 && t.x <= wx1 && t.z >= wz0 && t.z <= wz1))
-      && !/檢討|規定|面積|計算|圖例|範圍|線|[≦≧<>]|透空|投影|裝飾|增築|項\s*目|小\s*計|平面圖|^[東西南北]$/.test(t.s));
+      && !/檢討|規定|面積|計算|圖例|範圍|線|[≦≧<>]|透空|投影|裝飾|增築|項\s*目|小\s*計|平面圖|面\s*積|防火|時效|事務所|建築師|紅磚|[0-9]\/[0-9]B|責任|施工|專用|材料|構造|做法|詳圖|^[A-Z]{1,3}[0-9]*$|^[東西南北]$/.test(t.s));
     floors.push({ key: st.key, title: plan.title, y: st.base, h: H, segs, texts: shown });
   }
   // beams from structural plans (二層結構平面圖 → under the 2F slab), lined up on the grid bubbles
@@ -2057,6 +2095,31 @@ export function buildBuilding(d: DxfDrawing, a: BuildingAnalysis, name: string, 
       slabsOf.get(st.key)!.push(r);
     }
   }
+  // floor openings marked on the plans: cut out of the slabs (beams stay where they are)
+  // each 露台: its part of the floor plate, closed off by the walls (doorways bridged) and the plate's edge
+  for (const st of a.storeys) {
+    const at = openAt.get(st.key) || [];
+    if (!at.length) continue;
+    const ws = objects.filter((o): o is BoxObject => isBox(o) && o.floor === st.key && (o.layer === 'wall' || o.layer === 'glass') && o.h >= 60);
+    voidsUp.get(st.key)!.push(...at.flatMap(t => roomSlabAt(ws, t.x, t.z, W, D, [], 0, slabsOf.get(st.key) || [])));
+  }
+  a.storeys.forEach((st, i) => {
+    const cuts = [...(voidsOf.get(st.key) || []), ...(i ? voidsUp.get(a.storeys[i - 1].key) || [] : [])];
+    if (!cuts.length) return;
+    const hit = (o: BoxObject) => cuts.some(c => o.x - o.w / 2 < c.x1 && o.x + o.w / 2 > c.x0 && o.z - o.d / 2 < c.z1 && o.z + o.d / 2 > c.z0);
+    const keep: Rect[] = [];
+    for (let k = objects.length - 1; k >= 0; k--) {
+      const o = objects[k];
+      if (!isBox(o) || o.floor !== st.key || o.layer !== 'slab' || /梁/.test(o.name) || o.rot || Math.abs(o.y + o.h - st.base) > 5) continue;
+      if (!hit(o)) { keep.push({ x0: o.x - o.w / 2, x1: o.x + o.w / 2, z0: o.z - o.d / 2, z1: o.z + o.d / 2 }); continue; }
+      objects.splice(k, 1);
+      for (const r of subtractRects([{ x0: o.x - o.w / 2, x1: o.x + o.w / 2, z0: o.z - o.d / 2, z1: o.z + o.d / 2 }], cuts, W, D)) {
+        objects.push({ ...o, id: id++, x: (r.x0 + r.x1) / 2, z: (r.z0 + r.z1) / 2, w: r.x1 - r.x0, d: r.z1 - r.z0 });
+        keep.push(r);
+      }
+    }
+    slabsOf.set(st.key, keep);
+  });
   for (const f of floors) id = fillBetweenColumns(objects, f, linesOf.get(f.key) || [], outdoorOf.get(f.key) || [], id);
   // columns and walls standing on a terrace or roof deck (nothing above them) end level with the parapet round it
   const headH = parapetNote ?? a.parapet;
