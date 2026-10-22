@@ -97,6 +97,8 @@ export function computeTakeoff(inp: TakeoffInput): Takeoff {
   const rcWalls = walls.filter(o => isExt(o) && !o.rc && (tagged.length > 0 || !isColumn(o)));
   // interior concrete walls carry no facade finish
   const ext = rcWalls.filter(o => !(o.wall === 'rc' && /^RC牆/.test(o.name))), int = full.filter(o => !isExt(o) && !o.rc);
+  // a light partition over a door (and under a window in one) is part of the partition
+  const intFill = walls.filter(o => !isExt(o) && !o.rc && !full.includes(o) && /^輕隔間(門楣|牆下)/.test(o.name));
   const slabs = boxes.filter(o => o.layer === 'slab' && !/梁|屋簷/.test(o.name)), eaves = boxes.filter(o => o.layer === 'slab' && /屋簷/.test(o.name));
   const railings = boxes.filter(o => /欄杆/.test(o.name) && (o.layer === 'glass' || o.layer === 'rail'));
   const map = roomMap(objects, bounds, inp.labels, inp.rects);
@@ -296,8 +298,9 @@ export function computeTakeoff(inp: TakeoffInput): Takeoff {
     row(SEC.rc, '鋼筋運費', '噸', '同鋼筋', `混凝土 ${r2(conc)} M3 × ${S.rebar} kg/M3 ÷ 1000`, conc * S.rebar / 1000);
   }
   if (int.length) {
-    const L = sum(int, o => Math.max(o.w, o.d)), A = sum(int, o => len(o) * o.h / 100);
-    row(SEC.finish, '內牆雙面矽酸鈣板(一小時防火時效)', '㎡', `${int.some(o => o.wall === 'light') ? '輕隔間牆' : '隔間牆'} ${int.length} 段`, `合計長 ${m(L)} m × 高（各段 ${[...new Set(int.map(o => m(o.h)))].join('/')} m）`, A);
+    const L = sum(int, o => Math.max(o.w, o.d)), A = sum(int, o => len(o) * o.h / 100), F = sum(intFill, o => len(o) * o.h / 100);
+    row(SEC.finish, '內牆雙面矽酸鈣板(一小時防火時效)', '㎡', `${int.some(o => o.wall === 'light') ? '輕隔間牆' : '隔間牆'} ${int.length} 段`,
+      `合計長 ${m(L)} m × 高（各段 ${[...new Set(int.map(o => m(o.h)))].join('/')} m）${intFill.length ? ` + 門楣／窗下 ${intFill.length} 段 ${r2(F)} ㎡` : ''}`, A + F);
   }
   // doors and windows by schedule type
   const dk = new Map<string, { n: number; w: number; h: number; ext: boolean }>();

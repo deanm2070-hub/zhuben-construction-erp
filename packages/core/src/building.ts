@@ -1970,7 +1970,7 @@ export function buildBuilding(d: DxfDrawing, a: BuildingAnalysis, name: string, 
         add({ layer, name: nm, x: op.cx, z: op.cz, w: along ? op.len : t, d: along ? t : op.len, h, y, color });
       const outer = op.t >= 18;
       if (sill > 0) box(0, sill, outer ? '窗台（CAD）' : '隔間牆下（CAD）', 'wall', 0xeeebe5);
-      if (H - sill - oh > 0) box(sill + oh, H - sill - oh, outer ? '窗楣（CAD）' : '隔間門楣（CAD）', 'wall', 0xeeebe5);
+      if (H - sill - oh > 0) box(sill + oh, H - sill - oh, outer ? (door ? '門楣（CAD）' : '窗楣（CAD）') : '隔間門楣（CAD）', 'wall', 0xeeebe5);
       if (door) {
         const dObj: DoorObject = { id: id++, layer: 'door', name: label, axis: op.axis, at: along ? op.cz : op.cx, a: op.a, b: op.b, flip: 0, color: 0x9a6a43, floor: st.key, y: st.base, h: oh };
         objects.push(dObj);
@@ -2173,6 +2173,23 @@ export function buildBuilding(d: DxfDrawing, a: BuildingAnalysis, name: string, 
       o.wall = o.wc === extColor || onRim(o) ? 'rc' : 'light';
       o.name = o.wall === 'light' ? '輕隔間牆（CAD）' : Math.min(o.w, o.d) >= 18 ? '外牆（CAD）' : 'RC牆（CAD）';
     }
+  }
+  // the wall over a door or window (and under a window) is the wall the opening is cut in: concrete over an opening
+  // in an RC wall, a light partition over a door in a light partition
+  const fills = objects.filter((o): o is BoxObject => isBox(o) && o.layer === 'wall' && /^(窗台|窗楣|門楣|隔間門楣|隔間牆下)（CAD）$/.test(o.name));
+  const hosts = objects.filter((o): o is BoxObject => isBox(o) && o.layer === 'wall' && !o.rc && !o.rot && /^(外牆|隔間牆|RC牆|輕隔間牆)（CAD）/.test(o.name));
+  for (const f of fills) {
+    const along = f.w >= f.d, len = along ? f.w : f.d, t = along ? f.d : f.w;
+    const h = hosts.find(o => o.floor === f.floor && (o.w >= o.d) === along && Math.abs(along ? o.z - f.z : o.x - f.x) <= Math.max(t, along ? o.d : o.w) / 2 + 3
+      && Math.abs(along ? o.x - f.x : o.z - f.z) - (along ? o.w : o.d) / 2 - len / 2 <= 12);
+    const light = h ? h.wall === 'light' || /輕隔間/.test(h.name) : t < 18;
+    const rc = h ? !light && (h.wall === 'rc' || Math.min(h.w, h.d) >= 12) : !light;
+    if (h) { f.wall = light ? 'light' : rc ? 'rc' : h.wall; if (h.wc !== undefined) f.wc = h.wc; }
+    else f.wall = light ? 'light' : 'rc';
+    const top = !/窗台|牆下/.test(f.name);
+    // over an opening in an interior RC wall: no facade finish (takeoff reads the RC牆 prefix)
+    const inner = !light && !!h && /^RC牆/.test(h.name) ? 'RC牆' : '';
+    f.name = light ? (top ? '輕隔間門楣（CAD）' : '輕隔間牆下（CAD）') : inner + (top ? (/門楣/.test(f.name) ? '門楣（CAD）' : '窗楣（CAD）') : '窗台（CAD）');
   }
   // the roof plan sits on the top indoor storey: the roof slab covers that storey (a roof plan that shows only the
   // parapet leaves holes, so its slabs are used), and what the roof outline reaches beyond it is the eaves (屋簷)
