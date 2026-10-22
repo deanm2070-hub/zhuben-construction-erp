@@ -145,13 +145,15 @@ export class Viewer {
   private last = performance.now();
   private active = performance.now();
   private drawn = 0;
+  private phone = false;
+  private visible = true;
   private disposers: (() => void)[] = [];
 
   constructor(private view: HTMLElement, private labelLayer: HTMLElement, private ev: ViewerEvents) {
     // phones: fewer pixels and cheaper shadows keep the GPU (and the phone) cool
-    const phone = matchMedia('(pointer: coarse)').matches;
+    const phone = this.phone = matchMedia('(pointer: coarse)').matches;
     this.renderer = new THREE.WebGLRenderer({ antialias: !phone, preserveDrawingBuffer: true, powerPreference: phone ? 'low-power' : 'default' });
-    this.renderer.setPixelRatio(Math.min(devicePixelRatio, phone ? 1.5 : 2));
+    this.renderer.setPixelRatio(Math.min(devicePixelRatio, phone ? 1.25 : 2));
     this.renderer.shadowMap.enabled = true;
     this.renderer.localClippingEnabled = true;
     this.renderer.shadowMap.type = phone ? THREE.PCFShadowMap : THREE.PCFSoftShadowMap;
@@ -163,7 +165,7 @@ export class Viewer {
     this.scene.add(this.hemi);
     this.sun.intensity = 2.2;
     this.sun.castShadow = true;
-    this.sun.shadow.mapSize.set(phone ? 2048 : 4096, phone ? 2048 : 4096);
+    this.sun.shadow.mapSize.set(phone ? 1024 : 4096, phone ? 1024 : 4096);
     this.sun.shadow.bias = -0.0004;
     this.sun.shadow.normalBias = 1.5;
     this.scene.add(this.sun, this.sun.target, this.floorGroup, this.objGroup, this.measGroup, this.helperGroup, this.cadGroup, this.meshGroup);
@@ -176,13 +178,22 @@ export class Viewer {
     const onTheme = () => this.themeChanged();
     mq.addEventListener('change', onTheme);
     this.disposers.push(() => mq.removeEventListener('change', onTheme));
-    // draw only while something moves: any touch, click, key or camera change keeps it drawing for a moment
+    // draw only while something moves: a tap, click or key anywhere (a toolbar button changes the view) or any
+    // pointer movement over the 3D view keeps it drawing for a moment; scrolling a table elsewhere does not
     const wake = () => { this.active = performance.now(); };
-    for (const type of ['pointerdown', 'pointermove', 'wheel', 'keydown', 'touchstart'] as const) {
+    for (const type of ['pointerdown', 'keydown', 'touchstart'] as const) {
       addEventListener(type, wake, { passive: true, capture: true });
       this.disposers.push(() => removeEventListener(type, wake, { capture: true }));
     }
+    for (const type of ['pointermove', 'wheel'] as const) {
+      view.addEventListener(type, wake, { passive: true });
+      this.disposers.push(() => view.removeEventListener(type, wake));
+    }
     this.controls.addEventListener('change', wake);
+    // nothing is drawn while the 3D view is off screen (another module tab) or the app is in the background
+    const io = new IntersectionObserver(es => { this.visible = es.some(e => e.isIntersecting); if (this.visible) wake(); });
+    io.observe(view);
+    this.disposers.push(() => io.disconnect());
     this.resize();
     this.raf = requestAnimationFrame(t => this.frame(t));
   }
@@ -1209,6 +1220,9 @@ export class Viewer {
     this.raf = requestAnimationFrame(t => this.frame(t));
   }
   private drawFrame(now: number) {
+    if (!this.visible || document.hidden) return;
+    // phones: at most 30 frames a second while moving (half the work, the GPU stays cool)
+    if (this.phone && now - this.last < 30) return;
     const dt = Math.min(0.05, (now - this.last) / 1000);
     this.last = now;
     const f = this.fly;
@@ -1234,10 +1248,11 @@ export class Viewer {
     const busy = !!f || (this.walk.on && this.walk.keys.size > 0) || now - this.active < 1500;
     // rendered modes: plain frames while moving, then one finished frame (ambient occlusion, smooth edges) once at rest
     const rest = this.real && !this.walk.on && !busy;
-    if (busy || now - this.drawn > 1000 || (rest && !this.finished)) {
+    if (busy || now - this.drawn > (this.phone ? 4000 : 1000) || (rest && !this.finished)) {
       this.selBox?.update();
-      if (rest && this.finish()) this.finished = true;
-      else { this.renderer.render(this.scene, this.camera); this.finished = false; }
+      // phones skip the ambient-occlusion pass (16 samples over the whole screen): the plain frame is the finished one
+      if (rest && !this.phone && this.finish()) this.finished = true;
+      else { this.renderer.render(this.scene, this.camera); this.finished = rest; }
       this.placeLabels();
       this.drawn = now;
     }
