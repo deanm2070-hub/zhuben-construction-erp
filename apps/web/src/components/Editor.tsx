@@ -136,7 +136,7 @@ export function Editor({ projectId, importNow, trial = false, onExit }: { projec
     try {
       await store.save(projectId, {
         ...(nameRef.current ? { name: nameRef.current } : {}),
-        model: { objects: v.objects, cad: v.cad, ...meta.current },
+        model: { objects: v.objects, cad: v.cad, sketch: v.sketch, ...meta.current },
         meta: meta.current.info,
         ...(withThumb ? { thumbnail: v.thumbnail() } : {}),
       });
@@ -156,6 +156,7 @@ export function Editor({ projectId, importNow, trial = false, onExit }: { projec
       toast: showToast,
       delta: (dx, dz) => setDelta(`ΔX ${Math.round(dx)} · ΔZ ${Math.round(dz)} cm`),
       change: () => { scheduleSave(); bump(n => n + 1); },
+      sketch: () => scheduleSave(),
       select: o => setSel(o ? { ...o } : null),
     });
     viewer.current = v;
@@ -171,6 +172,7 @@ export function Editor({ projectId, importNow, trial = false, onExit }: { projec
       setOwner(p.owner);
       store.role(p).then(r => { if (alive) setRole(r); }).catch(() => {});
       v.load(p.model.objects || [], p.model.cad || null);
+      v.setSketch(p.model.sketch || []);
       setFloor(null);
       bump(n => n + 1);
       setTimeout(() => { loaded.current = true; }, 0);
@@ -227,7 +229,7 @@ export function Editor({ projectId, importNow, trial = false, onExit }: { projec
           <span className="brand title" title={name}>{name}</span>
           <span className="save" role="status">{saveLabel}</span>
           {!readOnly && <button className="chip key" onClick={async () => { await persist(true); showToast(store.cloud ? '已存到雲端' : '已存在這個瀏覽器'); }}>儲存</button>}
-          <button className="chip hideSm" onClick={() => { const v = viewer.current; if (!v) return; download(`${name || '專案'}${PROJECT_EXT}`, projectFile(name || '未命名專案', { objects: v.objects, cad: v.cad, ...meta.current }), 'application/json'); showToast('已存成檔案，可在「我的專案」用「開啟專案檔」讀回'); }}>存成檔案</button>
+          <button className="chip hideSm" onClick={() => { const v = viewer.current; if (!v) return; download(`${name || '專案'}${PROJECT_EXT}`, projectFile(name || '未命名專案', { objects: v.objects, cad: v.cad, sketch: v.sketch, ...meta.current }), 'application/json'); showToast('已存成檔案，可在「我的專案」用「開啟專案檔」讀回'); }}>存成檔案</button>
           <button className="chip ghost hideSm" onClick={toggleTheme}>{darkNow ? '白底' : '黑底'}</button>
         </div>
         <nav className="modules" aria-label="功能">

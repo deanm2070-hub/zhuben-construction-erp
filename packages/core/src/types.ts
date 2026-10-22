@@ -162,7 +162,11 @@ export interface ProjectModel {
   versions?: import('./pricing').CalcVersion[];
   /** project information: category, status, client … (also kept on the project row for the project list) */
   info?: ProjectInfo;
+  /** lines drawn by hand with the 畫線 tool: start and end points (x, y, z cm, y up from 1F) */
+  sketch?: SketchLine[];
 }
+
+export interface SketchLine { a: [number, number, number]; b: [number, number, number] }
 
 export const PROJECT_STATUS = ['估算中', '已報價', '已得標', '施工中', '已結案'] as const;
 export interface ProjectInfo { category?: string; status?: string; client?: string; site?: string; note?: string; /** locked: cannot be deleted until unlocked */ locked?: boolean }

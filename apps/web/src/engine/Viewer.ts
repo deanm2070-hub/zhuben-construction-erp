@@ -1,6 +1,6 @@
 import {
   isBox, isDoor, memberOf, roomSlabAt, unpackMesh, SAMPLE_D, SAMPLE_ROOMS, SAMPLE_W, WALL_H,
-  type BoxObject, type CadData, type DoorObject, type ModelObject, type RoomRect,
+  type BoxObject, type CadData, type DoorObject, type ModelObject, type RoomRect, type SketchLine,
 } from '@cloud-modeler/core';
 import * as THREE from 'three';
 import { OrbitControls } from 'three/examples/jsm/controls/OrbitControls.js';
@@ -12,7 +12,7 @@ import { OutputPass } from 'three/examples/jsm/postprocessing/OutputPass.js';
 
 /** mat: automatic rendering (lit materials, sky, soft shadows); persp: the same look from eye level */
 export type RenderMode = 'mat' | 'persp' | 'layer' | 'white' | 'wire';
-export type Tool = 'orbit' | 'pan' | 'select' | 'measure' | 'push' | 'move' | 'draw' | 'paint' | 'flip' | 'del' | 'walk' | 'fix';
+export type Tool = 'orbit' | 'pan' | 'select' | 'measure' | 'line' | 'push' | 'move' | 'draw' | 'paint' | 'flip' | 'del' | 'walk' | 'fix';
 /** front: 正立面 (from the south), bird: 鳥瞰圖, side: 側向立面 (from the east), eye: the eye-level perspective */
 export type SceneKey = 'front' | 'bird' | 'side' | 'eye';
 export type DrawKind = 'wall' | 'rc' | 'rail' | 'column' | 'slab' | 'tall' | 'low';
@@ -33,6 +33,8 @@ export interface ViewerEvents {
   delta(dx: number, dz: number): void;
   /** the model changed and should be saved */
   change(objects: ModelObject[], cad: CadData | null): void;
+  /** the hand-drawn lines changed and should be saved */
+  sketch?(lines: SketchLine[]): void;
   /** the selected part changed (null: nothing selected) */
   select?(o: ModelObject | null): void;
 }
@@ -55,6 +57,7 @@ export const TOOL_HINT: Record<Tool, string> = {
   pan: '平移：拖曳移動畫面。',
   select: '構件：點選牆、櫃、家具或門，查看名稱與尺寸。按 Delete 可刪除。',
   measure: '捲尺：依序點兩個點量距離。',
+  line: '畫線：依序點下各點連成線，會鎖在構件角點、線的端點與中點（紅點），沿紅綠藍軸向時自動對齊；畫線中可直接輸入長度（cm）按 Enter。按 Esc、右鍵或點回起點結束。',
   push: '推拉：按住構件頂面上下拖曳改高度；按住側面左右拖曳，把那一面往外拉長或往內縮短。靠近其他構件的頂面、底面、邊緣或樓層高度時自動鎖點（紅點）。',
   move: '移動：按住構件拖曳。',
   draw: '繪圖：選工具列的種類（牆、RC牆、欄杆、柱、樓板、櫃），在地面拖曳。牆與欄杆依拖曳方向決定走向，可改厚度與高度。',
@@ -140,7 +143,7 @@ export class Viewer {
   private underlay: THREE.Mesh | null = null;
   private selBox: THREE.BoxHelper | null = null;
   private labels: Label[] = [];
-  private history: { o: string; c: CadData | null }[] = [];
+  private history: { o: string; c: CadData | null; s?: SketchLine[] }[] = [];
   private center = new THREE.Vector3(SAMPLE_W / 2, 0, SAMPLE_D / 2);
   /** height of what is shown, so tall buildings fit the camera */
   private height = WALL_H;
@@ -234,6 +237,8 @@ export class Viewer {
     this.selectedId = null;
     this.history = [];
     this.clearMeasure();
+    this.endLine();
+    this.setSketch([]);
     this.applyCadView();
     this.rebuild();
     this.goScene('bird', true);
@@ -292,7 +297,7 @@ export class Viewer {
   }
   private byId(id: number | null) { return this.objects.find(o => o.id === id); }
   private snapshot() {
-    this.history.push({ o: JSON.stringify(this.objects), c: this.cad });
+    this.history.push({ o: JSON.stringify(this.objects), c: this.cad, s: this.sketch });
     if (this.history.length > 60) this.history.shift();
   }
   private commit() { this.ev.change(this.objects, this.cad); }
@@ -300,6 +305,7 @@ export class Viewer {
     const h = this.history.pop();
     if (!h) return this.ev.toast('沒有可以復原的步驟');
     this.objects = JSON.parse(h.o);
+    if (h.s && h.s !== this.sketch) { this.sketch = h.s; this.drawSketch(); this.ev.sketch?.(this.sketch); }
     if (h.c !== this.cad) { this.cad = h.c; this.applyCadView(); this.goScene('bird'); }
     this.selectedId = null;
     this.rebuild();
@@ -462,6 +468,7 @@ export class Viewer {
   setTool(t: Tool) {
     if (this.tool === 'walk' && t !== 'walk') this.exitWalk();
     if (this.tool === 'measure' && t !== 'measure') this.measA = null;
+    if (this.tool === 'line' && t !== 'line') this.endLine();
     this.fixA = null;
     this.tool = t;
     this.controls.mouseButtons.LEFT = t === 'pan' ? THREE.MOUSE.PAN : THREE.MOUSE.ROTATE;
@@ -1033,6 +1040,7 @@ export class Viewer {
     };
     on(v, 'pointerdown', e => this.onDown(e), true);
     on(v, 'pointermove', e => this.onMove(e));
+    on(v, 'contextmenu', e => { if (this.tool === 'line') e.preventDefault(); });
     on(v, 'pointerup', e => this.onUp(e));
     on(v, 'pointercancel', e => { this.pointers.delete(e.pointerId); if (this.drag) this.cancelDrag(); });
     // a release that never reached the view (finger lifted outside, window lost focus, browser took the gesture) must not leave the camera locked
@@ -1053,6 +1061,12 @@ export class Viewer {
       const t = e.target as HTMLElement;
       if (t.matches?.('input,textarea,select')) return;
       if ((e.ctrlKey || e.metaKey) && e.key === 'z') { e.preventDefault(); this.undo(); return; }
+      if (this.tool === 'line' && this.lineA) {
+        if (e.key === 'Escape') { this.endLine(); return; }
+        if (/^[0-9.]$/.test(e.key)) { this.lineBuf += e.key; this.ev.info(`長度：${this.lineBuf} cm（按 Enter 確定）`); e.preventDefault(); return; }
+        if (e.key === 'Backspace' && this.lineBuf) { this.lineBuf = this.lineBuf.slice(0, -1); this.ev.info(`長度：${this.lineBuf} cm`); e.preventDefault(); return; }
+        if (e.key === 'Enter' && this.lineBuf) { this.lineTyped(); e.preventDefault(); return; }
+      }
       if ((e.key === 'Delete' || e.key === 'Backspace') && this.selectedId) { this.deleteSelected(); return; }
       if (this.walk.on && keyMap[e.code]) { this.walk.keys.add(keyMap[e.code]); e.preventDefault(); }
     });
@@ -1105,6 +1119,7 @@ export class Viewer {
   }
   private onMove(e: PointerEvent) {
     const d = this.drag;
+    if (!d && this.tool === 'line') { this.linePreview(e); return; }
     if (!d) return;
     if (d.kind === 'look') {
       this.walk.yaw -= (e.clientX - d.x) * 0.005;
@@ -1230,6 +1245,7 @@ export class Viewer {
       this.controls.enabled = this.tool !== 'walk';
       return;
     }
+    if (this.tool === 'line' && e.button === 2 && wasClick) { this.endLine(); this.ev.info('畫線結束'); return; }
     if (wasClick && e.target === this.renderer.domElement && e.button === 0) this.clickTool(e);
   }
   private clickTool(e: PointerEvent) {
@@ -1242,6 +1258,16 @@ export class Viewer {
       return;
     }
     if (tool === 'measure') return this.measureClick(e);
+    if (tool === 'line') return this.lineClick(e);
+    if (tool === 'del' && this.lineHit(e) >= 0) {
+      const i = this.lineHit(e);
+      this.snapshot();
+      this.sketch = this.sketch.filter((_, j) => j !== i);
+      this.drawSketch();
+      this.ev.sketch?.(this.sketch);
+      this.ev.toast('已刪除線（可按復原）');
+      return;
+    }
     if (tool === 'fix') return this.fixKind === 'wall' ? this.fixWall(e) : this.fixSlab(e);
     const h = this.hitObject(e);
     if (!h) return;
@@ -1347,6 +1373,121 @@ export class Viewer {
     this.addLabel(`${Math.round(dist)} cm`, a.clone().add(p).multiplyScalar(0.5), 'dim meas').meas = true;
     this.ev.info(`量測距離 ${Math.round(dist)} cm｜水平 ΔX ${Math.round(Math.abs(p.x - a.x))}  ΔZ ${Math.round(Math.abs(p.z - a.z))}｜垂直 ${Math.round(Math.abs(p.y - a.y))} cm`);
     this.measA = null;
+  }
+  /* ---------- 畫線 ---------- */
+  sketch: SketchLine[] = [];
+  private sketchGroup = new THREE.Group();
+  private lineA: THREE.Vector3 | null = null;
+  private lineStart: THREE.Vector3 | null = null;
+  private lineEnd: THREE.Vector3 | null = null;
+  private linePrev: THREE.Line | null = null;
+  private lineBuf = '';
+  setSketch(lines: SketchLine[]) { this.sketch = lines; this.drawSketch(); }
+  private drawSketch() {
+    if (!this.sketchGroup.parent) this.scene.add(this.sketchGroup);
+    for (const c of this.sketchGroup.children.slice()) { this.sketchGroup.remove(c); (c as THREE.LineSegments).geometry.dispose(); }
+    if (!this.sketch.length) return;
+    const g = new THREE.BufferGeometry();
+    g.setAttribute('position', new THREE.Float32BufferAttribute(this.sketch.flatMap(l => [...l.a, ...l.b]), 3));
+    const m = new THREE.LineSegments(g, new THREE.LineBasicMaterial({ color: isDarkTheme() ? 0xf8fafc : 0x111827 }));
+    m.renderOrder = 5;
+    this.sketchGroup.add(m);
+  }
+  /** index of the drawn line under the pointer, or -1 */
+  private lineHit(e: PointerEvent) {
+    const r = this.renderer.domElement.getBoundingClientRect(), px = e.clientX - r.left, py = e.clientY - r.top;
+    const scr = (v: number[]) => { const p = new THREE.Vector3(v[0], v[1], v[2]).project(this.camera); return [(p.x + 1) / 2 * r.width, (1 - p.y) / 2 * r.height]; };
+    let best = -1, bd = 8;
+    this.sketch.forEach((l, i) => {
+      const [ax, ay] = scr(l.a), [bx, by] = scr(l.b), dx = bx - ax, dy = by - ay, L = dx * dx + dy * dy || 1;
+      const t = Math.max(0, Math.min(1, ((px - ax) * dx + (py - ay) * dy) / L)), d = Math.hypot(px - ax - t * dx, py - ay - t * dy);
+      if (d < bd) { bd = d; best = i; }
+    });
+    return best;
+  }
+  /** the point under the pointer, locked to a nearby corner, line end or midpoint (12 px), or along an axis from the last point */
+  private linePoint(e: PointerEvent) {
+    const h = this.hitObject(e);
+    let p = h ? h.point.clone() : this.hitGround(e);
+    if (!p) return null;
+    const r = this.renderer.domElement.getBoundingClientRect(), px = e.clientX - r.left, py = e.clientY - r.top;
+    const cands: [THREE.Vector3, string][] = [];
+    for (const l of this.sketch) {
+      const a = new THREE.Vector3(...l.a), b = new THREE.Vector3(...l.b);
+      cands.push([a, '端點'], [b, '端點'], [a.clone().add(b).multiplyScalar(0.5), '中點']);
+    }
+    if (this.lineStart) cands.push([this.lineStart, '起點']);
+    if (h && isBox(h.o)) {
+      const o = h.o, c = Math.cos(o.rot || 0), sn = Math.sin(o.rot || 0), y0 = o.y + this.lift(o.floor);
+      for (const [a, b] of [[-1, -1], [1, -1], [1, 1], [-1, 1]]) for (const y of [y0, y0 + o.h]) {
+        const lx = a * o.w / 2, lz = b * o.d / 2;
+        cands.push([new THREE.Vector3(o.x + lx * c + lz * sn, y, o.z - lx * sn + lz * c), '角點']);
+      }
+    }
+    let best: [THREE.Vector3, string] | null = null, bd = 12;
+    for (const [q, what] of cands) {
+      const s = q.clone().project(this.camera), sx = (s.x + 1) / 2 * r.width, sy = (1 - s.y) / 2 * r.height, d = Math.hypot(sx - px, sy - py);
+      if (s.z < 1 && d < bd) { bd = d; best = [q, what]; }
+    }
+    if (best) return { p: best[0].clone(), what: best[1] };
+    // along the red / green / blue axis from the last point when within 4°
+    if (this.lineA) {
+      const v = p.clone().sub(this.lineA), L = v.length();
+      if (L > 1) for (const [ax, what] of [[new THREE.Vector3(1, 0, 0), '紅軸'], [new THREE.Vector3(0, 0, 1), '綠軸'], [new THREE.Vector3(0, 1, 0), '藍軸']] as const) {
+        if (Math.abs(v.dot(ax)) / L > Math.cos(4 * Math.PI / 180)) return { p: this.lineA.clone().addScaledVector(ax, v.dot(ax)), what };
+      }
+    }
+    if (!h && this.magnet) { p.x = this.snap(p.x); p.z = this.snap(p.z); }
+    return { p, what: '' };
+  }
+  private linePreview(e: PointerEvent) {
+    const q = this.linePoint(e);
+    this.snapMark(q && q.what ? q.p : null);
+    if (!this.lineA || !q) return;
+    this.lineEnd = q.p;
+    if (!this.linePrev) {
+      this.linePrev = new THREE.Line(new THREE.BufferGeometry(), new THREE.LineDashedMaterial({ color: 0xff2d55, dashSize: 10, gapSize: 6, depthTest: false }));
+      this.linePrev.renderOrder = 11;
+      this.helperGroup.add(this.linePrev);
+    }
+    this.linePrev.geometry.setFromPoints([this.lineA, q.p]);
+    this.linePrev.computeLineDistances();
+    if (!this.lineBuf) this.ev.info(`畫線：長度 ${Math.round(this.lineA.distanceTo(q.p))} cm${q.what ? `｜🔒 ${q.what}` : ''}（可直接輸入長度按 Enter）`);
+  }
+  private addLine(a: THREE.Vector3, b: THREE.Vector3) {
+    if (a.distanceTo(b) < 1) return;
+    this.snapshot();
+    const r = (v: THREE.Vector3) => [Math.round(v.x * 10) / 10, Math.round(v.y * 10) / 10, Math.round(v.z * 10) / 10] as [number, number, number];
+    this.sketch = [...this.sketch, { a: r(a), b: r(b) }];
+    this.drawSketch();
+    this.ev.sketch?.(this.sketch);
+  }
+  private lineClick(e: PointerEvent) {
+    const q = this.linePoint(e);
+    if (!q) return;
+    this.lineBuf = '';
+    if (!this.lineA) { this.lineA = q.p; this.lineStart = q.p.clone(); this.ev.info('畫線：點下一點（Esc 結束）'); return; }
+    this.addLine(this.lineA, q.p);
+    // back at the start closes the outline and ends the line
+    if (this.lineStart && q.p.distanceTo(this.lineStart) < 0.5) { this.endLine(); this.ev.info('已封閉，畫線結束'); return; }
+    this.lineA = q.p;
+  }
+  /** a length typed while drawing: the next point that far along the current direction */
+  private lineTyped() {
+    const a = this.lineA, L = parseFloat(this.lineBuf);
+    this.lineBuf = '';
+    if (!a || !this.lineEnd || !(L > 0)) return;
+    const dir = this.lineEnd.clone().sub(a);
+    if (dir.length() < 0.01) return;
+    const b = a.clone().addScaledVector(dir.normalize(), L);
+    this.addLine(a, b);
+    this.lineA = b;
+    this.ev.info(`已畫 ${L} cm，繼續點下一點或輸入長度`);
+  }
+  private endLine() {
+    this.lineA = null; this.lineStart = null; this.lineEnd = null; this.lineBuf = '';
+    if (this.linePrev) { this.helperGroup.remove(this.linePrev); this.linePrev.geometry.dispose(); this.linePrev = null; }
+    this.snapMark(null);
   }
   clearMeasure() {
     for (const c of this.measGroup.children.slice()) { this.measGroup.remove(c); (c as THREE.Mesh).geometry.dispose(); }
