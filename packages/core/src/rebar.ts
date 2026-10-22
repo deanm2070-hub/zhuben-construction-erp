@@ -258,8 +258,11 @@ export function computeRebar(objects: ModelObject[], cad: CadData): RebarResult 
   // members of one kind and mark on a floor with the same bars are listed once, times the members
   const acc = new Map<string, RebarRow & { per: number; m: number }>();
   const add = (fl: string, kind: RebarKind, mark: string, part: string, s: number, len: number, per: number, expr: string, members = 1) => {
-    len = Math.round(len);
+    // cut lengths are taken up to the next 5 cm (6.23 m → 6.25 m, 3.26 m → 3.30 m)
+    const raw = Math.round(len * 10) / 10;
+    len = Math.ceil(raw / 5 - 1e-9) * 5;
     if (per <= 0 || len <= 0) return;
+    if (len !== raw) expr = `${expr}；單支 ${Math.round(raw) / 100} m 進位至 ${len / 100} m`;
     const k = [fl, kind, mark, part, s, len, per].join('|');
     const cur = acc.get(k);
     if (cur) { cur.m += members; return; }

@@ -5,7 +5,7 @@ import { WALL_H } from './sample';
 import { findFlights, planStairs, type StairFlight, type StairPlan } from './stairs';
 import { HEIGHT_NOTE, isDoorType, openingName, openingType, PLAN_NOTES, type OpeningType } from './legend';
 import { readRebarSpec } from './rebar';
-import { isBox, type BoxObject, type CadData, type CadFloor, type DoorObject, type ModelObject, type SlabPanel } from './types';
+import { isBox, isDoor, type BoxObject, type CadData, type CadFloor, type DoorObject, type ModelObject, type SlabPanel } from './types';
 
 /**
  * Whole-building import from a drawing set that has every sheet in model space
@@ -1757,6 +1757,28 @@ export function buildBuilding(d: DxfDrawing, a: BuildingAnalysis, name: string, 
       }
     }
     const openings = parapet ? [] : findOpenings(walls, openSegs, swings);
+    // a door drawn over a wall that has no gap (a door added later, on its own layer, not the door layers read above): a quarter swing hinged inside
+    // the wall with its closed leaf lying along it cuts the wall open
+    if (!parapet) for (const c of d.arcs) {
+      if (isOpenLayer(c.layer) || !inBox(plan.box, c.c[0], c.c[1]) || c.sweep < 80 || c.sweep > 100 || c.r * S < 60 || c.r * S > 150 || !c.p0 || !c.p1) continue;
+      const hx = X(c.c[0]), hz = Z(c.c[1]), r = c.r * S;
+      for (const [ex, ez] of [[X(c.p0[0]), Z(c.p0[1])], [X(c.p1[0]), Z(c.p1[1])]]) {
+        const axis = Math.abs(ex - hx) > Math.abs(ez - hz) * 4 ? 'x' : Math.abs(ez - hz) > Math.abs(ex - hx) * 4 ? 'z' : null;
+        if (!axis) continue;
+        const u0 = axis === 'x' ? hx : hz, u1 = axis === 'x' ? ex : ez, at = axis === 'x' ? hz : hx;
+        const a0 = Math.min(u0, u1), b0 = Math.max(u0, u1);
+        const w = walls.find(o => runsAlong(o, axis) && Math.abs(spanOf(o, axis).c - at) <= spanOf(o, axis).half + 3 && spanOf(o, axis).lo <= a0 + 2 && spanOf(o, axis).hi >= b0 - 2);
+        if (!w || openings.some(op => op.axis === axis && Math.abs((axis === 'x' ? op.cz : op.cx) - at) < 30 && op.a < b0 && op.b > a0)) continue;
+        const sp = spanOf(w, axis), t = sp.half * 2;
+        if (b0 - sp.lo < 10 || sp.hi - a0 < 10) continue;
+        const rest = { ...w };
+        setSpan(w, axis, sp.lo, a0);
+        if (sp.hi - b0 > 1) { setSpan(rest, axis, b0, sp.hi); walls.push(rest); }
+        if (a0 - sp.lo <= 1) walls.splice(walls.indexOf(w), 1);
+        openings.push({ axis, cx: axis === 'x' ? (a0 + b0) / 2 : sp.c, cz: axis === 'x' ? sp.c : (a0 + b0) / 2, a: a0, b: b0, len: r, t, arc: true });
+        break;
+      }
+    }
     // each opening takes the nearest tag; tags left over point at openings drawn without a wall gap
     const dist = (t: { x: number; z: number }, op: Opening) => Math.hypot(t.x - op.cx, t.z - op.cz);
     // openings with no tag on the plan take a schedule code that is still short of its quantity, by width (and by the storey the schedule names)
@@ -2367,6 +2389,71 @@ export function buildBuilding(d: DxfDrawing, a: BuildingAnalysis, name: string, 
     }
   });
   for (const f of floors) id = fillBetweenColumns(objects, f, linesOf.get(f.key) || [], outdoorOf.get(f.key) || [], id);
+  // a room closed in by full-height walls on all four sides (its doors and windows count as wall) is indoors even when
+  // the plan above draws no floor over it (a stair landing beside a 屋突, a shaft): it gets a roof slab at the next level
+  a.storeys.forEach((st, i) => {
+    const next = a.storeys[i + 1];
+    if (!next || st.key === 'RF') return;
+    const top = st.base + st.h - 5;
+    const ws = objects.filter((o): o is BoxObject => isBox(o) && o.floor === st.key && o.layer === 'wall' && !o.rot && o.y + o.h >= top);
+    const ds = objects.filter((o): o is DoorObject => isDoor(o) && o.floor === st.key);
+    const cover = [...(slabsOf.get(next.key) || []), ...(holesOf.get(next.key) || []), ...(voidsOf.get(next.key) || [])];
+    for (const r of [...(slabsOf.get(st.key) || [])]) {
+      const w = r.x1 - r.x0, d = r.z1 - r.z0;
+      if (w < 80 || d < 80 || w * d > 60e4) continue;
+      if ((terraces.get(st.key) || []).some(t => t.x >= r.x0 && t.x <= r.x1 && t.z >= r.z0 && t.z <= r.z1)) continue;
+      const open = subtractRects([r], cover, W, D);
+      if (open.reduce((n, q) => n + (q.x1 - q.x0) * (q.z1 - q.z0), 0) < w * d * 0.5) continue;
+      // share of each side with a wall (or a door) standing on it
+      const side = (alongX: boolean, at: number, lo: number, hi: number) => {
+        const iv: [number, number][] = [];
+        for (const o of ws) if ((o.w >= o.d) === alongX && Math.abs((alongX ? o.z : o.x) - at) <= (alongX ? o.d : o.w) / 2 + 30) {
+          const c = alongX ? o.x : o.z, h = (alongX ? o.w : o.d) / 2; iv.push([c - h, c + h]);
+        }
+        for (const o of ds) if ((o.axis === 'x') === alongX && Math.abs(o.at - at) <= 30) iv.push([o.a, o.b]);
+        let n = 0, end = lo;
+        for (const [a0, a1] of iv.map(([a0, a1]) => [Math.max(lo, a0), Math.min(hi, a1)] as [number, number]).filter(([a0, a1]) => a1 > a0).sort((p, q) => p[0] - q[0])) {
+          if (a1 <= end) continue;
+          n += a1 - Math.max(a0, end); end = a1;
+        }
+        return n / (hi - lo);
+      };
+      const walled = [side(true, r.z0, r.x0, r.x1), side(true, r.z1, r.x0, r.x1), side(false, r.x0, r.z0, r.z1), side(false, r.x1, r.z0, r.z1)].every(f => f >= 0.8);
+      // or the plan above draws the outline of that open part (a light well's top drawn with its railing round it)
+      const o = { x0: minOf(open.map(q => q.x0)), x1: maxOf(open.map(q => q.x1)), z0: minOf(open.map(q => q.z0)), z1: maxOf(open.map(q => q.z1)) };
+      const ls = linesOf.get(next.key) || [];
+      const drawn = (alongX: boolean, at: number, lo: number, hi: number) => {
+        let best = 0;
+        for (const tol of [30]) {
+          const iv = ls.filter(l => alongX ? Math.abs(l.z1 - l.z2) < 1 && Math.abs(l.z1 - at) <= tol : Math.abs(l.x1 - l.x2) < 1 && Math.abs(l.x1 - at) <= tol)
+            .map(l => alongX ? [Math.min(l.x1, l.x2), Math.max(l.x1, l.x2)] : [Math.min(l.z1, l.z2), Math.max(l.z1, l.z2)]);
+          let n = 0, end = lo;
+          for (const [a0, a1] of iv.map(([a0, a1]) => [Math.max(lo, a0), Math.min(hi, a1)]).filter(([a0, a1]) => a1 > a0).sort((p, q) => p[0] - q[0])) { if (a1 <= end) continue; n += a1 - Math.max(a0, end); end = a1; }
+          best = Math.max(best, n / (hi - lo));
+        }
+        return best;
+      };
+      const outline = !walled && [drawn(true, o.z0, o.x0, o.x1), drawn(true, o.z1, o.x0, o.x1), drawn(false, o.x0, o.z0, o.z1), drawn(false, o.x1, o.z0, o.z1)].every(f => f >= 0.8);
+      if (!walled && !outline) continue;
+      const before = (slabsOf.get(next.key) || []).slice();
+      slabAt(next, open, next.key === 'RF' ? '屋頂板（CAD）' : '頂板（CAD）');
+      if (!outline) continue;
+      // a roof standing out from the floor above has a 120 cm railing round it where it does not meet that floor
+      const edge = (alongX: boolean, at: number, lo: number, hi: number, out: number) => {
+        const free: number[] = [];
+        for (let u = lo + 5; u < hi; u += 10) {
+          const px = alongX ? u : at + out * 20, pz = alongX ? at + out * 20 : u;
+          const ex = alongX ? u : at, ez = alongX ? at : u;
+          const walledUp = objects.some(w => isBox(w) && w.floor === next.key && w.layer === 'wall' && !w.rot && Math.abs(ex - w.x) <= w.w / 2 + 25 && Math.abs(ez - w.z) <= w.d / 2 + 25);
+          if (!walledUp && !before.some(q => px >= q.x0 - 5 && px <= q.x1 + 5 && pz >= q.z0 - 5 && pz <= q.z1 + 5)) free.push(u);
+        }
+        if (free.length * 10 < 60) return;
+        const a0 = free[0] - 5, a1 = free[free.length - 1] + 5, c = (a0 + a1) / 2, t = 15, pos = at - out * t / 2;
+        objects.push({ id: id++, layer: 'wall', name: 'RC欄杆（CAD）', floor: next.key, x: alongX ? c : pos, z: alongX ? pos : c, w: alongX ? a1 - a0 : t, d: alongX ? t : a1 - a0, h: 120, y: next.base, color: 0xd9d6cf });
+      };
+      edge(true, o.z0, o.x0, o.x1, -1); edge(true, o.z1, o.x0, o.x1, 1); edge(false, o.x0, o.z0, o.z1, -1); edge(false, o.x1, o.z0, o.z1, 1);
+    }
+  });
   // columns and walls standing on a terrace or roof deck (nothing above them) end level with the parapet round it
   const headH = parapetNote ?? a.parapet;
   a.storeys.forEach((st, i) => {

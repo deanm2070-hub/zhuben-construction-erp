@@ -71,7 +71,7 @@ describe('reinforcement sheets', () => {
     const main = rows.find(r => r.mark === 'C2' && r.part === '主筋')!;
     // storey 320 + half a lap (staggered every other storey) + hooked into the beam at the top
     expect(main.n).toBe(20);
-    expect(main.len).toBe(Math.round(320 + 137 / 2 + 60 - 8 + 36));
+    expect(main.len).toBe(Math.ceil((320 + 137 / 2 + 60 - 8 + 36) / 5) * 5); // taken up to the next 5 cm
     const sum = rebarSummary(rows);
     expect(sum.byFloor.get('2F')!.合計).toBeCloseTo(rows.reduce((a, r) => a + r.kg, 0), 5);
   });
