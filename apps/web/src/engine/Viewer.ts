@@ -441,7 +441,8 @@ export class Viewer {
     const glass = o.layer === 'glass';
     const m = this.mode;
     if (this.real) return this.realMat(o);
-    if (m === 'layer') return new THREE.MeshLambertMaterial({ color: LAYER_COLORS[o.layer].color, transparent: glass, opacity: glass ? 0.45 : 1 });
+    // light partitions in light grey, so the RC walls stand out in their own colour
+    if (m === 'layer') return new THREE.MeshLambertMaterial({ color: o.layer === 'wall' && (('wall' in o && o.wall === 'light') || /輕隔間/.test(o.name)) ? 0xd6d6d6 : LAYER_COLORS[o.layer].color, transparent: glass, opacity: glass ? 0.45 : 1 });
     if (m === 'white') return new THREE.MeshLambertMaterial({ color: 0xfbfbfa, transparent: glass, opacity: glass ? 0.4 : 1 });
     const b = new THREE.MeshBasicMaterial();
     b.visible = false;
@@ -1430,7 +1431,7 @@ export function sunDirection(day: number, hour: number, northDeg = 0) {
 
 export function describe(o: ModelObject) {
   if (isDoor(o)) return `${o.name}｜門｜門寬 ${o.b - o.a} cm｜用「改門向」切換開向`;
-  return `${o.name}｜${LAYER_COLORS[o.layer].name}｜${Math.round(o.w)} × ${Math.round(o.d)} × ${Math.round(o.h)} cm` + (o.y ? `｜離地 ${o.y} cm` : '');
+  return `${o.name}｜${o.layer === 'wall' && (('wall' in o && o.wall === 'light') || /輕隔間/.test(o.name)) ? '輕隔間牆' : LAYER_COLORS[o.layer].name}｜${Math.round(o.w)} × ${Math.round(o.d)} × ${Math.round(o.h)} cm` + (o.y ? `｜離地 ${o.y} cm` : '');
 }
 export const esc = (s: string) => String(s).replace(/[&<>"]/g, c => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;' }[c]!));
 

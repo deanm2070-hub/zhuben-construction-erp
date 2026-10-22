@@ -1200,7 +1200,7 @@ const STAIR_LAYER = /STAIR|樓梯|階梯|(^|\$)STA$/i;
  * projection note (上方雨遮投影) are not built at all. The outer edge of a 露台 / 平台, and
  * of the roof deck of a 屋突 storey, is its parapet or railing whatever the wall thickness.
  */
-function classifyEdges(walls: BoxObject[], shut: BoxObject[], notes: { x: number; z: number; s: string }[], W: number, D: number, roof: boolean) {
+function classifyEdges(walls: BoxObject[], shut: BoxObject[], notes: { x: number; z: number; s: string }[], W: number, D: number, roof: boolean, rcColor?: number) {
   const g = raster([...walls, ...shut], W, D);
   const spaces: { kind: EdgeKind; label: string; cells: Uint8Array }[] = [];
   for (const n of notes) {
@@ -1256,6 +1256,8 @@ function classifyEdges(walls: BoxObject[], shut: BoxObject[], notes: { x: number
       if (deck && terrace(ks[0]) && terrace(ks[1])) between++;
     }
     const label = labels[0] || (roof ? '屋頂平台' : '');
+    // a wall drawn in the concrete-wall colour (15 cm or more) is a wall, even round a terrace (an RC end wall, a decorative column)
+    if (rcColor !== undefined && w.wc === rcColor && Math.min(w.w, w.d) >= 14) continue;
     if (edge >= 2 && Math.min(w.w, w.d) <= 60) { out.set(w, { kind: 'balcony', label }); continue; }
     // a line between two parts of a roof deck is only a step in the slab
     if (between >= 2 && thin) { out.set(w, { kind: 'projection', label }); continue; }
@@ -1618,6 +1620,7 @@ export function buildBuilding(d: DxfDrawing, a: BuildingAnalysis, name: string, 
   const voidsOf = new Map<string, Rect[]>(), voidsUp = new Map<string, Rect[]>(), openAt = new Map<string, { x: number; z: number }[]>();
   /** balconies (floor and ceiling slab) and terraces (floor only) found from the plan lines round their labels */
   const outSpaces = new Map<string, { kind: 'balcony' | 'terrace'; rects: Rect[] }[]>();
+  const greenOf = new Map<string, { x1: number; z1: number; x2: number; z2: number }[]>();
   /** names of open-air spaces on each storey (外廊, 露台 …) on any layer: they are not under the roof */
   const outdoorOf = new Map<string, { x: number; z: number }[]>(), roomsOf = new Map<string, { x: number; z: number }[]>();
   const slants: { key: string; side: 'w' | 'e'; x1: number; z1: number; x2: number; z2: number }[] = [];
@@ -1840,7 +1843,11 @@ export function buildBuilding(d: DxfDrawing, a: BuildingAnalysis, name: string, 
       const pattern = railCand.filter(p => railCand.filter(q => same(p, q)).length >= 2);
       for (const p of pattern) railCand.splice(railCand.indexOf(p), 1);
     }
-    const edges = parapet ? new Map<BoxObject, { kind: EdgeKind; label: string }>() : classifyEdges(walls, [...shut, ...railCand], notes, W, D, st.key.startsWith('R'));
+    // the colour most of this storey's thick wall lines are drawn in is the concrete-wall colour (only when the walls use two colours or more)
+    const colLen = new Map<number, number>();
+    for (const w of walls) if (w.wc !== undefined && Math.min(w.w, w.d) >= 14 && w.name !== '柱') colLen.set(w.wc, (colLen.get(w.wc) || 0) + Math.max(w.w, w.d));
+    const rcColor = colLen.size >= 2 ? [...colLen].sort((p, q) => q[1] - p[1])[0][0] : undefined;
+    const edges = parapet ? new Map<BoxObject, { kind: EdgeKind; label: string }>() : classifyEdges(walls, [...shut, ...railCand], notes, W, D, st.key.startsWith('R'), rcColor);
     const slabEdges: BoxObject[] = [];
     for (const [w, { kind, label }] of edges) {
       walls.splice(walls.indexOf(w), 1);
@@ -1899,6 +1906,10 @@ export function buildBuilding(d: DxfDrawing, a: BuildingAnalysis, name: string, 
       openAt.set(st.key, texts.filter(t => /露台/.test(t.s) && !/上方|投影|範圍|面積|計算/.test(t.s)));
       const lineSegs = g.segs.filter(q => !/GRID|AXIS|DIM|軸|尺寸|FURN|傢俱|家具|TEXT|HAT|落水|toilet|編號|Defpoints|BEAM|梁|STA|樓梯|AREA|面積|高程|標高/i.test(q.layer))
         .map(q => ({ x1: X(q.a[0]), z1: Z(q.a[1]), x2: X(q.b[0]), z2: Z(q.b[1]) }));
+      // green lines (colour 3) round a balcony or terrace are its 120 cm RC railing
+      greenOf.set(st.key, g.segs.filter(q => q.color === 3 && !/TEXT|DIM|HAT|FURN|AREA|面積|尺寸|GRID|AXIS|軸|Defpoints/i.test(q.layer))
+        .map(q => ({ x1: X(q.a[0]), z1: Z(q.a[1]), x2: X(q.b[0]), z2: Z(q.b[1]) }))
+        .filter(q => (Math.abs(q.x1 - q.x2) < 1 || Math.abs(q.z1 - q.z2) < 1) && Math.hypot(q.x2 - q.x1, q.z2 - q.z1) >= 40));
       outSpaces.set(st.key, texts.filter(t => /陽台|露台/.test(t.s) && t.s.trim().length <= 6 && !/上方|投影|範圍|面積|計算|頂板/.test(t.s)).flatMap(t => {
         const rects = spaceFromLines(lineSegs, t.x, t.z);
         return rects ? [{ kind: /露台/.test(t.s) ? 'terrace' as const : 'balcony' as const, rects }] : [];
@@ -2233,6 +2244,34 @@ export function buildBuilding(d: DxfDrawing, a: BuildingAnalysis, name: string, 
     }
     slabsOf.set(st.key, keep);
   });
+  // RC railings drawn green round each balcony and terrace: the lines near it and those joined on to them
+  for (const st of a.storeys) {
+    const sps = outSpaces.get(st.key) || [], gs = greenOf.get(st.key) || [];
+    if (!sps.length || !gs.length) continue;
+    const near = (q: typeof gs[number]) => sps.some(sp => sp.rects.some(r => Math.min(q.x1, q.x2) < r.x1 + 60 && Math.max(q.x1, q.x2) > r.x0 - 60 && Math.min(q.z1, q.z2) < r.z1 + 60 && Math.max(q.z1, q.z2) > r.z0 - 60));
+    const take = new Set(gs.filter(near));
+    for (let grew = true; grew;) {
+      grew = false;
+      for (const q of gs) if (!take.has(q) && [...take].some(p => [[p.x1, p.z1], [p.x2, p.z2]].some(([x, z]) => Math.hypot(x - q.x1, z - q.z1) < 30 || Math.hypot(x - q.x2, z - q.z2) < 30))) { take.add(q); grew = true; }
+    }
+    const solid = objects.filter((o): o is BoxObject => isBox(o) && o.floor === st.key && o.layer === 'wall' && o.h > 150);
+    const done: BoxObject[] = [];
+    for (const q of take) {
+      const alongX = Math.abs(q.z1 - q.z2) < 1, a0 = alongX ? Math.min(q.x1, q.x2) : Math.min(q.z1, q.z2), a1 = alongX ? Math.max(q.x1, q.x2) : Math.max(q.z1, q.z2), c = alongX ? q.z1 : q.x1;
+      // a double green line is one railing (its two faces)
+      if (done.some(o => alongX ? o.w >= o.d && Math.abs(o.z - c) < 30 && o.x - o.w / 2 < a1 - 10 && o.x + o.w / 2 > a0 + 10 : o.d > o.w && Math.abs(o.x - c) < 30 && o.z - o.d / 2 < a1 - 10 && o.z + o.d / 2 > a0 + 10)) continue;
+      const b: BoxObject = { id: id++, layer: 'wall', name: 'RC欄杆（CAD）', floor: st.key, x: alongX ? (a0 + a1) / 2 : c, z: alongX ? c : (a0 + a1) / 2, w: alongX ? a1 - a0 : 15, d: alongX ? 15 : a1 - a0, h: 120, y: st.base, color: 0xeeebe5 };
+      // already a wall there
+      if (solid.some(o => Math.abs(o.x - b.x) < (o.w + b.w) / 2 - 5 && Math.abs(o.z - b.z) < (o.d + b.d) / 2 - 5 && (alongX ? Math.min(o.x + o.w / 2, a1) - Math.max(o.x - o.w / 2, a0) : Math.min(o.z + o.d / 2, a1) - Math.max(o.z - o.d / 2, a0)) > (a1 - a0) * 0.6)) continue;
+      // the thin railing drawn on the same edge gives way
+      for (let k = objects.length - 1; k >= 0; k--) {
+        const o = objects[k];
+        if (isBox(o) && o.floor === st.key && /欄杆/.test(o.name) && o.layer !== 'wall' && Math.abs(o.x - b.x) < (o.w + b.w) / 2 + 10 && Math.abs(o.z - b.z) < (o.d + b.d) / 2 + 10) objects.splice(k, 1);
+      }
+      objects.push(b);
+      done.push(b);
+    }
+  }
   // the open sides of balconies and terraces (no wall, window or railing built there, open air beyond): a 110 cm railing
   for (const st of a.storeys) for (const sp of outSpaces.get(st.key) || []) {
     const bx = { x0: minOf(sp.rects.map(r => r.x0)), x1: maxOf(sp.rects.map(r => r.x1)), z0: minOf(sp.rects.map(r => r.z0)), z1: maxOf(sp.rects.map(r => r.z1)) };
@@ -2396,8 +2435,11 @@ function dropLouvers(boxes: BoxObject[]): BoxObject[] {
     // (a long slanted wall, like one following a site boundary, is real)
     if (Math.min(off, Math.PI / 2 - off) > 0.01 && Math.min(off, Math.PI / 2 - off) < 0.25 && (optNow.noSlants || Math.max(o.w, o.d) < 300)) return false;
     if (Math.max(o.w, o.d) > 300 || Math.min(o.w, o.d) >= 35) return true;
+    // (the same wall found twice is not a twin: an exact copy counts once; nested outlines a little apart in size do count)
     const twins = boxes.filter(q => q !== o && Math.abs((q.rot || 0) - (o.rot || 0)) < 0.02 && Math.abs(q.w - o.w) < 3 && Math.abs(q.d - o.d) < 3 && Math.hypot(q.x - o.x, q.z - o.z) < 150);
-    return twins.length < 3;
+    const at = new Set(twins.map(q => [q.x, q.z, q.w, q.d].map(v => Math.round(v * 2)).join()));
+    at.delete([o.x, o.z, o.w, o.d].map(v => Math.round(v * 2)).join());
+    return at.size < 3;
   });
 }
 
