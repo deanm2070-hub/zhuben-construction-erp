@@ -3,7 +3,8 @@ declare const __BUILD__: string;
 /**
  * Tells an open page (or home-screen shortcut) that a newer build is live: checks /version.json
  * when the page comes back into view or gets focus, and every minute. The page never reloads by itself;
- * `onNew` gets the new version name so the user can update when their work is done.
+ * `onNew` gets the new version name so the user can update when their work is done. A push takes the
+ * Workers build 2–4 minutes to go live, so a new version shows up at most a minute after that.
  */
 export function watchUpdates(onNew: (version: string, notes: string[]) => void) {
   if (import.meta.env.DEV) return () => {};
