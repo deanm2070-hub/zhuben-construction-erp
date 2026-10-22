@@ -1,6 +1,6 @@
 import { computeBuildingTakeoff, computeTakeoff, DEFAULT_SETTINGS, learnRoles, memberOf, MEMBERS, priceBudget, ROLE_NAME, trackFixes, withPricing, type CalcVersion, type DrawingStyle, type Fix, type FinishChoice, type ModelObject, type Pricing, type ProjectInfo, type TakeoffSettings } from '@cloud-modeler/core';
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
-import { DRAW_KINDS, TOOL_HINT, Viewer, type DrawKind, type FixKind, type RenderMode, type SceneKey, type Tool } from '../engine/Viewer';
+import { DRAW_KINDS, FACADE_SCHEMES, TOOL_HINT, Viewer, type DrawKind, type FixKind, type RenderMode, type SceneKey, type Tool } from '../engine/Viewer';
 import { download, PROJECT_EXT, projectFile } from '../lib/files';
 import { store, type Role } from '../lib/store';
 import { isStaleChunk } from '../lib/update';
@@ -61,6 +61,8 @@ export function Editor({ projectId, importNow, trial = false, onExit }: { projec
   const [fixKind, setFixKind] = useState<FixKind>('wall');
   const [explode, setExplode] = useState(0);
   const [xray, setXray] = useState(false);
+  // exterior tiles of the rendered look, kept in this browser: auto, a scheme number, or none
+  const [facade, setFacade] = useState<string>(() => { try { return localStorage.getItem('zb-facade') || 'auto'; } catch { return 'auto'; } });
   // sun study: date (day of the year), solar hour, plan north turned clockwise (degrees), playing through the day
   const [sun, setSun] = useState({ on: false, day: 172, hour: 10, north: 0, play: false, alt: 0, az: 0 });
   const sunTo = (next: Partial<typeof sun>) => setSun(s => {
@@ -182,6 +184,7 @@ export function Editor({ projectId, importNow, trial = false, onExit }: { projec
       select: o => setSel(o ? { ...o } : null),
     });
     viewer.current = v;
+    v.facade = facade === 'auto' || facade === 'none' ? facade : +facade;
     let alive = true;
     store.load(projectId).then(p => {
       if (!alive) return;
@@ -270,6 +273,12 @@ export function Editor({ projectId, importNow, trial = false, onExit }: { projec
             <div className="seg" role="group" aria-label="顯示方式">
               {MODES.map(([k, l]) => <button key={k} className={mode === k ? 'on' : ''} aria-pressed={mode === k} onClick={() => { v().setMode(k); setMode(k); }}>{l}</button>)}
             </div>
+            {mode === 'mat' && <select className="chip sm" aria-label="外牆二丁掛配色" title="自動渲染時外牆貼二丁掛的顏色" value={facade}
+              onChange={e => { const f = e.target.value; setFacade(f); try { localStorage.setItem('zb-facade', f); } catch { /* private window */ } v().setFacade(f === 'auto' || f === 'none' ? f : +f); }}>
+              <option value="auto">外牆二丁掛：自動配色</option>
+              {FACADE_SCHEMES.map((x, i) => <option key={i} value={i}>外牆二丁掛：{x.name}</option>)}
+              <option value="none">外牆不貼磚</option>
+            </select>}
           </div>
           <div className="ctlRow">
             <span className="lbl">視角</span>

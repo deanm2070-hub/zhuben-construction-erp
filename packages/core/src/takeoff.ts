@@ -45,7 +45,7 @@ export interface Takeoff {
   /** area of the floor slabs (ground slab and floors, not the roof), ㎡ */
   slabArea?: number;
   /** bar list from the reinforcement drawings, and the members whose schedule was not found */
-  rebar?: { rows: RebarRow[]; missing: string[] };
+  rebar?: { rows: RebarRow[]; missing: string[]; standard?: string[] };
 }
 
 export interface TakeoffInput {
@@ -57,6 +57,8 @@ export interface TakeoffInput {
   cadDoors?: CadDoor[];
   finishes: Record<string, Partial<FinishChoice>>;
   settings: TakeoffSettings;
+  /** leave the rebar out (a storey of a whole building, whose bar list is worked out for the building) */
+  noRebar?: boolean;
 }
 
 const r2 = (v: number) => Math.round(v * 100) / 100;
@@ -293,10 +295,10 @@ export function computeTakeoff(inp: TakeoffInput): Takeoff {
   const conc = sum(calc.filter(c => c.item === CONCRETE), c => c.q);
   if (conc > 0) {
     row(SEC.rc, '壓送', 'M3', '同混凝土', `混凝土 ${r2(conc)} M3`, conc);
-    row(SEC.rc, '鋼筋（SD420＋SD280）', '噸', '同混凝土', `混凝土 ${r2(conc)} M3 × ${S.rebar} kg/M3 ÷ 1000`, conc * S.rebar / 1000);
-    row(SEC.rc, '鋼筋綁紮', '噸', '同鋼筋', `混凝土 ${r2(conc)} M3 × ${S.rebar} kg/M3 ÷ 1000`, conc * S.rebar / 1000);
-    row(SEC.rc, '鋼筋運費', '噸', '同鋼筋', `混凝土 ${r2(conc)} M3 × ${S.rebar} kg/M3 ÷ 1000`, conc * S.rebar / 1000);
   }
+  // rebar by the standard drawings and code minimums, member by member (a whole building replaces it with its bar list)
+  const rebar = conc > 0 && !inp.noRebar ? computeRebar(objects, null) : undefined;
+  if (rebar) calc.push(...rebarCalc([], rebar.rows));
   if (int.length) {
     const L = sum(int, o => Math.max(o.w, o.d)), A = sum(int, o => len(o) * o.h / 100), F = sum(intFill, o => len(o) * o.h / 100);
     row(SEC.finish, '內牆雙面矽酸鈣板(一小時防火時效)', '㎡', `${int.some(o => o.wall === 'light') ? '輕隔間牆' : '隔間牆'} ${int.length} 段`,
@@ -322,7 +324,7 @@ export function computeTakeoff(inp: TakeoffInput): Takeoff {
   row(SEC.bath, '明鏡', '面', '浴廁', bathNote, basins);
   row(SEC.bath, '馬桶(座式)', '組', '浴廁', bathNote, wc);
   for (const t of ['水電工程', '弱電工程', '消防工程']) row(SEC.mep, t, '坪', '室內', `樓地板面積 ${r2(floorArea)} ㎡ ÷ 3.3058（依設備圖確認）`, floorArea / PING);
-  return { budget: budgetOf(calc, fl), groups: G, rooms, calc, floorArea, wallH: H, slabArea: r2(slabArea) };
+  return { budget: budgetOf(calc, fl), groups: G, rooms, calc, floorArea, wallH: H, slabArea: r2(slabArea), ...(rebar ? { rebar } : {}) };
 }
 
 /** Budget lines from calculation rows, in the template's section order; door and window types lead their section. */
@@ -374,10 +376,11 @@ export function computeBuildingTakeoff(objects: ModelObject[], cad: CadData, fin
     labels: f.texts.map(t => ({ n: `${f.key} ${t.s}`, x: t.x, z: t.z })),
     finishes,
     settings: { ...settings, floor: f.key },
+    noRebar: true,
   }));
   // building-wide items are not per storey
   let calc = parts.flatMap(p => p.calc).filter(c => c.item !== '放樣' && c.item !== '施工架');
-  const rebar = cad.rc ? computeRebar(objects, cad) : undefined;
+  const rebar = computeRebar(objects, cad);
   if (cad.rc) {
     // foundation slabs are only on the structural plans
     for (const p of cad.rc.panels.filter(p => /^F/.test(p.mark))) {
@@ -387,7 +390,7 @@ export function computeBuildingTakeoff(objects: ModelObject[], cad: CadData, fin
       calc.push({ sec: SEC.rc, item: CONCRETE, unit: 'M3', fl: p.fl, where: `基礎版 ${p.mark} 厚${t}`, expr: `${r2((p.x1 - p.x0) / 100)} × ${r2((p.z1 - p.z0) / 100)} m × 厚 ${m(t)} m（梁心距）`, q: r2(A * t / 100) });
     }
   }
-  if (rebar?.rows.length) calc = rebarCalc(calc, rebar.rows, settings);
+  calc = rebarCalc(calc, rebar.rows);
   const top = Math.max(0, ...floors.map(f => f.y + f.h));
   const perim = 2 * (cad.W + cad.D) / 100;
   const whole = (sec: string, item: string, unit: string, where: string, expr: string, q: number) => calc.push({ sec, item, unit, fl: '整棟', where, expr, q: r2(q) });
@@ -415,32 +418,21 @@ export function computeBuildingTakeoff(objects: ModelObject[], cad: CadData, fin
 }
 
 const REBAR_ITEMS = ['鋼筋（SD420＋SD280）', '鋼筋綁紮', '鋼筋運費'];
-/** Concrete rows of the calculation sheet by member kind, for the members without a reinforcement schedule. */
-const kindOfWhere = (w: string): RebarKind | null => /^柱/.test(w) ? '柱' : /^(地?梁)/.test(w) ? '梁' : /^基礎版/.test(w) ? '基礎版' : /^(樓板|地坪|屋頂板)/.test(w) ? '版' : /^RC牆/.test(w) ? '牆' : /^樓梯/.test(w) ? '樓梯' : null;
 
-/** Rebar rows of the calculation sheet from the bar list: per floor and member kind; members without a schedule keep the kg/M3 estimate. */
-function rebarCalc(calc: CalcRow[], rows: RebarRow[], S: TakeoffSettings): CalcRow[] {
+/** Rebar rows of the calculation sheet from the bar list, per floor and member kind (never estimated from the concrete). */
+export function rebarCalc(calc: CalcRow[], rows: RebarRow[]): CalcRow[] {
   const out = calc.filter(c => !REBAR_ITEMS.includes(c.item));
-  const done = new Set(rows.map(r => `${r.fl}|${r.kind}`));
-  const g = new Map<string, { fl: string; kind: RebarKind; hi: number; lo: number; n: number }>();
+  const g = new Map<string, { fl: string; kind: RebarKind; hi: number; lo: number; n: number; std: boolean }>();
   for (const r of rows) {
-    const k = `${r.fl}|${r.kind}`, cur = g.get(k) || { fl: r.fl, kind: r.kind, hi: 0, lo: 0, n: 0 };
+    const k = `${r.fl}|${r.kind}`, cur = g.get(k) || { fl: r.fl, kind: r.kind, hi: 0, lo: 0, n: 0, std: false };
     if (r.s >= 6) cur.hi += r.kg; else cur.lo += r.kg;
     cur.n++;
+    if (/無.*配筋圖|S0-07/.test(r.expr)) cur.std = true;
     g.set(k, cur);
   }
   const add: CalcRow[] = [];
-  for (const v of g.values()) add.push({ sec: SEC.rc, item: REBAR_ITEMS[0], unit: '噸', fl: v.fl, where: `${v.kind}（依配筋圖，明細 ${v.n} 筆）`,
+  for (const v of g.values()) add.push({ sec: SEC.rc, item: REBAR_ITEMS[0], unit: '噸', fl: v.fl, where: `${v.kind}（${v.std ? '依配筋圖／標準圖' : '依配筋圖'}，明細 ${v.n} 筆）`,
     expr: `SD420（#6 以上）${r2(v.hi)} kg + SD280（#5 以下）${r2(v.lo)} kg，見鋼筋明細`, q: Math.round((v.hi + v.lo) / 1000 * 1000) / 1000 });
-  const est = new Map<string, { fl: string; kind: RebarKind; v: number }>();
-  for (const c of calc) {
-    if (c.item !== CONCRETE) continue;
-    const kind = kindOfWhere(c.where);
-    if (!kind || done.has(`${c.fl}|${kind}`)) continue;
-    const k = `${c.fl}|${kind}`, cur = est.get(k) || { fl: c.fl, kind, v: 0 };
-    cur.v += c.q; est.set(k, cur);
-  }
-  for (const e of est.values()) add.push({ sec: SEC.rc, item: REBAR_ITEMS[0], unit: '噸', fl: e.fl, where: `${e.kind}（無配筋圖，估算）`, expr: `混凝土 ${r2(e.v)} M3 × ${S.rebar} kg/M3 ÷ 1000`, q: Math.round(e.v * S.rebar) / 1000 });
   const total = add.reduce((a, c) => a + c.q, 0);
   for (const item of REBAR_ITEMS.slice(1)) add.push({ sec: SEC.rc, item, unit: '噸', fl: '整棟', where: '同鋼筋', expr: `鋼筋合計 ${r2(total)} 噸`, q: Math.round(total * 1000) / 1000 });
   return [...out, ...add];

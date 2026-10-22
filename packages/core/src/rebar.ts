@@ -1,4 +1,5 @@
 import type { DxfDrawing, DxfText } from './dxf';
+import { memberOf } from './pricing';
 import { isBox, type Bar, type BeamCallout, type BeamDetail, type BoxObject, type CadData, type ColumnDetail, type ModelObject, type RebarSpec, type SlabDetail, type Spacing, type StairDetail } from './types';
 
 /**
@@ -40,6 +41,9 @@ export function wallStd(t: number): { v: Spacing; h: Spacing; layers: number } {
   if (t < 22) return { v: { s: 4, at: 20 }, h: { s: 4, at: 20 }, layers: 2 };
   return { v: { s: 4, at: 15 }, h: { s: 4, at: 20 }, layers: 2 };
 }
+
+/** standard stair (no stair schedule): waist slab 15 cm, a #3@20 distribution, b #4@15 bottom, c #4@15 top */
+const STD_STAIR: StairDetail = { floors: [], t: 15, a: { s: 3, at: 20 }, b: { s: 4, at: 15 }, c: { s: 4, at: 15 } };
 
 /* ---------------- reading the detail sheets ---------------- */
 
@@ -228,7 +232,8 @@ export type RebarKind = '柱' | '梁' | '版' | '基礎版' | '牆' | '樓梯';
 export const REBAR_KINDS: RebarKind[] = ['柱', '梁', '版', '基礎版', '牆', '樓梯'];
 /** One line of the bar list: n bars of #s, each len cm long. */
 export interface RebarRow { fl: string; kind: RebarKind; mark: string; part: string; s: number; len: number; n: number; kg: number; expr: string }
-export interface RebarResult { rows: RebarRow[]; missing: string[] }
+/** missing: marks with no schedule on the drawings; standard: members worked out by the standard drawings and code minimums instead */
+export interface RebarResult { rows: RebarRow[]; missing: string[]; standard: string[] }
 
 const r1 = (v: number) => Math.round(v * 10) / 10;
 const cm = (v: number) => String(Math.round(v));
@@ -248,11 +253,12 @@ export function rcWallsOf(boxes: BoxObject[]): BoxObject[] {
  * Bar list of the whole building: every member from the structural plans with its schedule,
  * lengths by the standard drawings (development, laps, hooks), weights by bar size.
  */
-export function computeRebar(objects: ModelObject[], cad: CadData): RebarResult {
-  const rows: RebarRow[] = [], missing: string[] = [];
-  const spec = cad.rc?.spec;
-  if (!spec) return { rows, missing };
-  const floors = cad.floors || [], keys = floors.map(f => f.key);
+export function computeRebar(objects: ModelObject[], cad: Pick<CadData, 'floors' | 'rc'> | null): RebarResult {
+  const rows: RebarRow[] = [], missing: string[] = [], standard: string[] = [];
+  // no structural drawings: every member by the standard drawings and the code minimums
+  const spec: RebarSpec = cad?.rc?.spec ?? { beams: [], columns: [], slabs: [], stairs: [], sheets: [] };
+  const floors = cad?.floors || [], keys = floors.map(f => f.key);
+  const std = (what: string) => { if (!standard.includes(what)) standard.push(what); };
   const storey = new Map(floors.map(f => [f.key, f]));
   const boxes = objects.filter(isBox);
   // members of one kind and mark on a floor with the same bars are listed once, times the members
@@ -278,13 +284,52 @@ export function computeRebar(objects: ModelObject[], cad: CadData): RebarResult 
     function dist(x: T) { const fs = x.floors ?? [x.fl!]; return Math.min(...fs.map(f => Math.abs(keys.indexOf(f) - i))); }
   };
 
+  const ldTxt = (s: number) => `彎鉤錨定 ldh ${ldhOf(s)}+${hookOf(s)}`;
+  /** a beam with no schedule: code minimum As = 14/fy·b·d top and bottom (#6), #3 stirrups @10 within 2h of each end, @d/2 between */
+  function minBeam(o: BoxObject, fl: string, mark: string) {
+    const b = Math.round(Math.min(o.w, o.d)), h = Math.round(o.h), L = Math.max(o.w, o.d), d = h - 6;
+    if (b < 10 || h < 20) return;
+    std(`梁 ${mark}`);
+    const As = 14 / 4200 * b * d, n = Math.max(2, Math.ceil(As / 2.87)), a = ldhOf(6) + hookOf(6), lap = lapOf(L + 2 * a, 6);
+    const W = `${fl} ${mark}（${b}×${h}，梁長 ${cm(L)}，無梁配筋圖：規範最少配筋）`;
+    for (const face of ['上層', '下層'])
+      add(fl, '梁', mark, `${face}主筋 通長`, 6, L + 2 * a + lap, n, `${W}：As,min = 14/fy × b × d = 14/4200 × ${b} × ${d} = ${r1(As)} cm² → ${n}-#6；梁長 ${cm(L)} + 兩端 ${ldTxt(6)}${lapTxt(L + 2 * a, 6, face === '上層')}`);
+    const end = Math.min(2 * h, L / 2), mid = Math.min(20, Math.floor(d / 2)), nEnd = 2 * Math.ceil(end / 10), nMid = Math.max(0, Math.ceil((L - 2 * end) / mid) - 1);
+    add(fl, '梁', mark, '箍筋', 3, 2 * (b - 8) + 2 * (h - 8) + 2 * hook135(3), nEnd + nMid, `${W}：2×(${b}−8) + 2×(${h}−8) + 135°彎鉤 2×${r1(hook135(3))}；兩端 2h = ${cm(end)} 內 @10 共 ${nEnd} + 中央 @${mid}（d/2）共 ${nMid}`);
+  }
+  /** a column with no schedule: code minimum 1% of the section (#7, even count, at least 4), #4 hoops @10 at the ends, @15 between */
+  function minColumn(o: BoxObject, fl: string, mark: string) {
+    const b = Math.round(Math.min(o.w, o.d)), hh = Math.round(Math.max(o.w, o.d)), st = storey.get(fl), H = st?.h || o.h;
+    if (b < 20) return;
+    std(`柱 ${mark}`);
+    const As = 0.01 * b * hh, n = Math.max(4, 2 * Math.ceil(As / 3.87 / 2)), i = keys.indexOf(fl), foot = i <= 0 ? ldhOf(7) + hookOf(7) : 0;
+    const W = `${fl} ${mark}（${b}×${hh}，層高 ${cm(H)}，無柱配筋圖：規範最少配筋）`;
+    add(fl, '柱', mark, '主筋', 7, H + lstOf(7) / 2 + foot, n, `${W}：ρmin 1% × ${b} × ${hh} = ${r1(As)} cm² → ${n}-#7；層高 ${cm(H)} + 搭接 lst ${lstOf(7)}÷2${foot ? ` + 基礎錨定 ${ldhOf(7)}+${hookOf(7)}` : ''}`);
+    const Hn = Math.max(100, H - 60), lo = Math.max(hh, Hn / 6, 45), sets = 2 * Math.ceil(lo / 10) + Math.max(0, Math.ceil((Hn - 2 * lo) / 15) - 1) + Math.ceil(60 / 10);
+    add(fl, '柱', mark, '箍筋', 4, 2 * (b - 8) + 2 * (hh - 8) + 2 * hook135(4), sets, `${W}：2×(${b}−8) + 2×(${hh}−8) + 2×${r1(hook135(4))}；圍束區 2×${cm(lo)} @10 + 中央 @15 + 梁柱接頭 60 @10，共 ${sets} 組`);
+  }
+  /** a slab with no schedule: the standard slab bars, top and bottom both ways (#4@20; foundation slabs #5@20) */
+  function stdSlab(fl: string, kind: RebarKind, mark: string, lx: number, lz: number, t?: number) {
+    if (lx < 30 || lz < 30) return;
+    std(kind === '基礎版' ? '基礎版' : `樓板 ${fl}`);
+    const s = kind === '基礎版' ? 5 : 4, at = 20, Ls = Math.min(lx, lz), Ll = Math.max(lx, lz);
+    const W = `${fl} ${mark}（${cm(Ls)}×${cm(Ll)}${t ? `，厚 ${cm(t)}` : ''}，無版配筋圖：標準雙層雙向 #${s}@${at}）`;
+    for (const face of ['頂層', '底層']) {
+      add(fl, kind, mark, `${face}短向筋`, s, Ls + 2 * hookOf(s) + lapOf(Ls, s), Math.floor(Ll / at) + 1, `${W}：短跨 ${cm(Ls)} + 兩端彎鉤 2×${hookOf(s)}${lapTxt(Ls, s)}；長跨 ${cm(Ll)} ÷ @${at} + 1`);
+      add(fl, kind, mark, `${face}長向筋`, s, Ll + 2 * hookOf(s) + lapOf(Ll, s), Math.floor(Ls / at) + 1, `${W}：長跨 ${cm(Ll)} + 兩端彎鉤 2×${hookOf(s)}${lapTxt(Ll, s)}；短跨 ${cm(Ls)} ÷ @${at} + 1`);
+    }
+  }
+
   /* beams */
   const beams = boxes.filter(o => o.rc?.kind === 'beam');
+  // beams the plans only estimate (no structural plan for that storey): code minimum bars
+  const rcBeamFl = new Set(beams.map(o => o.rc!.fl));
+  for (const o of boxes) if (!o.rc && memberOf(o) === '梁' && !rcBeamFl.has(o.floor || '1F')) minBeam(o, o.floor || '1F', /^地梁/.test(o.name) ? '地梁' : '梁');
   for (const o of beams) {
     const { mark, fl } = o.rc!;
     const cands = spec.beams.filter(b => b.mark === mark);
     const det = near(cands, fl);
-    if (!det) { if (!missing.includes(`梁 ${mark}`)) missing.push(`梁 ${mark}`); continue; }
+    if (!det) { if (!missing.includes(`梁 ${mark}`)) missing.push(`梁 ${mark}`); minBeam(o, fl, mark); continue; }
     const borrowed = !det.floors.includes(fl) ? `（${fl} 無此梁配筋，依 ${det.floors.join('、')}）` : '';
     const along = o.w >= o.d, L = along ? o.w : o.d;
     // each end: a beam carrying on past the column means the bars run through, else they hook into it
@@ -352,10 +397,12 @@ export function computeRebar(objects: ModelObject[], cad: CadData): RebarResult 
 
   /* columns */
   const cols = boxes.filter(o => o.rc?.kind === 'column');
+  const rcColFl = new Set(cols.map(o => o.rc!.fl));
+  for (const o of boxes) if (!o.rc && memberOf(o) === '柱' && !rcColFl.has(o.floor || '1F')) minColumn(o, o.floor || '1F', '柱');
   for (const o of cols) {
     const { mark, fl } = o.rc!;
     const det = spec.columns.find(c => c.fl === fl && c.mark === mark) ?? near(spec.columns.filter(c => c.mark === mark), fl);
-    if (!det) { if (!missing.includes(`柱 ${mark}`)) missing.push(`柱 ${mark}`); continue; }
+    if (!det) { if (!missing.includes(`柱 ${mark}`)) missing.push(`柱 ${mark}`); minColumn(o, fl, mark); continue; }
     const st = storey.get(fl), h = st?.h || o.h;
     const i = keys.indexOf(fl), up = keys[i + 1];
     const hb = Math.max(0, ...beams.filter(b => b.rc!.fl === up).map(b => b.h)) || 60;
@@ -377,9 +424,9 @@ export function computeRebar(objects: ModelObject[], cad: CadData): RebarResult 
   }
 
   /* slabs and foundation slabs */
-  for (const p of cad.rc?.panels || []) {
+  for (const p of cad?.rc?.panels || []) {
     const det = spec.slabs.find(s => s.mark === p.mark && (s.floors.includes(p.fl) || !s.floors.length)) ?? near(spec.slabs.filter(s => s.mark === p.mark && s.floors.length), p.fl);
-    if (!det) { if (!missing.includes(`版 ${p.mark}`)) missing.push(`版 ${p.mark}`); continue; }
+    if (!det) { if (!missing.includes(`版 ${p.mark}`)) missing.push(`版 ${p.mark}`); stdSlab(p.fl, /^F/.test(p.mark) ? '基礎版' : '版', p.mark, p.x1 - p.x0, p.z1 - p.z0); continue; }
     const lx = p.x1 - p.x0, lz = p.z1 - p.z0, Ls = Math.min(lx, lz), Ll = Math.max(lx, lz);
     const kind: RebarKind = /^F/.test(p.mark) ? '基礎版' : '版';
     const W = `${p.fl} ${p.mark}（厚 ${det.t}，${cm(Ls)}×${cm(Ll)} 梁心距）`;
@@ -391,6 +438,16 @@ export function computeRebar(objects: ModelObject[], cad: CadData): RebarResult 
       const face = j ? '底層' : '頂層';
       add(p.fl, kind, p.mark, `${face}長向筋`, sp.s, Ll + lapOf(Ll, sp.s, !j), Math.floor(Ls / sp.at) + 1, `${W}：長跨 ${cm(Ll)}${lapTxt(Ll, sp.s, !j)}；短跨 ${cm(Ls)} ÷ @${sp.at} + 1`);
     });
+  }
+
+  // slabs of storeys with no slab plan: the standard slab bars on each slab of the model
+  const panelFl = new Set((cad?.rc?.panels || []).map(p => `${p.fl}|${/^F/.test(p.mark) ? 'F' : 'S'}`));
+  for (const o of boxes) {
+    const m = memberOf(o), fl = o.floor || '1F';
+    if (o.rc || o.rot || o.layer !== 'slab' || o.h < 8 || (m !== '樓板' && m !== '基礎')) continue;
+    const kind: RebarKind = m === '基礎' ? '基礎版' : '版';
+    if (panelFl.has(`${fl}|${kind === '基礎版' ? 'F' : 'S'}`)) continue;
+    stdSlab(fl, kind, o.name.replace(/（.*$/, '') || '樓板', o.w, o.d, o.h);
   }
 
   /* walls: grouped per floor, thickness and height */
@@ -415,11 +472,10 @@ export function computeRebar(objects: ModelObject[], cad: CadData): RebarResult 
 
   /* stairs */
   for (const o of boxes.filter(o => o.stair)) {
-    const fl = o.floor || '1F', det = near(spec.stairs, fl);
-    if (!det) continue;
+    const fl = o.floor || '1F', det = near(spec.stairs, fl) ?? (std('樓梯'), STD_STAIR);
     const { risers: N, flights: F, width: w, run, rise } = o.stair!;
     const treads = Math.max(0, N - F), flight = treads / F * Math.hypot(run, rise);
-    const W = `${fl} 樓梯（${F} 跑，寬 ${cm(w)}，斜長 ${cm(flight)}，厚 ${det.t}）`;
+    const W = `${fl} 樓梯（${F} 跑，寬 ${cm(w)}，斜長 ${cm(flight)}，厚 ${det.t}${det === STD_STAIR ? '，無樓梯配筋圖：標準樓梯配筋' : ''}）`;
     for (const [part, sp] of [['底層主筋 b', det.b], ['頂層主筋 c', det.c]] as const)
       add(fl, '樓梯', '樓梯', part, sp.s, flight + 2 * ldOf(sp.s), (Math.floor(w / sp.at) + 1) * F, `${W}：斜長 ${cm(flight)} + 兩端 ld ${ldOf(sp.s)}；寬 ${cm(w)} ÷ @${sp.at} + 1，× ${F} 跑`);
     add(fl, '樓梯', '樓梯', '分佈筋 a（上下層）', det.a.s, w - 8, (Math.floor(flight / det.a.at) + 1) * 2 * F, `${W}：寬 ${cm(w)} − 8；斜長 ÷ @${det.a.at} + 1，上下 2 層 × ${F} 跑`);
@@ -432,7 +488,7 @@ export function computeRebar(objects: ModelObject[], cad: CadData): RebarResult 
   }
   const order = new Map(keys.map((k, i) => [k, i])), ko = new Map(REBAR_KINDS.map((k, i) => [k, i]));
   rows.sort((a, b) => (order.get(a.fl) ?? 99) - (order.get(b.fl) ?? 99) || ko.get(a.kind)! - ko.get(b.kind)! || a.mark.localeCompare(b.mark, undefined, { numeric: true }) || a.part.localeCompare(b.part) || b.s - a.s);
-  return { rows, missing };
+  return { rows, missing, standard };
 }
 
 /** Weight per floor and member kind, and per bar size, kg. */

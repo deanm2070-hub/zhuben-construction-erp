@@ -115,6 +115,10 @@ export class Viewer {
   explode = 0;
   /** x-ray: columns, beams and footings solid, the rest see-through */
   xray = false;
+  /** exterior wall tiles in the rendered look: 'auto' picks a colour scheme from the building, a number a scheme, 'none' plain */
+  facade: 'auto' | 'none' | number = 'auto';
+  private facadeKey: unknown = null;
+  private facadeFaces = new Map<number, number[]>();
   /** sun study: day of the year and solar hour (null: the fixed late-morning sun), plan north rotated by northDeg */
   sunStudy: { day: number; hour: number; northDeg: number } | null = null;
 
@@ -641,8 +645,89 @@ export class Viewer {
     m.position.set(o.x, o.y + o.h / 2, o.z);
     m.rotation.y = o.rot || 0;
     m.userData.id = o.id;
+    this.tileFaces(m, o);
     return m;
   }
+  /** the colour scheme in force: [main wall tile, accent tile for the ground storey and parapets] */
+  private scheme(): FacadeScheme | null {
+    if (this.facade === 'none') return null;
+    if (typeof this.facade === 'number') return FACADE_SCHEMES[this.facade % FACADE_SCHEMES.length];
+    // auto: chosen from the building's size, so one building keeps its look
+    const n = Math.round(this.cad?.W || 0) * 7 + Math.round(this.cad?.D || 0) * 3 + this.objects.length;
+    return FACADE_SCHEMES[n % FACADE_SCHEMES.length];
+  }
+  /** rendered look: the outward faces of exterior walls get 二丁掛 tiles (227×60 mm, running bond) */
+  private tileFaces(m: THREE.Mesh, o: ModelObject) {
+    if (!this.real || this.xray || isDoor(o)) return;
+    const sc = this.scheme();
+    if (!sc) return;
+    const faces = this.exterior().get(o.id);
+    if (!faces?.length) return;
+    const b = o as BoxObject, g = m.geometry as THREE.BoxGeometry, uv = g.getAttribute('uv') as THREE.BufferAttribute;
+    const base = this.floors.length && b.floor === [...this.floors].sort((p, q) => p.y - q.y)[0].key;
+    const accent = base || /女兒牆|欄杆|裝飾板|裝飾柱/.test(b.name);
+    const tile = new THREE.MeshStandardMaterial({ map: tileTexture(accent ? sc.accent : sc.main), roughness: 0.72, metalness: 0 });
+    const plain = m.material as THREE.Material;
+    m.material = [0, 1, 2, 3, 4, 5].map(f => faces.includes(f) ? tile : plain);
+    for (const f of faces) {
+      const wid = f < 2 ? b.d : b.w, off = (f < 2 ? b.z - b.d / 2 : b.x - b.w / 2) / TILE_U;
+      for (let k = 4 * f; k < 4 * f + 4; k++) uv.setXY(k, off + uv.getX(k) * wid / TILE_U, (b.y + uv.getY(k) * b.h) / TILE_V);
+    }
+    uv.needsUpdate = true;
+  }
+  /**
+   * The faces (BoxGeometry order: +x −x +y −y +z −z) of each wall that look outdoors: a little past the face there
+   * is no floor of that storey or the one above, and no other wall. Light partitions are left out.
+   */
+  private exterior() {
+    let sig = this.objects.length;
+    for (const o of this.objects) if (!isDoor(o)) sig = (sig * 31 + Math.round(o.x * 3 + o.z * 5 + o.w * 7 + o.d * 11 + o.h * 13 + o.y)) | 0;
+    if (this.facadeKey === sig) return this.facadeFaces;
+    this.facadeKey = sig;
+    const out = new Map<number, number[]>();
+    this.facadeFaces = out;
+    type R = { x0: number; x1: number; z0: number; z1: number };
+    const slabs = new Map<string, R[]>(), walls = new Map<string, BoxObject[]>();
+    const boxes = this.objects.filter((o): o is BoxObject => !isDoor(o));
+    for (const o of boxes) {
+      const k = o.floor || '';
+      if (o.layer === 'slab' && !o.rot) (slabs.get(k) || slabs.set(k, []).get(k)!).push({ x0: o.x - o.w / 2, x1: o.x + o.w / 2, z0: o.z - o.d / 2, z1: o.z + o.d / 2 });
+      if (o.layer === 'wall' || o.layer === 'glass') (walls.get(k) || walls.set(k, []).get(k)!).push(o);
+    }
+    const order = [...this.floors].sort((p, q) => p.y - q.y).map(f => f.key);
+    const inR = (rs: R[] | undefined, x: number, z: number) => !!rs?.some(r => x > r.x0 && x < r.x1 && z > r.z0 && z < r.z1);
+    const inBox = (os: BoxObject[] | undefined, me: BoxObject, x: number, z: number) => !!os?.some(o => {
+      if (o === me) return false;
+      const c = Math.cos(o.rot || 0), s = Math.sin(o.rot || 0), dx = x - o.x, dz = z - o.z;
+      return Math.abs(dx * c - dz * s) < o.w / 2 && Math.abs(dx * s + dz * c) < o.d / 2;
+    });
+    const bbox = new Map<string, R>();
+    for (const [k, ws] of walls) bbox.set(k, { x0: Math.min(...ws.map(o => o.x - o.w / 2)), x1: Math.max(...ws.map(o => o.x + o.w / 2)), z0: Math.min(...ws.map(o => o.z - o.d / 2)), z1: Math.max(...ws.map(o => o.z + o.d / 2)) });
+    for (const o of boxes) {
+      if (o.layer !== 'wall' || o.wall === 'light' || /輕隔間|隔間牆/.test(o.name) || Math.min(o.w, o.d) < 8 || o.h < 30) continue;
+      const k = o.floor || '', i = order.indexOf(k), up = i >= 0 ? order[i + 1] : undefined;
+      const own = slabs.get(k), above = up ? slabs.get(up) : undefined, bb = bbox.get(k)!;
+      const c = Math.cos(o.rot || 0), s = Math.sin(o.rot || 0);
+      const outdoors = (x: number, z: number) => own?.length || above?.length
+        ? !inR(own, x, z) && !inR(above, x, z) && !inBox(walls.get(k), o, x, z)
+        : x < bb.x0 || x > bb.x1 || z < bb.z0 || z > bb.z1;
+      const faces: number[] = [];
+      // local face normals and half sizes: +x −x +z −z
+      for (const [f, nx, nz] of [[0, 1, 0], [1, -1, 0], [4, 0, 1], [5, 0, -1]] as const) {
+        const half = nx ? o.w / 2 : o.d / 2, len = nx ? o.d : o.w;
+        if (len < 20) continue;
+        let hits = 0;
+        for (const t of [-0.3, 0, 0.3]) {
+          const lx = nx * (half + 40) + (nz ? t * len : 0), lz = nz * (half + 40) + (nx ? t * len : 0);
+          if (outdoors(o.x + lx * c + lz * s, o.z - lx * s + lz * c)) hits++;
+        }
+        if (hits >= 2) faces.push(f);
+      }
+      if (faces.length) out.set(o.id, faces);
+    }
+    return out;
+  }
+  setFacade(f: 'auto' | 'none' | number) { this.facade = f; this.rebuild(); this.invalidate(); }
   rebuild() {
     for (const c of this.objGroup.children.slice()) {
       this.objGroup.remove(c);
@@ -1700,5 +1785,48 @@ function grassTexture() {
   t.wrapS = t.wrapT = THREE.RepeatWrapping;
   t.colorSpace = THREE.SRGBColorSpace;
   t.anisotropy = 4;
+  return t;
+}
+
+/** one 二丁掛 module: a 22.7 × 6 cm tile and its joint, in cm */
+const TILE_U = 47, TILE_V = 55.2;
+export interface FacadeScheme { name: string; main: string; accent: string }
+/** exterior tile schemes: main walls, and the darker (or lighter) accent of the ground storey and parapets */
+export const FACADE_SCHEMES: FacadeScheme[] = [
+  { name: '米白＋咖啡', main: '#d9ceb8', accent: '#7c5b45' },
+  { name: '淺灰＋深灰', main: '#c7c3bb', accent: '#5f6165' },
+  { name: '磚紅＋米白', main: '#a85c45', accent: '#ddd3c1' },
+  { name: '奶茶＋深咖', main: '#c8a98a', accent: '#6b4c3b' },
+  { name: '深灰＋米白', main: '#6d6d70', accent: '#dad2c4' },
+];
+const tileCache = new Map<string, THREE.Texture>();
+/** two tiles wide and eight rows high, each row shifted half a tile, every tile a shade off the next */
+function tileTexture(hex: string) {
+  const hit = tileCache.get(hex);
+  if (hit) return hit;
+  const c = document.createElement('canvas');
+  c.width = c.height = 512;
+  const g = c.getContext('2d')!, sx = 512 / TILE_U, sy = 512 / TILE_V;
+  const base = new THREE.Color(hex), grout = base.clone().lerp(new THREE.Color('#e4e0d8'), 0.6).multiplyScalar(0.92);
+  g.fillStyle = '#' + grout.getHexString();
+  g.fillRect(0, 0, 512, 512);
+  let seed = 7;
+  const rnd = () => (seed = (seed * 16807) % 2147483647) / 2147483647;
+  for (let r = 0; r < 8; r++) for (let i = -1; i < 2; i++) {
+    const x = (i * 23.5 + (r % 2) * 11.75) * sx, y = r * 6.9 * sy;
+    const col = base.clone().multiplyScalar(0.9 + rnd() * 0.2);
+    g.fillStyle = '#' + col.getHexString();
+    g.fillRect(x + 0.4 * sx, y + 0.45 * sy, 22.7 * sx, 6 * sy);
+    // a little grain on the face
+    for (let k = 0; k < 40; k++) {
+      g.fillStyle = `rgba(${rnd() < 0.5 ? '255,255,255' : '0,0,0'},${0.04 + rnd() * 0.05})`;
+      g.fillRect(x + (0.4 + rnd() * 22) * sx, y + (0.45 + rnd() * 5.4) * sy, 2, 2);
+    }
+  }
+  const t = new THREE.CanvasTexture(c);
+  t.wrapS = t.wrapT = THREE.RepeatWrapping;
+  t.colorSpace = THREE.SRGBColorSpace;
+  t.anisotropy = 8;
+  tileCache.set(hex, t);
   return t;
 }

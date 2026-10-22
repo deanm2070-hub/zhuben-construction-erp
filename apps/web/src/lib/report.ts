@@ -82,7 +82,7 @@ function section(key: ReportKey, c: ReportCtx): string {
   }
   if (key === 'rebar') {
     const rb = t.rebar?.rows || [];
-    if (!rb.length) return '<p class="muted">這個專案沒有讀到結構配筋圖，鋼筋以混凝土量 × kg/M3 估算（見數量計算式）。</p>';
+    if (!rb.length) return '<p class="muted">沒有鋼筋料單（模型沒有混凝土構件）。</p>';
     return table(['樓層', '構件', '編號', '位置', '號數', '單支長 m', '支數', '總長 m', '重量 kg'], rb.map(r => `<tr>${td(r.fl)}${td(r.kind)}${td(r.mark)}${td(r.part)}${td(`#${r.s}`)}${td(r.len / 100, true)}${td(r.n, true)}${td(r2(r.len * r.n / 100), true)}${td(r.kg, true)}</tr>`));
   }
   if (key === 'rebarSum') {

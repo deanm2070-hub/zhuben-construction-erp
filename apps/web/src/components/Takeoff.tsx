@@ -140,7 +140,7 @@ export function Takeoff({ takeoff: t, pb, pricing, project, subtitle, settings, 
           <thead><tr><th>樓層</th><th>構件</th><th>編號</th><th>鋼筋位置</th><th>號數</th><th className="num">單支長 m</th><th className="num">支數</th><th className="num">總長 m</th><th className="num">重量 kg</th><th>計算式</th></tr></thead>
           <tbody>{rbRows.map((r, i) => <tr key={i}><td>{r.fl}</td><td>{r.kind}</td><td>{r.mark}</td><td>{r.part}</td><td>#{r.s}</td><td className="num">{f2(r.len / 100)}</td><td className="num">{r.n}</td><td className="num">{f2(r2(r.len * r.n / 100))}</td><td className="num">{f2(r.kg)}</td><td className="note">{r.expr}</td></tr>)}</tbody>
         </table></div>
-        {t.rebar!.missing.length > 0 && <p className="note">配筋圖找不到：{t.rebar!.missing.join('、')}（這些構件改用 kg/M3 估算）</p>}
+        {(t.rebar!.standard?.length ?? 0) > 0 && <p className="note">沒有配筋圖的構件：{t.rebar!.standard!.join('、')}；依標準圖（樓梯、樓板、S0-07 牆）與規範最少配筋（梁 As,min、柱 1%）逐支計算，含搭接、彎鉤、錨定。匯入結構配筋圖後會自動改用圖上配筋。</p>}
       </>}
       {tab === 'rebarSum' && <>
         <div className="tbl"><table>
@@ -173,7 +173,6 @@ export function Takeoff({ takeoff: t, pb, pricing, project, subtitle, settings, 
           </select></label>
           <label>樓板厚 <input id="q-slab" disabled={readOnly} type="number" min={0} max={50} value={settings.slab} style={{ width: 64 }} onChange={e => onSettings({ ...settings, slab: +e.target.value || 0 })} /> cm</label>
           <label>開挖深 <input id="q-dig" disabled={readOnly} type="number" min={0} max={1000} value={settings.dig ?? 150} style={{ width: 70 }} onChange={e => onSettings({ ...settings, dig: +e.target.value || 0 })} /> cm</label>
-          <label>鋼筋 <input id="q-rebar" disabled={readOnly} type="number" min={0} max={300} value={settings.rebar} style={{ width: 70 }} onChange={e => onSettings({ ...settings, rebar: +e.target.value || 0 })} /> kg/M3</label>
         </div>
         <div className="tbl"><table>
           <thead><tr><th>空間</th><th className="num">面積 ㎡</th><th className="num">坪</th><th>地坪</th><th>天花</th><th>牆面</th></tr></thead>
