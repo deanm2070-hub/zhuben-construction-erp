@@ -1115,7 +1115,8 @@ export function roomSlabAt(walls: BoxObject[], x: number, z: number, W: number, 
 }
 
 /** The part of rectangles `a` not covered by rectangles `b`, on a 10 cm grid, as rectangles of at least 0.2 m². */
-function subtractRects(a: Rect[], b: Rect[], W: number, D: number): Rect[] {
+/** `open`: slivers thinner than twice this many 10 cm cells are dropped (a narrow ledge is kept with 1) */
+function subtractRects(a: Rect[], b: Rect[], W: number, D: number, open = 3): Rect[] {
   if (!a.length) return [];
   const M = 80, C = 10, nx = Math.ceil((W + 2 * M) / C), nz = Math.ceil((D + 2 * M) / C), m = new Uint8Array(nx * nz);
   const paint = (rs: Rect[], v: number) => {
@@ -1126,7 +1127,7 @@ function subtractRects(a: Rect[], b: Rect[], W: number, D: number): Rect[] {
   paint(a, 1); paint(b, 0);
   // slivers along the edges of the two (thinner than 60 cm) are rounding, not floor: open the mask by 30 cm
   const morph = (src: Uint8Array, grow: boolean) => {
-    const out = new Uint8Array(src.length), R = 3;
+    const out = new Uint8Array(src.length), R = open;
     for (let j = 0; j < nz; j++) for (let i = 0; i < nx; i++) {
       let hit = !grow;
       for (let b2 = j - R; b2 <= j + R && hit !== grow; b2++) for (let a2 = i - R; a2 <= i + R; a2++) {
@@ -1721,7 +1722,7 @@ export function buildBuilding(d: DxfDrawing, a: BuildingAnalysis, name: string, 
   /** floor openings: the storey's own (solid X), the storey above's (dashed X), the open sky over a 露台 */
   const voidsOf = new Map<string, Rect[]>(), voidsUp = new Map<string, Rect[]>(), openAt = new Map<string, { x: number; z: number }[]>();
   /** balconies (floor and ceiling slab) and terraces (floor only) found from the plan lines round their labels */
-  const outSpaces = new Map<string, { kind: 'balcony' | 'terrace'; rects: Rect[] }[]>();
+  const outSpaces = new Map<string, { kind: 'balcony' | 'terrace' | 'ac' | 'panel'; rects: Rect[]; h?: number }[]>();
   const greenOf = new Map<string, { x1: number; z1: number; x2: number; z2: number }[]>();
   /** names of open-air spaces on each storey (外廊, 露台 …) on any layer: they are not under the roof */
   const outdoorOf = new Map<string, { x: number; z: number }[]>(), roomsOf = new Map<string, { x: number; z: number }[]>();
@@ -2047,9 +2048,23 @@ export function buildBuilding(d: DxfDrawing, a: BuildingAnalysis, name: string, 
       greenOf.set(st.key, g.segs.filter(q => q.color === 3 && !/TEXT|DIM|HAT|FURN|AREA|面積|尺寸|GRID|AXIS|軸|Defpoints/i.test(q.layer))
         .map(q => ({ x1: X(q.a[0]), z1: Z(q.a[1]), x2: X(q.b[0]), z2: Z(q.b[1]) }))
         .filter(q => (Math.abs(q.x1 - q.x2) < 1 || Math.abs(q.z1 - q.z2) < 1) && Math.hypot(q.x2 - q.x1, q.z2 - q.z1) >= 40));
-      outSpaces.set(st.key, texts.filter(t => /陽台|露台/.test(t.s) && t.s.trim().length <= 6 && !/上方|投影|範圍|面積|計算|頂板/.test(t.s)).flatMap(t => {
+      // the edge height written beside a label: H=1.2M, H=金屬格柵85cm
+      const heightNear = (x: number, z: number, what?: RegExp) => {
+        let best: number | undefined, bd = 150;
+        for (const n of notes) {
+          const dd = Math.hypot(n.x - x, n.z - z);
+          const m = /H\s*=\s*[^0-9]{0,6}(\d+(?:\.\d+)?)\s*(M|m|cm|CM|㎝)?/.exec(n.s);
+          if (!m || dd > bd || (what && !what.test(n.s))) continue;
+          const v = +m[1] * (/^m$/i.test(m[2] || '') || (!m[2] && +m[1] < 5) ? 100 : 1);
+          if (v >= 30 && v <= 300) { best = v; bd = dd; }
+        }
+        return best;
+      };
+      outSpaces.set(st.key, texts.filter(t => /陽台|露台|AC專用板|冷氣|空調|室外機|裝飾板/.test(t.s) && t.s.trim().length <= 8 && !/上方|投影|範圍|面積|計算|頂板|檢討|管線/.test(t.s)).flatMap(t => {
         const rects = spaceFromLines(lineSegs, t.x, t.z);
-        return rects ? [{ kind: /露台/.test(t.s) ? 'terrace' as const : 'balcony' as const, rects }] : [];
+        // an air-conditioner ledge (AC專用板, 冷氣平台) is a slab with a grille on its open sides; a 裝飾板 strip has the decorative RC panel on its edge
+        const kind = /露台/.test(t.s) ? 'terrace' as const : /陽台/.test(t.s) ? 'balcony' as const : /裝飾板/.test(t.s) ? 'panel' as const : 'ac' as const;
+        return rects ? [{ kind, rects, h: kind === 'ac' ? heightNear(t.x, t.z, /格柵|欄杆|百葉/) : kind === 'panel' ? heightNear(t.x, t.z) : undefined }] : [];
       }));
     }
     for (const r of slabRects(walls.length ? [...walls, ...shut, ...slabEdges] : walls, texts, W, D, holes)) {
@@ -2404,15 +2419,15 @@ export function buildBuilding(d: DxfDrawing, a: BuildingAnalysis, name: string, 
   }
   // floor openings marked on the plans: cut out of the slabs (beams stay where they are)
   // balconies and terraces outside the walls: their own floor slab where the plate does not reach
-  const slabAt = (st: Storey, rs: Rect[], name: string) => {
-    const add = subtractRects(rs, slabsOf.get(st.key) || [], W, D);
+  const slabAt = (st: Storey, rs: Rect[], name: string, open = 3) => {
+    const add = subtractRects(rs, slabsOf.get(st.key) || [], W, D, open);
     for (const r of add) {
       objects.push({ id: id++, layer: 'slab', name, floor: st.key, x: (r.x0 + r.x1) / 2, z: (r.z0 + r.z1) / 2, w: r.x1 - r.x0, d: r.z1 - r.z0, h: SLAB, y: st.base - SLAB, color: 0xd6d1c7 });
       (slabsOf.get(st.key) || slabsOf.set(st.key, []).get(st.key)!).push(r);
     }
   };
   for (const st of a.storeys) for (const sp of outSpaces.get(st.key) || []) {
-    slabAt(st, sp.rects, sp.kind === 'balcony' ? '陽台樓板（CAD）' : '露台樓板（CAD）');
+    slabAt(st, sp.rects, sp.kind === 'balcony' ? '陽台樓板（CAD）' : sp.kind === 'ac' ? '冷氣平台板（CAD）' : sp.kind === 'panel' ? '外挑板（CAD）' : '露台樓板（CAD）', sp.kind === 'ac' || sp.kind === 'panel' ? 1 : 3);
     if (sp.kind === 'terrace') (voidsUp.get(st.key) || voidsUp.set(st.key, []).get(st.key)!).push(...sp.rects);
   }
   // each 露台: its part of the floor plate, closed off by the walls (doorways bridged) and the plate's edge
@@ -2488,8 +2503,10 @@ export function buildBuilding(d: DxfDrawing, a: BuildingAnalysis, name: string, 
         while (j + 1 < free.length && free[j + 1] - free[j] < 15) j++;
         const a0 = free[i] - 5, a1 = free[j] + 5;
         if (a1 - a0 >= 60) {
-          const c = (a0 + a1) / 2, t = 15, pos = at - out * t / 2;
-          objects.push({ id: id++, layer: 'rail', name: '陽台欄杆（CAD）', floor: st.key, x: alongX ? c : pos, z: alongX ? pos : c, w: alongX ? a1 - a0 : t, d: alongX ? t : a1 - a0, h: 110, y: st.base, color: 0xd9d6cf });
+          const c = (a0 + a1) / 2, t = sp.kind === 'panel' ? 15 : sp.kind === 'ac' ? 5 : 15, pos = at - out * t / 2;
+          const [layer, name, h, color] = sp.kind === 'ac' ? ['rail' as const, '冷氣平台格柵（CAD）', sp.h ?? 90, 0x8a8f96]
+            : sp.kind === 'panel' ? ['wall' as const, 'RC裝飾板（CAD）', sp.h ?? 120, 0xeeebe5] : ['rail' as const, '陽台欄杆（CAD）', 110, 0xd9d6cf];
+          objects.push({ id: id++, layer, name, floor: st.key, x: alongX ? c : pos, z: alongX ? pos : c, w: alongX ? a1 - a0 : t, d: alongX ? t : a1 - a0, h, y: st.base, color });
         }
         i = j + 1;
       }
@@ -2560,7 +2577,7 @@ export function buildBuilding(d: DxfDrawing, a: BuildingAnalysis, name: string, 
         for (let u = lo + 5; u < hi; u += 10) {
           const px = alongX ? u : at + out * 20, pz = alongX ? at + out * 20 : u;
           const ex = alongX ? u : at, ez = alongX ? at : u;
-          const walledUp = objects.some(w => isBox(w) && w.floor === next.key && w.layer === 'wall' && !w.rot && Math.abs(ex - w.x) <= w.w / 2 + 25 && Math.abs(ez - w.z) <= w.d / 2 + 25);
+          const walledUp = objects.some(w => isBox(w) && w.floor === next.key && (w.layer === 'wall' || w.layer === 'rail') && !w.rot && Math.abs(ex - w.x) <= w.w / 2 + 25 && Math.abs(ez - w.z) <= w.d / 2 + 25);
           if (!walledUp && !before.some(q => px >= q.x0 - 5 && px <= q.x1 + 5 && pz >= q.z0 - 5 && pz <= q.z1 + 5)) free.push(u);
         }
         if (free.length * 10 < 60) return;
