@@ -21,6 +21,8 @@ export interface BoxObject {
   floor?: string;
   /** AutoCAD colour index of the lines a wall was drawn with */
   wc?: number;
+  /** drawing layer the part was built from (what a correction teaches the importer about that layer) */
+  src?: string;
   /** set from line colours: same colour as the exterior wall → concrete (rc), another colour → light partition */
   wall?: 'rc' | 'light';
   /** stair steps: the underside slopes (waist slab) from `lo` at the low end to `hi` at the high end along `axis`, absolute heights, cm */
@@ -89,6 +91,10 @@ export interface CadData {
   floors?: CadFloor[];
   /** reinforcement read from the structural detail sheets, and the slab panels of the structural plans */
   rc?: RcData;
+  /** drawing layer names (whole-building imports) */
+  layers?: string[];
+  /** the drawing style (office) the import was made with: corrections made on this project teach it */
+  style?: { id: string; name: string };
   /** imported 3D models (SketchUp): the geometry not turned into walls, slabs … kept as plain mesh */
   meshes?: CadMesh[];
 }
@@ -132,6 +138,8 @@ export interface CadFloor {
   y: number;
   h: number;
   segs: number[];
+  /** drawing layer of each plan line (index into CadData.layers) */
+  segLayer?: number[];
   texts: CadText[];
 }
 
@@ -164,6 +172,23 @@ export interface ProjectModel {
   info?: ProjectInfo;
   /** lines drawn by hand with the 畫線 tool: start and end points (x, y, z cm, y up from 1F) */
   sketch?: SketchLine[];
+  /** hand corrections of the imported model, by part id (what the importer learns from) */
+  fixes?: Record<string, import('./learn').Fix>;
+  /** copy of the drawing style the import used, so the roles learnt travel with the project to other devices */
+  style?: DrawingStyle;
+}
+/** The way one office draws (layer names, what each layer holds), learnt from imports and corrections. */
+export interface DrawingStyle {
+  id: string;
+  /** the office's name read from the title block, else the main layer names */
+  name: string;
+  /** the layers of its plans: how a new drawing set is matched to the style */
+  layers: string[];
+  /** roles set by hand on the import page */
+  manual: Record<string, import('./building').LayerRole>;
+  /** roles learnt from the corrections of each project, with the reasons */
+  learnt: Record<string, { roles: Record<string, import('./building').LayerRole>; why: Record<string, string>; project?: string }>;
+  updated: number;
 }
 
 export interface SketchLine { a: [number, number, number]; b: [number, number, number] }

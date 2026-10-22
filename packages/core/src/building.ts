@@ -352,6 +352,8 @@ export function readLevels(d: DxfDrawing, views: SheetView[], scale: number): Re
 const ROOF_UPSTAND = 30;
 
 export function analyzeBuilding(d: DxfDrawing, defaultH = WALL_H): BuildingAnalysis | null {
+  // what an earlier import learnt about its layers must not leak into this one (a second import in the same session)
+  extraWall = new Set(); ignoreNow = new Set();
   const views = findViews(d);
   frameViews(d, views);
   const planViews = views.filter(v => v.kind === 'plan' && v.floors.length);
@@ -363,7 +365,7 @@ export function analyzeBuilding(d: DxfDrawing, defaultH = WALL_H): BuildingAnaly
   const { scale, wallLayers } = learnWalls(d, planViews);
   const colLayers = wallLayers.length ? learnColumns(d, planViews, scale) : [];
   if (wallLayers.length) wallLayers.push(...bridgeLayers(d, planViews, scale, wallLayers, colLayers));
-  extraWall = new Set(wallLayers); scaleNow = scale;
+  extraWall = new Set(wallLayers); ignoreNow = new Set(); scaleNow = scale;
   // when two files both have a plan of a storey (architectural and structural), the one with the most wall lines wins
   const walls = (v: SheetView) => d.segs.filter(s => isWallLayer(s.layer) && inBox(v.box, s.a[0], s.a[1]) && inBox(v.box, s.b[0], s.b[1])).length;
   // a site plan that also shows the ground floor (全區暨一層平面圖) only when there is no plan of the building alone
@@ -436,8 +438,8 @@ function learnColumns(d: DxfDrawing, plans: SheetView[], k: number): string[] {
   return [...new Set([...seen].filter(([, n]) => n >= 4).map(([key]) => key.split('|')[0]))];
 }
 
-let extraWall = new Set<string>(), scaleNow = 0, optNow: BuildOptions = {};
-const isWallLayer = (l: string) => guessLayerKind(l) === 'wall' || /^COL/i.test(l) || extraWall.has(l);
+let extraWall = new Set<string>(), ignoreNow = new Set<string>(), scaleNow = 0, optNow: BuildOptions = {};
+const isWallLayer = (l: string) => !ignoreNow.has(l) && (guessLayerKind(l) === 'wall' || /^COL/i.test(l) || extraWall.has(l));
 
 /**
  * Drawing units and wall layers of a set whose headers or layer names are no help (a header saying mm over a drawing in cm,
@@ -1443,7 +1445,11 @@ export interface BuildOptions {
   noSlants?: boolean;
   /** sill height per door / window code, cm, where the schedule does not give it */
   sills?: Record<string, number>;
+  /** what a drawing layer is, set by hand or learnt from the corrections made on earlier imports of the same office's drawings */
+  layers?: Record<string, LayerRole>;
 }
+/** wall (concrete or partition by colour and thickness), rc / light (always that wall type), column (squares are columns), ignore */
+export type LayerRole = 'wall' | 'rc' | 'light' | 'column' | 'ignore';
 
 /** What was read, for the review page. */
 export interface BuildReport {
@@ -1668,7 +1674,11 @@ function openSpans(a: number, b: number, cover: [number, number][]): [number, nu
 /** Builds every storey of the analysed drawing set, stacked at its level. */
 export function buildBuilding(d: DxfDrawing, a: BuildingAnalysis, name: string, firstId = 1, opts: BuildOptions = {}): BuildingResult {
   const S = a.scale;
-  extraWall = new Set(a.wallLayers); scaleNow = S; optNow = opts;
+  const roles = Object.entries(opts.layers || {});
+  extraWall = new Set([...a.wallLayers, ...roles.filter(([, r]) => r === 'wall' || r === 'rc' || r === 'light').map(([l]) => l)]);
+  ignoreNow = new Set(roles.filter(([, r]) => r === 'ignore' || r === 'column').map(([l]) => l));
+  scaleNow = S; optNow = opts;
+  const colLs = [...a.colLayers.filter(l => !roles.some(([k, r]) => k === l && r !== 'column')), ...roles.filter(([, r]) => r === 'column').map(([l]) => l)];
   const unmatchedTags: BuildReport['unmatchedTags'] = [], stairList: BuildReport['stairs'] = [];
   let projectionLabels = 0;
   const geos = new Map(a.plans.map(p => [p, planGeo(d, p)]));
@@ -1717,6 +1727,8 @@ export function buildBuilding(d: DxfDrawing, a: BuildingAnalysis, name: string, 
   const outdoorOf = new Map<string, { x: number; z: number }[]>(), roomsOf = new Map<string, { x: number; z: number }[]>();
   const slants: { key: string; side: 'w' | 'e'; x1: number; z1: number; x2: number; z2: number }[] = [];
   const beamLines: { st: Storey; xs: number[]; zs: number[] }[] = [];
+  /** drawing layer names, referred to by number from each floor's plan lines */
+  const layerNames: string[] = [], layerNo = (l: string) => { const i = layerNames.indexOf(l); return i >= 0 ? i : layerNames.push(l) - 1; };
 
   // an unlabelled stair is drawn in full on the plan of the storey it arrives at (the lower plan cuts it short): it climbs the storey below
   const stairPre = new Map<string, ReturnType<typeof stairsOf>>();
@@ -1747,7 +1759,7 @@ export function buildBuilding(d: DxfDrawing, a: BuildingAnalysis, name: string, 
     const plan = a.plans.find(p => p.floors.includes(st.key))!, g = geos.get(plan)!;
     const X = (x: number) => (x - g.ox - minX) * S, Z = (y: number) => (maxY - (y - g.oy)) * S;
     const H = st.h, parapet = st.key === 'RF';
-    const lines = pairWalls(g.segs.filter(s => isWallLayer(s.layer)).map(s => ({ x1: X(s.a[0]), z1: Z(s.a[1]), x2: X(s.b[0]), z2: Z(s.b[1]), c: /^(?:0?S-)?(?:COL|COLUMN|COLS|柱)/i.test(s.layer) ? undefined : s.color })));
+    const lines = pairWalls(g.segs.filter(s => isWallLayer(s.layer)).map(s => ({ x1: X(s.a[0]), z1: Z(s.a[1]), x2: X(s.b[0]), z2: Z(s.b[1]), c: /^(?:0?S-)?(?:COL|COLUMN|COLS|柱)/i.test(s.layer) ? undefined : s.color, l: s.layer })));
     const openSegs = g.segs.filter(s => isOpenLayer(s.layer)).map(s => ({ x1: X(s.a[0]), z1: Z(s.a[1]), x2: X(s.b[0]), z2: Z(s.b[1]) }));
     const planSegs = g.segs.filter(s => !/GRID|AXIS|DIM|軸|尺寸/i.test(s.layer)).map(s => ({ x1: X(s.a[0]), z1: Z(s.a[1]), x2: X(s.b[0]), z2: Z(s.b[1]) }));
     const swings = d.arcs.filter(c => isOpenLayer(c.layer) && inBox(plan.box, c.c[0], c.c[1]) && c.sweep > 70 && c.sweep < 110 && c.r * S >= 50 && c.r * S <= 200 && c.p0 && c.p1)
@@ -1983,13 +1995,13 @@ export function buildBuilding(d: DxfDrawing, a: BuildingAnalysis, name: string, 
       nRails++;
     }
     // columns drawn as plain squares on a colour- or pen-named layer
-    if (!parapet && a.colLayers.length) for (const p of d.polys) {
-      if (!a.colLayers.includes(p.layer)) continue;
+    if (!parapet && colLs.length) for (const p of d.polys) {
+      if (!colLs.includes(p.layer)) continue;
       const c = squareCol(p.pts, S);
       if (!c || !inBox(plan.box, c.x, c.y)) continue;
       const x = X(c.x), z = Z(c.y);
       if (walls.some(w => w.name === '柱' && Math.abs(w.x - x) < 5 && Math.abs(w.z - z) < 5)) continue;
-      add({ layer: 'wall', name: '柱', x, z, w: Math.round(c.w), d: Math.round(c.h), y: 0, h: H, color: 0xeeebe5 });
+      add({ layer: 'wall', name: '柱', x, z, w: Math.round(c.w), d: Math.round(c.h), y: 0, h: H, color: 0xeeebe5, src: p.layer });
     }
     nWalls += walls.length;
     // stairs: steps, half landings and the inner handrail; the storey above gets a hole in its slab
@@ -2095,19 +2107,19 @@ export function buildBuilding(d: DxfDrawing, a: BuildingAnalysis, name: string, 
         nWins++;
       }
     }
-    const segs: number[] = [], planLines: PlanLine[] = [];
+    const segs: number[] = [], segLayer: number[] = [], planLines: PlanLine[] = [];
     const near = (x: number, z: number) => x > -100 && z > -100 && x < W + 100 && z < D + 100;
     for (const s of g.segs) {
       if (isWallLayer(s.layer) || /GRID|GTAG|AXIS|軸|DIM|標註|Defpoints|AREA|TEXT|圖框|範圍|地界|道路|PARK/i.test(s.layer)) continue;
       const x1 = X(s.a[0]), z1 = Z(s.a[1]), x2 = X(s.b[0]), z2 = Z(s.b[1]);
-      if (near(x1, z1) && near(x2, z2)) { segs.push(x1, z1, x2, z2); planLines.push({ x1, z1, x2, z2, win: /WIN|窗/i.test(s.layer) && !/編號|TAG|TEXT/i.test(s.layer), layer: s.layer }); }
+      if (near(x1, z1) && near(x2, z2)) { segs.push(x1, z1, x2, z2); segLayer.push(layerNo(s.layer)); planLines.push({ x1, z1, x2, z2, win: /WIN|窗/i.test(s.layer) && !/編號|TAG|TEXT/i.test(s.layer), layer: s.layer }); }
     }
     linesOf.set(st.key, planLines);
     // shown on the plan view: room names inside the building, not the legal-review notes and legends round it
     const wx0 = minOf(walls.map(o => o.x - o.w / 2)) - 50, wx1 = maxOf(walls.map(o => o.x + o.w / 2)) + 50, wz0 = minOf(walls.map(o => o.z - o.d / 2)) - 50, wz1 = maxOf(walls.map(o => o.z + o.d / 2)) + 50;
     const shown = texts.filter(t => (!walls.length || (t.x >= wx0 && t.x <= wx1 && t.z >= wz0 && t.z <= wz1))
       && !/檢討|規定|面積|計算|圖例|範圍|線|[≦≧<>]|透空|投影|裝飾|增築|項\s*目|小\s*計|平面圖|面\s*積|防火|時效|事務所|建築師|紅磚|[0-9]\/[0-9]B|責任|施工|專用|材料|構造|做法|詳圖|^[A-Z]{1,3}[0-9]*$|^[東西南北]$/.test(t.s));
-    floors.push({ key: st.key, title: plan.title, y: st.base, h: H, segs, texts: shown });
+    floors.push({ key: st.key, title: plan.title, y: st.base, h: H, segs, segLayer, texts: shown });
   }
   // beams from structural plans (二層結構平面圖 → under the 2F slab), lined up on the grid bubbles
   const drawn = new Set<string>();
@@ -2292,6 +2304,13 @@ export function buildBuilding(d: DxfDrawing, a: BuildingAnalysis, name: string, 
       o.wall = o.wc === extColor || onRim(o) ? 'rc' : 'light';
       o.name = o.wall === 'light' ? '輕隔間牆（CAD）' : Math.min(o.w, o.d) >= 18 ? '外牆（CAD）' : 'RC牆（CAD）';
     }
+  }
+  // a layer known to hold only concrete walls or only partitions
+  for (const o of wallBoxes) {
+    const r = o.src && opts.layers?.[o.src];
+    if (r !== 'rc' && r !== 'light') continue;
+    o.wall = r;
+    o.name = r === 'light' ? '輕隔間牆（CAD）' : Math.min(o.w, o.d) >= 18 ? '外牆（CAD）' : 'RC牆（CAD）';
   }
   // the wall over a door or window (and under a window) is the wall the opening is cut in: concrete over an opening
   // in an RC wall, a light partition over a door in a light partition
@@ -2662,7 +2681,7 @@ export function buildBuilding(d: DxfDrawing, a: BuildingAnalysis, name: string, 
   return {
     objects,
     report,
-    cad: { name, W, D, segs: [], texts: [], doors: [], floors, ...(spec ? { rc: { spec, panels: rcPanels } } : {}) },
+    cad: { name, W, D, segs: [], texts: [], doors: [], floors, layers: layerNames, ...(spec ? { rc: { spec, panels: rcPanels } } : {}) },
     analysis: a,
     stats: { floors: floors.length, walls: nWalls, doors: nDoors, windows: nWins, railings: nRails, heads: cutHeads, ...(extColor !== undefined ? { extColor } : {}) },
   };

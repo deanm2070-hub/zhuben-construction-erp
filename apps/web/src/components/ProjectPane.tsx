@@ -7,8 +7,10 @@ export const CATEGORIES = ['住宅', '透天', '集合住宅', '辦公', '商業
 const ROLE: Record<Role, string> = { owner: '擁有者', editor: '可編輯', viewer: '只能檢視' };
 const size = (b: number) => b > 1e6 ? `${(b / 1e6).toFixed(1)} MB` : `${Math.max(1, Math.round(b / 1e3))} KB`;
 
-export function ProjectPane({ projectId, owner, name, role, info, versions, pb, floorArea, onName, onInfo, onVersions, toast }: {
+export function ProjectPane({ projectId, owner, name, role, info, versions, pb, floorArea, learning, onName, onInfo, onVersions, toast }: {
   projectId: string; owner?: string; name: string; role: Role; info: ProjectInfo; versions: CalcVersion[]; pb: PricedBudget; floorArea: number;
+  /** hand corrections of this project and what the drawing style learnt from them */
+  learning?: { fixes: { del: number; type: number; add: number }; style?: string; rules: string[] };
   onName: (n: string) => void; onInfo: (i: ProjectInfo) => void; onVersions: (v: CalcVersion[]) => void; toast: (s: string) => void;
 }) {
   const ro = role === 'viewer';
@@ -47,6 +49,12 @@ export function ProjectPane({ projectId, owner, name, role, info, versions, pb, 
             <label className="wide">備註<textarea id="pj-note" rows={2} value={info.note || ''} disabled={ro} onChange={e => set('note', e.target.value)} /></label>
           </div>
         </section>
+
+        {learning && <section className="card">
+          <h3>修正紀錄與自動學習</h3>
+          <p className="note">你在 3D 裡的修正會被記住：刪除 {learning.fixes.del} 個、改類別 {learning.fixes.type} 個、手動補牆 {learning.fixes.add} 道。{learning.style ? `同一圖層被修正多次時，規則存進「${learning.style}」的圖面樣式，下次匯入這家事務所的圖自動套用。` : '這個專案不是用整棟建模匯入的，修正不會學成規則。'}</p>
+          {learning.rules.length > 0 ? <ul className="note" style={{ margin: '4px 0 0 18px' }}>{learning.rules.map(r => <li key={r}>{r}</li>)}</ul> : learning.style && <p className="note">目前還沒有學到規則（同一圖層要有 2 次以上相同修正，刪除要 3 個以上）。</p>}
+        </section>}
 
         <section className="card">
           <h3>團隊成員與權限</h3>

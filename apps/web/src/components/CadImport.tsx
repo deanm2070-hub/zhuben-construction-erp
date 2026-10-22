@@ -1,11 +1,12 @@
 import {
   analyzeBuilding, buildBuilding, buildFromMesh, type MeshBuildResult, type MeshPart, buildFromDxf, decodeDxf, mergeDrawings, DWG_VERSIONS, dwgSignature, guessLayerKind, guessUnits, parseDxf, sampleDxf,
-  UNIT_NAME, UNIT_SCALE, WALL_H, type BuildingAnalysis, type BuildOptions, type CadData, type DxfDrawing, type LayerKind, type ModelObject,
+  UNIT_NAME, UNIT_SCALE, WALL_H, ROLE_NAME, type BuildingAnalysis, type BuildOptions, type DrawingStyle, type LayerRole, type CadData, type DxfDrawing, type LayerKind, type ModelObject,
 } from '@cloud-modeler/core';
 import { useMemo, useState } from 'react';
 import { readDwg } from '../lib/dwg';
 import { isModelFile, readModel3d } from '../lib/model3d';
 import { Modal } from './Modal';
+import { findStyle, newStyle, officeOf, planLayers, putStyle, rolesOf } from '../lib/styles';
 import { isStaleChunk, STALE_MSG } from '../lib/update';
 
 /** How to tick several files in the phone's own file picker (the page cannot change that screen). */
@@ -23,7 +24,7 @@ type Stage =
   | { s: 'error'; msg: string; stale?: boolean };
 
 const ACI: Record<number, string> = { 1: '紅色', 2: '黃色', 3: '綠色', 4: '青色', 5: '藍色', 6: '洋紅色', 7: '白色', 8: '灰色' };
-export interface ImportResult { objects: ModelObject[]; cad: CadData; summary: string }
+export interface ImportResult { objects: ModelObject[]; cad: CadData; summary: string; style?: DrawingStyle }
 
 const KINDS: [LayerKind, string][] = [['wall', '牆體（擠出成 3D 牆）'], ['furn', '家具／櫃（擠出）'], ['line', '只顯示線條'], ['off', '不匯入']];
 
@@ -214,20 +215,39 @@ function BuildingStep({ st, firstId, onBuilt, onLayers, onClose }: {
   const key = `cad-rules:${name}`;
   const [opts, setOpts] = useState<BuildOptions>(() => { try { return JSON.parse(localStorage.getItem(key) || '{}'); } catch { return {}; } });
   const change = (o: BuildOptions) => { setOpts(o); try { localStorage.setItem(key, JSON.stringify(o)); } catch { /* private window */ } };
-  const preview = useMemo(() => { try { return buildBuilding(dxf, { ...a, storeys }, name, firstId, opts); } catch { return null; } }, [dxf, a, hs, opts]); // eslint-disable-line react-hooks/exhaustive-deps
+  // the office's drawing style: layer roles learnt from corrections on its earlier projects are applied here
+  const lays = useMemo(() => planLayers(dxf, a.plans.map(p => p.box)), [dxf, a]);
+  const office = useMemo(() => officeOf(dxf), [dxf]);
+  const [style, setStyle] = useState<DrawingStyle | null>(() => findStyle(office, lays.map(l => l.layer)));
+  const known = rolesOf(style);
+  const run = { ...opts, layers: known.roles };
+  const setRole = (l: string, r: LayerRole | '') => {
+    const s = style ? { ...style } : newStyle(office, lays.map(x => x.layer));
+    const manual = { ...s.manual };
+    if (r) manual[l] = r; else delete manual[l];
+    const next = { ...s, manual, updated: Date.now() };
+    putStyle(next); setStyle(next);
+  };
+  const preview = useMemo(() => { try { return buildBuilding(dxf, { ...a, storeys }, name, firstId, run); } catch { return null; } }, [dxf, a, hs, opts, style]); // eslint-disable-line react-hooks/exhaustive-deps
   const rep = preview?.report;
   const projTexts = dxf.texts.filter(t => /投影線/.test(t.s)).length;
   const [err, setErr] = useState('');
   const build = () => {
     setErr('');
     let r: ReturnType<typeof buildBuilding>;
-    try { r = buildBuilding(dxf, { ...a, storeys }, name, firstId, opts); } catch (e) { setErr(`建模失敗：${(e as Error).message}。可改用「圖層對應」，或把這段訊息回報給我。`); return; }
+    try { r = buildBuilding(dxf, { ...a, storeys }, name, firstId, run); } catch (e) { setErr(`建模失敗：${(e as Error).message}。可改用「圖層對應」，或把這段訊息回報給我。`); return; }
+    // the style is kept from the first import on, so the corrections made on this project teach it
+    const sty = { ...(style || newStyle(office, lays.map(x => x.layer))), updated: Date.now() };
+    sty.layers = [...new Set([...sty.layers, ...lays.map(x => x.layer)])].slice(0, 80);
+    putStyle(sty);
+    r.cad.style = { id: sty.id, name: sty.name };
     try {
       const s = r.stats;
       const rc = r.cad.rc;
-      onBuilt({ objects: r.objects, cad: r.cad, summary: `已建立 ${s.floors} 層：${s.walls} 道牆、${s.doors} 樘門、${s.windows} 樘窗` + (s.railings ? `、${s.railings} 段欄杆` : '')
+      onBuilt({ objects: r.objects, cad: r.cad, style: sty, summary: `已建立 ${s.floors} 層：${s.walls} 道牆、${s.doors} 樘門、${s.windows} 樘窗` + (s.railings ? `、${s.railings} 段欄杆` : '')
         + (rc ? `；讀到${rc.spec.sheets.join('、')}，鋼筋依配筋圖計算` : '')
-        + (s.extColor !== undefined ? `；外牆線顏色為${ACI[s.extColor] || `色號 ${s.extColor}`}，同色內牆算 RC 牆，其他顏色算輕隔間牆` : '') });
+        + (s.extColor !== undefined ? `；外牆線顏色為${ACI[s.extColor] || `色號 ${s.extColor}`}，同色內牆算 RC 牆，其他顏色算輕隔間牆` : '')
+        + (Object.keys(known.roles).length ? `；套用「${sty.name}」圖面樣式 ${Object.keys(known.roles).length} 條規則` : '') });
     } catch (e) { setErr(`3D 顯示失敗：${(e as Error).message}。請把這段訊息回報給我。`); }
   };
   return (
@@ -267,6 +287,22 @@ function BuildingStep({ st, firstId, onBuilt, onLayers, onClose }: {
       </table></div>}
       {rep && <>
         {a.warnings.map((w, i) => <p key={'w' + i} className="warn" style={{ margin: '8px 0' }}>⚠ {w}</p>)}
+        <h4 style={{ margin: '12px 0 4px' }}>圖面樣式（自動學習）</h4>
+        {Object.keys(known.roles).length > 0
+          ? <><p className="note">認得這是「{style!.name}」的圖，已自動套用之前從修正學到的規則：</p>
+            <ul className="note" style={{ margin: '0 0 6px 18px' }}>{Object.entries(known.roles).map(([l, r]) => <li key={l}>圖層 <b>{l}</b> → {ROLE_NAME[r]}（{known.why[l]}）</li>)}</ul></>
+          : <p className="note">{style ? `認得這是「${style.name}」的圖，目前還沒有需要修正的規則。` : `第一次匯入${office ? `「${office}」` : '這套畫法'}的圖。`}建好後你在 3D 裡的修正（刪除構件、改構件類別、用「補牆板」補牆）會被記住，下次匯入同一家事務所的圖自動套用，不用再修一次。</p>}
+        <details style={{ margin: '0 0 8px' }}><summary className="note">圖層角色（想直接指定某個圖層是什麼，可在這裡改）</summary>
+          <div className="tbl"><table><thead><tr><th>圖層</th><th className="num">線數</th><th>角色</th></tr></thead>
+            <tbody>{lays.slice(0, 40).map(({ layer, n }) => {
+              const auto = a.wallLayers.includes(layer) || /WALL|牆/i.test(layer) ? '牆' : a.colLayers.includes(layer) ? '柱' : '依圖層名稱判斷';
+              return <tr key={layer}><td>{layer}</td><td className="num">{n}</td><td>
+                <select id={`role-${layer}`} value={style?.manual[layer] ?? ''} onChange={e => setRole(layer, e.target.value as LayerRole | '')}>
+                  <option value="">{known.roles[layer] && !style?.manual[layer] ? `學到：${ROLE_NAME[known.roles[layer]]}` : `自動（${auto}）`}</option>
+                  {(Object.keys(ROLE_NAME) as LayerRole[]).map(r => <option key={r} value={r}>{ROLE_NAME[r]}</option>)}
+                </select></td></tr>;
+            })}</tbody></table></div>
+        </details>
         <h4 style={{ margin: '12px 0 4px' }}>辨識確認（我猜的，不對請在這裡改）</h4>
         <div className="tbl"><table><tbody>
           {rep.wallColours.length >= 2 && <tr><td>外牆線顏色</td><td>

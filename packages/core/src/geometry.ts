@@ -10,8 +10,8 @@ export function footprintTest(o: Pick<BoxObject, 'x' | 'z' | 'w' | 'd' | 'rot'>)
   };
 }
 
-export interface Seg2 { x1: number; z1: number; x2: number; z2: number; /** AutoCAD colour index of the line */ c?: number }
-export interface WallLine { ax: number; az: number; bx: number; bz: number; t: number; single?: boolean; /** colour index of the lines it was made from */ c?: number }
+export interface Seg2 { x1: number; z1: number; x2: number; z2: number; /** AutoCAD colour index of the line */ c?: number; /** drawing layer of the line */ l?: string }
+export interface WallLine { ax: number; az: number; bx: number; bz: number; t: number; single?: boolean; /** colour index of the lines it was made from */ c?: number; /** drawing layer of those lines */ l?: string }
 
 /**
  * Turns wall outlines into wall centre lines with thickness.
@@ -45,11 +45,11 @@ export function pairWalls(S: Seg2[]): WallLine[] {
     const o = info[best.i], nx = -o.uz, nz = o.ux;
     const side = Math.sign((mx - o.x1) * nx + (mz - o.z1) * nz) || 1, off = side * best.d / 2;
     const lo = best.lo - best.d / 2, hi = best.hi + best.d / 2;
-    out.push({ ax: o.x1 + o.ux * lo + nx * off, az: o.z1 + o.uz * lo + nz * off, bx: o.x1 + o.ux * hi + nx * off, bz: o.z1 + o.uz * hi + nz * off, t: best.d, c: o.c ?? s.c });
+    out.push({ ax: o.x1 + o.ux * lo + nx * off, az: o.z1 + o.uz * lo + nz * off, bx: o.x1 + o.ux * hi + nx * off, bz: o.z1 + o.uz * hi + nz * off, t: best.d, c: o.c ?? s.c, l: o.l ?? s.l });
     s.cov = s.L;
     o.cov += best.hi - best.lo;
   }
-  for (const s of info) if (s.cov === 0 && s.L >= 80) out.push({ ax: s.x1, az: s.z1, bx: s.x2, bz: s.z2, t: 10, single: true, c: s.c });
+  for (const s of info) if (s.cov === 0 && s.L >= 80) out.push({ ax: s.x1, az: s.z1, bx: s.x2, bz: s.z2, t: 10, single: true, c: s.c, l: s.l });
   return out;
 }
 
@@ -61,5 +61,5 @@ export function wallBox(w: WallLine, h: number, id: number): BoxObject {
   if (r < 2e-3 || Math.PI - r < 2e-3) rot = 0;
   else if (Math.abs(r - Math.PI / 2) < 2e-3) { rot = 0; ww = w.t; dd = L; }
   const R = (v: number) => Math.round(v * 10) / 10;
-  return { id, layer: 'wall', name: w.t >= 18 ? '外牆（CAD）' : '隔間牆（CAD）', x: R((w.ax + w.bx) / 2), z: R((w.az + w.bz) / 2), w: R(ww), d: R(dd), h, y: 0, rot, color: 0xeeebe5, ...(w.c !== undefined ? { wc: w.c } : {}) };
+  return { id, layer: 'wall', name: w.t >= 18 ? '外牆（CAD）' : '隔間牆（CAD）', x: R((w.ax + w.bx) / 2), z: R((w.az + w.bz) / 2), w: R(ww), d: R(dd), h, y: 0, rot, color: 0xeeebe5, ...(w.c !== undefined ? { wc: w.c } : {}), ...(w.l ? { src: w.l } : {}) };
 }

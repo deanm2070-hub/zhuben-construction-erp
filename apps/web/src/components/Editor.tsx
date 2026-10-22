@@ -1,9 +1,10 @@
-import { computeBuildingTakeoff, computeTakeoff, DEFAULT_SETTINGS, memberOf, MEMBERS, priceBudget, withPricing, type CalcVersion, type FinishChoice, type ModelObject, type Pricing, type ProjectInfo, type TakeoffSettings } from '@cloud-modeler/core';
+import { computeBuildingTakeoff, computeTakeoff, DEFAULT_SETTINGS, learnRoles, memberOf, MEMBERS, priceBudget, ROLE_NAME, trackFixes, withPricing, type CalcVersion, type DrawingStyle, type Fix, type FinishChoice, type ModelObject, type Pricing, type ProjectInfo, type TakeoffSettings } from '@cloud-modeler/core';
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { DRAW_KINDS, TOOL_HINT, Viewer, type DrawKind, type FixKind, type RenderMode, type SceneKey, type Tool } from '../engine/Viewer';
 import { download, PROJECT_EXT, projectFile } from '../lib/files';
 import { store, type Role } from '../lib/store';
 import { isStaleChunk } from '../lib/update';
+import { allStyles, mergeStyle, putStyle } from '../lib/styles';
 import { BudgetPane } from './BudgetPane';
 import { CadImport } from './CadImport';
 import { Dock } from './Dock';
@@ -103,6 +104,27 @@ export function Editor({ projectId, importNow, trial = false, onExit }: { projec
   nameRef.current = name;
   const roRef = useRef(readOnly);
   roRef.current = readOnly;
+  // hand corrections of the imported model and the drawing style they teach
+  const fixes = useRef<Record<string, Fix>>({});
+  const base = useRef(new Map<number, ModelObject>());
+  const style = useRef<DrawingStyle | null>(null);
+  const snap = (objs: ModelObject[]) => new Map(objs.map(o => [o.id, { ...o } as ModelObject]));
+  const learn = useCallback(() => {
+    const vw = viewer.current;
+    if (!vw || roRef.current) return;
+    fixes.current = trackFixes(fixes.current, base.current, vw.objects, vw.cad);
+    base.current = snap(vw.objects);
+    const st = style.current;
+    if (!st) return;
+    const { roles, why } = learnRoles(Object.values(fixes.current), vw.objects);
+    const before = st.learnt[projectId]?.roles || {};
+    const fresh = Object.entries(roles).filter(([l, r]) => before[l] !== r);
+    if (!fresh.length && Object.keys(before).length === Object.keys(roles).length) return;
+    const next = { ...st, learnt: { ...st.learnt, [projectId]: { roles, why, project: nameRef.current } }, updated: Date.now() };
+    style.current = next;
+    putStyle(next);
+    if (fresh.length) showToast(`已學到：${fresh.map(([l, r]) => `圖層 ${l} 是${ROLE_NAME[r]}`).join('、')}。下次匯入「${next.name}」的圖會自動套用`);
+  }, [projectId]); // eslint-disable-line react-hooks/exhaustive-deps
 
   const exportSkp = async () => {
     try {
@@ -136,7 +158,7 @@ export function Editor({ projectId, importNow, trial = false, onExit }: { projec
     try {
       await store.save(projectId, {
         ...(nameRef.current ? { name: nameRef.current } : {}),
-        model: { objects: v.objects, cad: v.cad, sketch: v.sketch, ...meta.current },
+        model: { objects: v.objects, cad: v.cad, sketch: v.sketch, fixes: fixes.current, ...(style.current ? { style: style.current } : {}), ...meta.current },
         meta: meta.current.info,
         ...(withThumb ? { thumbnail: v.thumbnail() } : {}),
       });
@@ -155,7 +177,7 @@ export function Editor({ projectId, importNow, trial = false, onExit }: { projec
       info: setInfo,
       toast: showToast,
       delta: (dx, dz) => setDelta(`ΔX ${Math.round(dx)} · ΔZ ${Math.round(dz)} cm`),
-      change: () => { scheduleSave(); bump(n => n + 1); },
+      change: () => { learn(); scheduleSave(); bump(n => n + 1); },
       sketch: () => scheduleSave(),
       select: o => setSel(o ? { ...o } : null),
     });
@@ -171,6 +193,9 @@ export function Editor({ projectId, importNow, trial = false, onExit }: { projec
       setPinfo({ ...(p.model.info || {}), ...(p.meta || {}) });
       setOwner(p.owner);
       store.role(p).then(r => { if (alive) setRole(r); }).catch(() => {});
+      fixes.current = p.model.fixes || {};
+      base.current = snap(p.model.objects || []);
+      if (p.model.style) { mergeStyle(p.model.style); style.current = allStyles().find(x => x.id === p.model.style!.id) || p.model.style; }
       v.load(p.model.objects || [], p.model.cad || null);
       v.setSketch(p.model.sketch || []);
       setFloor(null);
@@ -178,7 +203,7 @@ export function Editor({ projectId, importNow, trial = false, onExit }: { projec
       setTimeout(() => { loaded.current = true; }, 0);
     }).catch(e => setLoadErr(String(e.message || e)));
     return () => { alive = false; v.dispose(); viewer.current = null; };
-  }, [projectId, showToast, scheduleSave]);
+  }, [projectId, showToast, scheduleSave, learn]);
 
   // save on leave
   // Ctrl+S saves now; closing the page with unsaved changes asks first
@@ -358,6 +383,8 @@ export function Editor({ projectId, importNow, trial = false, onExit }: { projec
             toast={showToast} />}
           {module === 'budget' && t && pb && <BudgetPane t={t} pb={pb} pricing={pricing} project={name || '未命名專案'} projectId={projectId} readOnly={readOnly} onPricing={setPricing} toast={showToast} />}
           {module === 'project' && t && pb && <ProjectPane projectId={projectId} owner={owner} name={name} role={role} info={pinfo} versions={versions} pb={pb} floorArea={t.floorArea}
+            learning={{ fixes: { del: Object.values(fixes.current).filter(f => f.kind === 'del').length, type: Object.values(fixes.current).filter(f => f.kind === 'type').length, add: Object.values(fixes.current).filter(f => f.kind === 'add').length },
+              style: style.current?.name, rules: Object.entries(style.current?.learnt[projectId]?.roles || {}).map(([l, r]) => `圖層 ${l} → ${ROLE_NAME[r]}（${style.current!.learnt[projectId].why[l]}）`) }}
             onName={setName} onInfo={setPinfo} onVersions={setVersions} toast={showToast} />}
           {module === 'report' && t && pb && <ReportPane ctx={{ project: name || '未命名專案', t, pb, pricing, info: pinfo }} toast={showToast} />}
         </div>}
@@ -375,6 +402,7 @@ export function Editor({ projectId, importNow, trial = false, onExit }: { projec
         <CadImport firstId={viewer.current.nextId()} onClose={() => setDialog('none')}
           onSource={f => { store.uploadSource(projectId, f).catch(() => showToast('原始檔上傳失敗，模型仍會儲存')); }}
           onBuilt={r => {
+            fixes.current = {}; base.current = snap(r.objects); style.current = r.style || null;
             v().replace(r.objects, r.cad);
             if (!name || name === '匯入圖面') { const n = r.cad.name.replace(/\.(dxf|dwg|skp|dae|obj|glb|gltf|fbx|stl)$/i, ''); setName(n); store.save(projectId, { name: n }).catch(() => {}); }
             setDialog('none');
