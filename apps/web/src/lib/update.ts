@@ -30,3 +30,7 @@ export function watchUpdates(onNew: (version: string, notes: string[]) => void) 
   check();
   return () => { document.removeEventListener('visibilitychange', onVis); removeEventListener('pageshow', onVis); removeEventListener('focus', onVis); removeEventListener('online', check); clearInterval(t); };
 }
+
+/** A part of the app loaded on demand (DWG reader, SketchUp reader, exports) that this page's build no longer finds on the site. */
+export const isStaleChunk = (e: unknown) => /dynamically imported module|Importing a module script failed|error loading dynamically imported|Unable to preload CSS|ChunkLoadError/i.test(String((e as Error)?.message || e));
+export const STALE_MSG = '網站剛更新到新版本，這個頁面還是舊版，找不到舊版的讀檔元件。請按「更新並重試」，頁面重新載入後再匯入一次（專案已自動存檔）。';

@@ -3,6 +3,7 @@ import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { DRAW_KINDS, TOOL_HINT, Viewer, type DrawKind, type FixKind, type RenderMode, type SceneKey, type Tool } from '../engine/Viewer';
 import { download, PROJECT_EXT, projectFile } from '../lib/files';
 import { store, type Role } from '../lib/store';
+import { isStaleChunk } from '../lib/update';
 import { BudgetPane } from './BudgetPane';
 import { CadImport } from './CadImport';
 import { Dock } from './Dock';
@@ -110,7 +111,7 @@ export function Editor({ projectId, importNow, trial = false, onExit }: { projec
       if (await download(`${name || 'model'}.skp`, async () => (await import('../lib/skpExport')).buildSkp(parts), 'application/vnd.sketchup.skp'))
         showToast('已匯出 .skp：每層、每類構件各一個標記（Tag），可在 SketchUp 分開顯示');
     } catch (e) {
-      showToast(`匯出 .skp 失敗：${(e as Error).message}`);
+      showToast(isStaleChunk(e) ? '網站剛更新到新版本，請按上方「立即更新」（或重新整理）後再匯出' : `匯出 .skp 失敗：${(e as Error).message}`);
     }
   };
   const exportIfc = async () => {
@@ -119,7 +120,7 @@ export function Editor({ projectId, importNow, trial = false, onExit }: { projec
       if (await download(`${name || 'model'}.ifc`, async () => (await import('../lib/ifcExport')).buildIfc(vw.objects, vw.cad, name || '未命名專案'), 'application/x-step'))
         showToast('已匯出 IFC4：每層一個樓層，柱、梁、牆、樓板、門窗各自分類，可在 Revit、ArchiCAD、BIM 檢視器開啟');
     } catch (e) {
-      showToast(`匯出 IFC 失敗：${(e as Error).message}`);
+      showToast(isStaleChunk(e) ? '網站剛更新到新版本，請按上方「立即更新」（或重新整理）後再匯出' : `匯出 IFC 失敗：${(e as Error).message}`);
     }
   };
   const showToast = useCallback((text: string) => {

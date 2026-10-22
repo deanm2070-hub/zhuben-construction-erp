@@ -6,6 +6,7 @@ import { useMemo, useState } from 'react';
 import { readDwg } from '../lib/dwg';
 import { isModelFile, readModel3d } from '../lib/model3d';
 import { Modal } from './Modal';
+import { isStaleChunk, STALE_MSG } from '../lib/update';
 
 /** How to tick several files in the phone's own file picker (the page cannot change that screen). */
 const MULTI_HINT = /iPhone|iPad|iPod/.test(navigator.userAgent) || (navigator.platform === 'MacIntel' && navigator.maxTouchPoints > 1)
@@ -19,7 +20,7 @@ type Stage =
   | { s: 'reading'; name: string; ver: string; title?: string; note?: string }
   | { s: 'building'; name: string; dxf: DxfDrawing; a: BuildingAnalysis }
   | { s: 'layers'; name: string; dxf: DxfDrawing; map: Record<string, LayerKind>; unit: number; wallH: number }
-  | { s: 'error'; msg: string };
+  | { s: 'error'; msg: string; stale?: boolean };
 
 const ACI: Record<number, string> = { 1: '紅色', 2: '黃色', 3: '綠色', 4: '青色', 5: '藍色', 6: '洋紅色', 7: '白色', 8: '灰色' };
 export interface ImportResult { objects: ModelObject[]; cad: CadData; summary: string }
@@ -68,7 +69,7 @@ export function CadImport({ firstId, onBuilt, onSource, onClose }: {
         const dxf = await readDwg(raw, sig);
         onSource(f);
         return dxf;
-      } catch (e) { setSt({ s: 'error', msg: `${f.name} 讀取失敗：${(e as Error).message}。可以在 AutoCAD 另存成 DXF 再試一次。` }); return null; }
+      } catch (e) { setSt({ s: 'error', msg: isStaleChunk(e) ? STALE_MSG : `${f.name} 讀取失敗：${(e as Error).message}。可以在 AutoCAD 另存成 DXF 再試一次。`, stale: isStaleChunk(e) }); return null; }
     }
     if (new TextDecoder('latin1').decode(buf.slice(0, 18)) === 'AutoCAD Binary DXF') { setSt({ s: 'error', msg: `${f.name} 是二進位 DXF，請在 AutoCAD 另存為 ASCII DXF 再匯入。` }); return null; }
     try {
@@ -86,7 +87,7 @@ export function CadImport({ firstId, onBuilt, onSource, onClose }: {
       try {
         for (const p of await readModel3d(f)) parts.push({ ...p, solid: `${i}|${p.solid ?? ''}` });
         onSource(f);
-      } catch (e) { return setSt({ s: 'error', msg: `${f.name} 讀取失敗：${(e as Error).message}` }); }
+      } catch (e) { return setSt({ s: 'error', msg: isStaleChunk(e) ? STALE_MSG : `${f.name} 讀取失敗：${(e as Error).message}`, stale: isStaleChunk(e) }); }
     }
     setSt({ s: 'reading', title: '辨識 3D 模型中', name: '正在找樓層、牆、門窗、柱、梁、樓板…', ver: '請稍候', note: '' });
     await new Promise(r => setTimeout(r, 50));
@@ -153,7 +154,9 @@ export function CadImport({ firstId, onBuilt, onSource, onClose }: {
   if (st.s === 'reading') return <Modal title={st.title || '讀取 DWG 中'} desc={`${st.name}｜${st.ver}`} onClose={() => {}} actions={null}>{st.note !== '' && <p>{st.note || '第一次開 DWG 會先下載讀取元件（約 10 MB），之後就很快。大型圖面需要幾秒鐘。'}</p>}</Modal>;
   if (st.s === 'building') return <BuildingStep st={st} firstId={firstId} onBuilt={onBuilt} onClose={onClose}
     onLayers={() => toLayers(st.dxf, st.name)} />;
-  if (st.s === 'error') return <Modal title="無法匯入" onClose={onClose} actions={<><button className="chip" onClick={() => setSt({ s: 'pick', files: picked })}>重新選擇</button>{close}</>}><p className="err">{st.msg}</p></Modal>;
+  if (st.s === 'error') return <Modal title={st.stale ? '請先更新' : '無法匯入'} onClose={onClose} actions={<>{st.stale
+    ? <button className="chip key" onClick={() => location.reload()}>更新並重試</button>
+    : <button className="chip" onClick={() => setSt({ s: 'pick', files: picked })}>重新選擇</button>}{close}</>}><p className={st.stale ? '' : 'err'}>{st.msg}</p></Modal>;
 
   const { dxf, map, unit, wallH, name } = st;
   const layers = [...dxf.layers.entries()].sort((a, b) => b[1] - a[1]);
