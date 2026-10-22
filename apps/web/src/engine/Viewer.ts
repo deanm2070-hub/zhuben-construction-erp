@@ -55,7 +55,7 @@ export const TOOL_HINT: Record<Tool, string> = {
   pan: '平移：拖曳移動畫面。',
   select: '構件：點選牆、櫃、家具或門，查看名稱與尺寸。按 Delete 可刪除。',
   measure: '捲尺：依序點兩個點量距離。',
-  push: '推拉：按住構件頂面上下拖曳改高度；按住側面左右拖曳，把那一面往外拉長或往內縮短。',
+  push: '推拉：按住構件頂面上下拖曳改高度；按住側面左右拖曳，把那一面往外拉長或往內縮短。靠近其他構件的頂面、底面、邊緣或樓層高度時自動鎖點（紅點）。',
   move: '移動：按住構件拖曳。',
   draw: '繪圖：選工具列的種類（牆、RC牆、欄杆、柱、樓板、櫃），在地面拖曳。牆與欄杆依拖曳方向決定走向，可改厚度與高度。',
   paint: '油漆桶：選一個顏色，再點構件上色。',
@@ -400,6 +400,56 @@ export class Viewer {
       const m = (n as THREE.Mesh).material as THREE.Material | THREE.Material[] | undefined;
       for (const x of m ? (Array.isArray(m) ? m : [m]) : []) if (x.clippingPlanes !== planes) { x.clippingPlanes = planes; x.clipShadows = true; x.needsUpdate = true; }
     });
+    this.buildCaps();
+  }
+  private capGroup = new THREE.Group();
+  /**
+   * Solid section faces: every part the cut passes through shows its cut face filled in (columns, beams, slabs and
+   * walls in their own shade), so a section reads as solid concrete instead of hollow shells.
+   */
+  private buildCaps() {
+    for (const c of this.capGroup.children.slice()) { this.capGroup.remove(c); (c as THREE.Mesh).geometry?.dispose(); }
+    if (!this.capGroup.parent) this.scene.add(this.capGroup);
+    if (!this.sectionOn || !this.sectionPlane) return;
+    const kind = this.sectionKind, v = this.sectionH, n = this.sectionPlane.normal, off = 0.15;
+    const byColor = new Map<number, number[]>();
+    const quad = (col: number, pts: THREE.Vector3[]) => {
+      const a = byColor.get(col) || byColor.set(col, []).get(col)!;
+      for (const i of [0, 1, 2, 0, 2, 3]) a.push(pts[i].x - n.x * off, pts[i].y - n.y * off, pts[i].z - n.z * off);
+    };
+    for (const o of this.objects) {
+      if (!isBox(o) || !this.shown(o) || o.layer === 'glass' || o.layer === 'rail') continue;
+      const mem = memberOf(o), light = o.layer === 'wall' && (o.wall === 'light' || /輕隔間/.test(o.name));
+      const col = mem === '柱' ? 0x2b3442 : mem === '梁' ? 0x7c4a1e : mem === '樓板' || mem === '基礎' ? 0x4b5563 : mem === '樓梯' ? 0x6b7280 : light ? 0xb9bcc2 : mem === '牆' ? 0x3a4250 : 0x8a8f98;
+      const y0 = o.y + this.lift(o.floor), y1 = y0 + o.h, c = Math.cos(o.rot || 0), sn = Math.sin(o.rot || 0);
+      // the footprint corners (same turn as the mesh: rotation.y = rot)
+      const fp = [[-1, -1], [1, -1], [1, 1], [-1, 1]].map(([a, b]) => { const lx = a * o.w / 2, lz = b * o.d / 2; return [o.x + lx * c + lz * sn, o.z - lx * sn + lz * c]; });
+      if (kind === 'h') {
+        if (!(y0 < v && y1 > v)) continue;
+        quad(col, fp.map(([x, z]) => new THREE.Vector3(x, v, z)));
+        continue;
+      }
+      // a vertical cut: where the plane crosses the footprint, from the underside to the top
+      const k = kind === 'x' ? 0 : 1, hits: number[] = [];
+      for (let i = 0; i < 4; i++) {
+        const p = fp[i], q = fp[(i + 1) % 4];
+        if ((p[k] - v) * (q[k] - v) > 0 || p[k] === q[k]) continue;
+        const t = (v - p[k]) / (q[k] - p[k]);
+        hits.push(p[1 - k] + (q[1 - k] - p[1 - k]) * t);
+      }
+      if (hits.length < 2) continue;
+      const lo = Math.min(...hits), hi = Math.max(...hits);
+      if (hi - lo < 0.5) continue;
+      const P = (u: number, y: number) => kind === 'x' ? new THREE.Vector3(v, y, u) : new THREE.Vector3(u, y, v);
+      quad(col, [P(lo, y0), P(hi, y0), P(hi, y1), P(lo, y1)]);
+    }
+    for (const [col, arr] of byColor) {
+      const g = new THREE.BufferGeometry();
+      g.setAttribute('position', new THREE.Float32BufferAttribute(arr, 3));
+      const m = new THREE.Mesh(g, new THREE.MeshBasicMaterial({ color: col, side: THREE.DoubleSide, polygonOffset: true, polygonOffsetFactor: -1, polygonOffsetUnits: -1 }));
+      m.raycast = () => {};
+      this.capGroup.add(m);
+    }
   }
   /** How far a section can go: plan size and the highest point of the whole building, cm. */
   sectionExtent() {
@@ -896,6 +946,51 @@ export class Viewer {
     }
     return null;
   }
+  /** parts near enough to lock on to while pushing: square boxes within 15 m */
+  private lockParts(o: BoxObject) {
+    return this.objects.filter((q): q is BoxObject => q !== o && isBox(q) && !q.rot && Math.abs(q.x - o.x) < 1500 + (q.w + o.w) / 2 && Math.abs(q.z - o.z) < 1500 + (q.d + o.d) / 2);
+  }
+  /** the nearest level within tol of v: the top or underside of a nearby part, or a floor level */
+  private lockLevel(o: BoxObject, v: number, tol: number): { v: number; what: string } | null {
+    let best: { v: number; what: string; d: number } | null = null;
+    const take = (lv: number, what: string) => { const dd = Math.abs(lv - v); if (dd <= tol && (!best || dd < best.d)) best = { v: lv, what, d: dd }; };
+    for (const q of this.lockParts(o)) { take(q.y + q.h, `${q.name} 頂面`); take(q.y, `${q.name} 底面`); }
+    for (const f of this.floors) { take(f.y, `${f.key} 樓地板`); take(f.y + f.h, `${f.key} 樓頂`); }
+    return best ? { v: (best as { v: number }).v, what: (best as { what: string }).what } : null;
+  }
+  /** pulling a side face: lock it on to a face line (or corner) of a nearby part along the pull direction */
+  private lockFace(d: Extract<NonNullable<typeof this.drag>, { kind: 'pushSide' }>, ns: number, tol: number): { s: number; at: THREE.Vector3; what: string } | null {
+    const o = d.o, ax = Math.abs(d.dir.x) > 0.99 ? 'x' : Math.abs(d.dir.z) > 0.99 ? 'z' : null;
+    if (!ax) return null;
+    const sign = ax === 'x' ? Math.sign(d.dir.x) : Math.sign(d.dir.z);
+    // the fixed face, and where the moving face would be
+    const c0 = ax === 'x' ? d.x0 : d.z0, fixed = c0 - sign * d.s0 / 2, at = fixed + sign * ns;
+    let best: { v: number; what: string; dd: number; q: BoxObject } | null = null;
+    for (const q of this.lockParts(o)) {
+      const qc = ax === 'x' ? q.x : q.z, qh = (ax === 'x' ? q.w : q.d) / 2;
+      for (const [v, side] of [[qc - qh, '面'], [qc + qh, '面'], [qc, '中心']] as const) {
+        const dd = Math.abs(v - at);
+        if (dd <= tol && (!best || dd < best.dd)) best = { v, what: `${q.name} ${side === '中心' ? '中心線' : '邊緣'}`, dd, q };
+      }
+    }
+    if (!best) return null;
+    const b = best as { v: number; what: string; q: BoxObject };
+    const s2 = Math.abs(b.v - fixed), y = o.y + o.h + this.lift(o.floor);
+    const across = ax === 'x' ? o.z : o.x;
+    return { s: Math.round(s2 * 10) / 10, at: ax === 'x' ? new THREE.Vector3(b.v, y, across) : new THREE.Vector3(across, y, b.v), what: b.what };
+  }
+  private snapDot: THREE.Mesh | null = null;
+  /** a small marker where the push locked on, gone when not locked */
+  private snapMark(p: THREE.Vector3 | null) {
+    if (!p) { if (this.snapDot) { this.helperGroup.remove(this.snapDot); this.snapDot = null; } return; }
+    if (!this.snapDot) {
+      this.snapDot = new THREE.Mesh(new THREE.SphereGeometry(1, 16, 12), new THREE.MeshBasicMaterial({ color: 0xff2d55, depthTest: false }));
+      this.snapDot.renderOrder = 10;
+      this.helperGroup.add(this.snapDot);
+    }
+    this.snapDot.scale.setScalar(Math.max(4, this.camera.position.distanceTo(p) / 120));
+    this.snapDot.position.copy(p);
+  }
   /** a top or bottom face is pushed up and down (height); a side face is pulled sideways (length or width) */
   private pushDrag(o: BoxObject, point: THREE.Vector3, normal: THREE.Vector3 | undefined, e: PointerEvent): NonNullable<typeof this.drag> {
     if (!normal || Math.abs(normal.y) > 0.5) return { kind: 'push', o, sh: o.h, y0: e.clientY, scale: this.camera.position.distanceTo(this.controls.target) / 700 };
@@ -968,7 +1063,7 @@ export class Viewer {
   private cancelDrag() {
     const d = this.drag;
     if (d && d.kind === 'draw' && d.preview) this.helperGroup.remove(d.preview);
-    if (d && (d.kind === 'move' || d.kind === 'push' || d.kind === 'pushSide')) this.history.pop();
+    if (d && (d.kind === 'move' || d.kind === 'push' || d.kind === 'pushSide')) { this.history.pop(); this.snapMark(null); }
     this.drag = null;
     this.controls.enabled = this.tool !== 'walk';
     this.rebuild();
@@ -1031,7 +1126,11 @@ export class Viewer {
     }
     if (d.kind === 'push') {
       const step = this.magnet ? 5 : 1;
-      const nh = Math.max(2, Math.round((d.sh + (d.y0 - e.clientY) * d.scale) / step) * step);
+      let nh = Math.max(2, Math.round((d.sh + (d.y0 - e.clientY) * d.scale) / step) * step);
+      // lock on to the top or bottom of a nearby part, or a floor level, within about 12 px
+      const lock = this.lockLevel(d.o, d.o.y + nh, 12 * d.scale);
+      if (lock) nh = Math.max(2, Math.round((lock.v - d.o.y) * 10) / 10);
+      this.snapMark(lock ? new THREE.Vector3(d.o.x, lock.v + this.lift(d.o.floor), d.o.z) : null);
       d.o.h = nh;
       const m = this.meshOf(d.o.id);
       if (m) {
@@ -1042,14 +1141,19 @@ export class Viewer {
         m.position.y = d.o.y + nh / 2 + this.lift(d.o.floor);
       }
       this.selBox?.update();
-      this.ev.info(`推拉 ${d.o.name}｜高度 ${nh} cm（原 ${d.sh} cm）`);
+      this.ev.info(`推拉 ${d.o.name}｜高度 ${nh} cm（原 ${d.sh} cm）${lock ? `｜🔒 鎖點：${lock.what}` : ''}`);
     }
     if (d.kind === 'pushSide') {
       this.setRay(e);
       const p = new THREE.Vector3();
       if (!this.ray.ray.intersectPlane(d.plane, p)) return;
       const step = this.magnet ? 5 : 1;
-      const ns = Math.max(2, Math.round((d.s0 + p.sub(d.p0).dot(d.dir)) / step) * step), moved = ns - d.s0;
+      let ns = Math.max(2, Math.round((d.s0 + p.sub(d.p0).dot(d.dir)) / step) * step);
+      // lock the moving face on to a face or corner of a nearby part (square parts only)
+      const px = this.camera.position.distanceTo(this.controls.target) / 700;
+      const lock = this.lockFace(d, ns, 12 * px);
+      if (lock) ns = Math.max(2, lock.s);
+      const moved = ns - d.s0;
       d.o[d.axis] = ns;
       d.o.x = d.x0 + d.dir.x * moved / 2; d.o.z = d.z0 + d.dir.z * moved / 2;
       const m = this.meshOf(d.o.id);
@@ -1061,7 +1165,8 @@ export class Viewer {
         m.position.set(d.o.x, d.o.y + d.o.h / 2 + this.lift(d.o.floor), d.o.z);
       }
       this.selBox?.update();
-      this.ev.info(`推拉 ${d.o.name}｜${d.axis === 'w' ? '長' : '寬'} ${ns} cm（原 ${d.s0} cm）`);
+      this.snapMark(lock ? lock.at : null);
+      this.ev.info(`推拉 ${d.o.name}｜${d.axis === 'w' ? '長' : '寬'} ${Math.round(ns * 10) / 10} cm（原 ${d.s0} cm）${lock ? `｜🔒 鎖點：${lock.what}` : ''}`);
     }
     if (d.kind === 'draw') {
       const p = this.hitGround(e);
@@ -1113,9 +1218,11 @@ export class Viewer {
         if (d.o.x === d.sx && d.o.z === d.sz) this.history.pop(); else this.commit();
         this.rebuild();
       } else if (d.kind === 'push') {
+        this.snapMark(null);
         if (d.o.h === d.sh) this.history.pop(); else this.commit();
         this.rebuild();
       } else if (d.kind === 'pushSide') {
+        this.snapMark(null);
         if (d.o[d.axis] === d.s0) this.history.pop(); else this.commit();
         this.rebuild();
       }
