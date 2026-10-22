@@ -2038,8 +2038,9 @@ export function buildBuilding(d: DxfDrawing, a: BuildingAnalysis, name: string, 
     {
       const crosses = crossRects(g.segs.filter(q => !/GRID|AXIS|DIM|軸|尺寸|FURN|傢俱|家具/i.test(q.layer)).map(q => ({ x1: X(q.a[0]), z1: Z(q.a[1]), x2: X(q.b[0]), z2: Z(q.b[1]), dashed: q.dashed })))
         .filter(r => r.x1 > -50 && r.z1 > -50 && r.x0 < W + 50 && r.z0 < D + 50);
-      voidsOf.set(st.key, crosses.filter(r => !r.dashed));
-      voidsUp.set(st.key, crosses.filter(r => r.dashed));
+      // nothing is open above the roof: an X on the roof plan marks what lies under it (a stair hall, a lift shaft)
+      voidsOf.set(st.key, st.key === 'RF' ? [] : crosses.filter(r => !r.dashed));
+      voidsUp.set(st.key, st.key === 'RF' ? [] : crosses.filter(r => r.dashed));
       // a 露台 is open to the sky: the storey above has no floor over it
       openAt.set(st.key, texts.filter(t => /露台/.test(t.s) && !/上方|投影|範圍|面積|計算/.test(t.s)));
       const lineSegs = g.segs.filter(q => !/GRID|AXIS|DIM|軸|尺寸|FURN|傢俱|家具|TEXT|HAT|落水|toilet|編號|Defpoints|BEAM|梁|STA|樓梯|AREA|面積|高程|標高/i.test(q.layer))
@@ -2393,8 +2394,12 @@ export function buildBuilding(d: DxfDrawing, a: BuildingAnalysis, name: string, 
     const own = (slabsOf.get('RF') || []).filter(r => below.some(b => r.x0 < b.x1 + 50 && b.x0 < r.x1 + 50 && r.z0 < b.z1 + 50 && b.z0 < r.z1 + 50));
     let from = below;
     if (/^R\d+F$/.test(lower.key) && (st.key !== 'RF' || own.length)) {
-      // a rooftop structure stands on the roof below it: its floor is that roof, within the walls it stands in
-      const ws = objects.filter((o): o is BoxObject => isBox(o) && o.floor === st.key && o.layer === 'wall' && !o.rot);
+      // a rooftop structure stands on the roof below it: its floor is that roof, within the walls it stands in;
+      // the roof over a rooftop structure covers it within its own walls, over its stair and voids too
+      // (a roof plan with no walls of its own: the walls of the rooftop structure under it)
+      const own = (k: string) => objects.filter((o): o is BoxObject => isBox(o) && o.floor === k && o.layer === 'wall' && !o.rot);
+      const roofOver = st.key === 'RF' && !own(st.key).some(o => Math.max(o.w, o.d) >= 150);
+      const ws = roofOver ? own(lower.key).filter(o => o.h >= lower.h * 0.8) : own(st.key);
       const groups: { x0: number; x1: number; z0: number; z1: number; len: number }[] = [];
       for (const w of ws) {
         const b = { x0: w.x - w.w / 2, x1: w.x + w.w / 2, z0: w.z - w.d / 2, z1: w.z + w.d / 2, len: Math.max(w.w, w.d) };
@@ -2405,10 +2410,25 @@ export function buildBuilding(d: DxfDrawing, a: BuildingAnalysis, name: string, 
       }
       const foot = groups.filter(g => g.len >= 600);
       if (!foot.length) continue;
-      from = below.flatMap(r => foot.flatMap(g => {
+      from = (roofOver ? [...below, ...holesOf.get(lower.key) || [], ...voidsOf.get(lower.key) || []] : below).flatMap(r => foot.flatMap(g => {
         const c = { x0: Math.max(r.x0, g.x0), x1: Math.min(r.x1, g.x1), z0: Math.max(r.z0, g.z0), z1: Math.min(r.z1, g.z1) };
         return c.x1 - c.x0 > 5 && c.z1 - c.z0 > 5 ? [c] : [];
       }));
+      // not over the roof deck of the storey below (a cluster's bounding box also takes in the deck beside an L of walls)
+      // a piece of floor with a wall along one side only is the roof deck beside an L of walls (the cluster's
+      // bounding box takes it in): kept only with walls along two of its sides
+      const sides = (r: Rect) => {
+        const along = (x0: number, x1: number, z: number, ax: boolean) => {
+          let cov = 0;
+          for (const o of ws) {
+            const ox0 = ax ? o.x - o.w / 2 : o.z - o.d / 2, ox1 = ax ? o.x + o.w / 2 : o.z + o.d / 2, oz = ax ? o.z : o.x, t = (ax ? o.d : o.w) / 2;
+            if (Math.abs(oz - z) <= t + 40) cov += Math.max(0, Math.min(x1, ox1) - Math.max(x0, ox0));
+          }
+          return cov >= (x1 - x0) * 0.3;
+        };
+        return [along(r.x0, r.x1, r.z0, true), along(r.x0, r.x1, r.z1, true), along(r.z0, r.z1, r.x0, false), along(r.z0, r.z1, r.x1, false)].filter(Boolean).length;
+      };
+      from = from.filter(r => Math.min(r.x1 - r.x0, r.z1 - r.z0) < 60 || sides(r) >= 2);
     }
     const add = subtractRects(from, slabsOf.get(st.key) || [], W, D);
     if (!slabsOf.has(st.key)) slabsOf.set(st.key, []);
@@ -2594,6 +2614,10 @@ export function buildBuilding(d: DxfDrawing, a: BuildingAnalysis, name: string, 
     if (!next) return;
     // a stair well or a void (天井, double-height room) in the floor above still has the storey's walls running up beside it
     const cover = [...(slabsOf.get(next.key) || []), ...(holesOf.get(next.key) || []), ...(voidsOf.get(next.key) || [])];
+    // the terraces themselves, walled off from the rooms beside them (a stair room on a roof deck keeps its roof)
+    const stWalls = objects.filter((o): o is BoxObject => isBox(o) && o.floor === st.key && (o.layer === 'wall' || o.layer === 'glass') && o.h >= 60);
+    const terr = (terraces.get(st.key) || []).map(t => roomSlabAt(stWalls, t.x, t.z, W, D, [], 0, slabsOf.get(st.key) || []));
+    const inR = (rs: Rect[], x: number, z: number) => rs.some(r => x >= r.x0 && x <= r.x1 && z >= r.z0 && z <= r.z1);
     for (const o of objects) {
       if (!isBox(o) || o.floor !== st.key || o.layer !== 'wall' || o.rot || o.y !== st.base || o.h < headH + 40 || o.h < st.h - 5) continue;
       if (/窗台|窗楣|門楣|隔間牆下/.test(o.name)) continue;
@@ -2601,6 +2625,15 @@ export function buildBuilding(d: DxfDrawing, a: BuildingAnalysis, name: string, 
       // a terrace's own slab: a 露台 / 平台 label inside it, the sunshade slab over it does not count as a roof
       const onTerrace = (slabsOf.get(st.key) || []).some(r => inside(r) && (terraces.get(st.key) || []).some(t => t.x >= r.x0 && t.x <= r.x1 && t.z >= r.z0 && t.z <= r.z1));
       if (!onTerrace && cover.some(inside)) continue;
+      if (onTerrace && terr.length && terr.every(rs => rs.length)) {
+        // a wall with a roofed room (not the terrace) on one side runs up to that roof
+        const ax = o.w >= o.d;
+        const roofed = [-1, 1].some(sd => [25, 60].some(dd => {
+          const off = Math.min(o.w, o.d) / 2 + dd, x = o.x + (ax ? 0 : sd * off), z = o.z + (ax ? sd * off : 0);
+          return inR(cover, x, z) && !terr.some(rs => inR(rs, x, z));
+        }));
+        if (roofed) continue;
+      }
       o.h = headH;
       o.name = /柱/.test(o.name) || o.rc ? o.name : `${o.name}（露台頂，同女兒牆高）`;
       cutHeads++;
