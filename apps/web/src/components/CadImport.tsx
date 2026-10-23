@@ -15,6 +15,8 @@ const MULTI_HINT = /iPhone|iPad|iPod/.test(navigator.userAgent) || (navigator.pl
   : /Android/.test(navigator.userAgent)
     ? 'Android：在檔案上長按，就能一次勾多個檔，最後按「選取」。'
     : '按住 Ctrl（Mac 按 ⌘）可以一次點選多個檔。'
+/** The system's file picker forgets the ticks when you move to another folder: those files are added in a second pick. */
+const FOLDER_HINT = '不同資料夾的檔案請分次加入：先選好一個資料夾的檔案按「開啟」，再按「＋ 再加入檔案」去另一個資料夾選，前面選的會留在下面的清單。'
 
 type Stage =
   | { s: 'pick'; files: File[] }
@@ -142,7 +144,7 @@ export function CadImport({ firstId, onBuilt, onSource, onClose }: {
           onDrop={e => { e.preventDefault(); setDrag(false); add(e.dataTransfer.files); }}>
           <b>{st.files.length ? '＋ 再加入檔案' : '點這裡選擇檔案'}</b>
           <span>DWG、DXF 或 SketchUp（.skp），可以一次選多個，也可以分次加入（建築圖、結構圖）</span>
-          <small className="how">{MULTI_HINT}</small>
+          <small className="how">{MULTI_HINT}<br />{FOLDER_HINT}</small>
           <input id="cad-file" className="tap-input" type="file" multiple onChange={e => { add(e.target.files); e.target.value = ''; }} />
         </label>
         {st.files.length > 0 && <ul className="files">
