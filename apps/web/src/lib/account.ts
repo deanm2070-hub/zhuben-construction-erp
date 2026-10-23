@@ -187,7 +187,7 @@ export async function applyTrial(email: string, ref: string): Promise<'ok' | 'ex
   return (data as { status: 'ok' | 'exists' | 'invalid' | 'busy' }).status;
 }
 /** the LINE official account chat with the application typed in (opens LINE on phones) */
-export const lineApply = (email: string) => `https://line.me/R/oaMessage/${LINE_ID}/?${encodeURIComponent(`申請築本算圖免費試用\nEmail：${email}`)}`;
+export const lineApply = (email: string) => `https://line.me/R/oaMessage/${LINE_ID}/?${encodeURIComponent(`申請築本3D工程估算免費試用\nEmail：${email}`)}`;
 /** administrator: the e-mail of the account or application that already used this LINE name, or null (0014) */
 export async function lineUsed(line: string, email: string): Promise<string | null> {
   const { data, error } = await supabase!.rpc('line_used', { p_line: line, p_email: email });

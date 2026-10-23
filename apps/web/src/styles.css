@@ -356,3 +356,18 @@ body{overflow-x:hidden}
 .folder-file span{flex:1;min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
 .folder-file small{color:var(--muted)}
 .modal .body > *{flex-shrink:0}
+
+/* start screen */
+.splash{position:fixed;inset:0;z-index:100;display:flex;align-items:center;justify-content:center;overflow:hidden;cursor:pointer;
+  background:radial-gradient(ellipse at 88% 4%,#2f47b8 0%,transparent 45%),radial-gradient(ellipse at 10% 95%,#3352d1 0%,transparent 50%),linear-gradient(160deg,#0b1550 0%,#13227a 45%,#1a2c96 70%,#0e1a5e 100%);
+  transition:opacity .5s ease;opacity:1}
+.splash.out{opacity:0;pointer-events:none}
+.splash-dots{position:absolute;inset:-30px;background-image:radial-gradient(circle,rgba(150,170,255,.55) 0 5px,transparent 6px);background-size:59px 59px;background-position:center;
+  -webkit-mask-image:radial-gradient(ellipse at center,#000 30%,rgba(0,0,0,.35) 75%,transparent 100%);mask-image:radial-gradient(ellipse at center,#000 30%,rgba(0,0,0,.35) 75%,transparent 100%)}
+.splash-mid{position:relative;display:flex;flex-direction:column;align-items:center;text-align:center;padding:0 16px;animation:splashIn .9s ease both}
+.splash-logo{width:116px;height:116px;border-radius:50%;display:flex;align-items:center;justify-content:center;overflow:hidden;
+  background:#fff;box-shadow:0 0 0 6px rgba(190,205,255,.25),0 0 60px 10px rgba(140,165,255,.5)}
+.splash-logo img{width:92px;height:92px;mix-blend-mode:multiply}
+.splash h1{margin:22px 0 0;color:#fff;font-family:'Noto Serif TC','Noto Sans TC',serif;font-weight:900;font-size:clamp(28px,6vw,40px);letter-spacing:.12em;text-shadow:0 2px 14px rgba(0,0,0,.35)}
+.splash p{margin:12px 0 0;color:rgba(225,232,255,.85);font-family:'Noto Serif TC',Georgia,serif;font-size:clamp(11px,2.6vw,14px);letter-spacing:.32em;text-transform:uppercase}
+@keyframes splashIn{from{opacity:0;transform:translateY(10px) scale(.97)}to{opacity:1;transform:none}}

@@ -130,8 +130,8 @@ export function projectFile(name: string, model: unknown): string {
 }
 export async function readProjectFile(f: File): Promise<{ name: string; model: ProjectModel }> {
   let j: { format?: string; name?: string; model?: ProjectModel };
-  try { j = JSON.parse(await f.text()); } catch { throw new Error('這不是築本算圖的專案檔'); }
+  try { j = JSON.parse(await f.text()); } catch { throw new Error('這不是築本3D工程估算的專案檔'); }
   // files saved before the rename are still read
-  if ((j.format !== 'zhuben-project' && j.format !== 'zhuliang-project') || !j.model || !Array.isArray(j.model.objects)) throw new Error('這不是築本算圖的專案檔');
+  if ((j.format !== 'zhuben-project' && j.format !== 'zhuliang-project') || !j.model || !Array.isArray(j.model.objects)) throw new Error('這不是築本3D工程估算的專案檔');
   return { name: j.name || f.name.replace(/\.(zhuben|zhuliang)\.json$|\.json$/i, ''), model: j.model };
 }

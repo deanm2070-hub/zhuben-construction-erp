@@ -96,7 +96,7 @@ export function ProjectsPage({ email, account, onAccount, onOpen }: { email: str
   return (
     <div className="shell">
       <aside className="side">
-        <div className="logo"><img src="/logo.png" alt="" width={30} height={30} /><b>築本算圖</b><small className="ver">{VERSION}</small></div>
+        <div className="logo"><img src="/logo.png" alt="" width={30} height={30} /><b>築本3D工程估算</b><small className="ver">{VERSION}</small></div>
         <nav>
           <button className={view === 'home' ? 'on' : ''} onClick={() => setView('home')}>總覽</button>
           <button className={view === 'mine' ? 'on' : ''} onClick={() => setView('mine')}>我的專案 <small>{mine.length}</small></button>

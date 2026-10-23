@@ -66,7 +66,7 @@ export function ProjectPane({ projectId, owner, name, role, info, versions, pb, 
             </ul>
             {memberErr && <p className="warn">{memberErr}</p>}
             {role === 'owner' && !memberErr && <form className="kv" onSubmit={e => { e.preventDefault(); if (email) share(); }}>
-              <input id="share-email" type="email" placeholder="同事的電子郵件（需有築本算圖帳號）" value={email} onChange={e => setEmail(e.target.value)} style={{ flex: '1 1 200px' }} />
+              <input id="share-email" type="email" placeholder="同事的電子郵件（需有築本3D工程估算帳號）" value={email} onChange={e => setEmail(e.target.value)} style={{ flex: '1 1 200px' }} />
               <select id="share-role" value={newRole} onChange={e => setNewRole(e.target.value as 'viewer' | 'editor')}><option value="viewer">只能檢視</option><option value="editor">可編輯</option></select>
               <button className="chip on" disabled={!email}>加入</button>
             </form>}

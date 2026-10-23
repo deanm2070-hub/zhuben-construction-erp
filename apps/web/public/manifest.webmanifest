@@ -1,7 +1,7 @@
 {
   "id": "/",
-  "name": "築本算圖",
-  "short_name": "築本算圖",
+  "name": "築本3D工程估算",
+  "short_name": "築本3D估算",
   "description": "雲端 3D 建模與 DWG 匯入、工程數量計算",
   "start_url": "/",
   "scope": "/",

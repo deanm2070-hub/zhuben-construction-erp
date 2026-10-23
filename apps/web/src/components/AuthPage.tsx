@@ -14,7 +14,7 @@ function referralCode() {
   } catch { return q || ''; }
 }
 
-/** the 登入築本算圖 button in the account e-mail opens /#/login?email=…&pw=…: read once at start-up, then taken off the address bar */
+/** the 登入築本3D工程估算 button in the account e-mail opens /#/login?email=…&pw=…: read once at start-up, then taken off the address bar */
 export const LOGIN_LINK = (() => {
   const m = location.hash.match(/^#\/login\?(.*)$/);
   if (!m) return null;
@@ -82,7 +82,7 @@ export function AuthPage() {
     e.preventDefault();
     if (mode === 'in') signIn(email, password);
   };
-  // the 登入築本算圖 button in the account e-mail: sign straight in with the address and password it carries
+  // the 登入築本3D工程估算 button in the account e-mail: sign straight in with the address and password it carries
   useEffect(() => {
     if (LOGIN_LINK?.email && LOGIN_LINK.password && supabase) signIn(LOGIN_LINK.email, LOGIN_LINK.password);
   }, []); // eslint-disable-line react-hooks/exhaustive-deps
@@ -90,8 +90,9 @@ export function AuthPage() {
   return (
     <div className="page">
       <form className="auth" onSubmit={submit}>
-        <img src="/logo.png" alt="築本算圖" width={96} height={96} style={{ display: 'block', margin: '0 auto 8px' }} />
-        <h1>築本算圖</h1>
+        <img src="/logo.png" alt="築本3D工程估算" width={96} height={96} style={{ display: 'block', margin: '0 auto 8px' }} />
+        <h1>築本3D工程估算</h1>
+        <p className="note" style={{ marginTop: -4, letterSpacing: '.08em' }}>Zhuben 3D Engineering Estimation</p>
         <p className="note">登入後，專案會存在雲端，換電腦也能繼續編輯。</p>
         {LOGIN_LINK?.email && mode === 'in' && <p className="note" style={{ color: 'var(--accent)' }}>{busy ? '正在用信裡的帳號密碼登入…' : msg.err ? '信裡的帳號密碼登入失敗，請確認後按「登入」。' : '已帶入信裡的帳號和密碼。'}</p>}
         {verified && <p className="note" style={{ color: 'var(--accent)' }}>✓ 已確認 {verified}，試用申請已送到管理員。開通後帳號和密碼會寄到這個信箱。</p>}
@@ -103,7 +104,7 @@ export function AuthPage() {
         </> : <div className="trial">
           <h3>申請免費試用</h3>
           {sent ? <>
-            <p className="note">✓ 試用申請已送給管理員！<br />管理員確認後，會把帳號密碼寄到 <b>{email.trim()}</b>（沒看到請找垃圾郵件匣），打開信按「登入築本算圖」就會自動登入，開始 7 天免費試用。</p>
+            <p className="note">✓ 試用申請已送給管理員！<br />管理員確認後，會把帳號密碼寄到 <b>{email.trim()}</b>（沒看到請找垃圾郵件匣），打開信按「登入築本3D工程估算」就會自動登入，開始 7 天免費試用。</p>
             <a className="chip on" href={lineApply(email.trim())} target="_blank" rel="noopener" style={{ textDecoration: 'none', textAlign: 'center' }}>用 LINE 傳申請給管理員 {LINE_ID}</a>
             <p className="note">同一個電子郵件、同一個 LINE 帳號只能申請一次。</p>
           </> : <>
