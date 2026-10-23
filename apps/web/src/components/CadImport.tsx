@@ -28,6 +28,10 @@ export interface ImportResult { objects: ModelObject[]; cad: CadData; summary: s
 
 const KINDS: [LayerKind, string][] = [['wall', '牆體（擠出成 3D 牆）'], ['furn', '家具／櫃（擠出）'], ['line', '只顯示線條'], ['off', '不匯入']];
 
+/** Files picked so far, kept while the person leaves the import page (another tab, the project list, the OS file
+ * picker on a phone) and comes back; cleared once a model is built from them. */
+let keptFiles: File[] = [];
+
 /** File → (DWG conversion) → layer mapping → 3D objects. */
 export function CadImport({ firstId, onBuilt, onSource, onClose }: {
   firstId: number;
@@ -36,8 +40,9 @@ export function CadImport({ firstId, onBuilt, onSource, onClose }: {
   onSource: (f: File) => void;
   onClose: () => void;
 }) {
-  const [st, setSt] = useState<Stage>({ s: 'pick', files: [] });
-  const [picked, setPicked] = useState<File[]>([]);
+  const [st, setSt] = useState<Stage>({ s: 'pick', files: keptFiles });
+  const [picked, setPicked] = useState<File[]>(keptFiles);
+  const pick = (files: File[]) => { keptFiles = files; setSt({ s: 'pick', files }); };
   const [drag, setDrag] = useState(false);
 
   const toLayers = (dxf: DxfDrawing, name: string) => {
@@ -96,7 +101,7 @@ export function CadImport({ firstId, onBuilt, onSource, onClose }: {
     try { r = buildFromMesh(parts, files.map(f => f.name).join('、'), firstId); }
     catch (e) { return setSt({ s: 'error', msg: `辨識模型時出錯：${(e as Error).message}。可以把這個檔傳給我檢查。` }); }
     if (!r) return setSt({ s: 'error', msg: '模型裡找不到牆或樓板的面（可能是空檔，或只有線條沒有面）。' });
-    onBuilt({ objects: r.objects, cad: r.cad, summary: meshSummary(r) });
+    keptFiles = []; onBuilt({ objects: r.objects, cad: r.cad, summary: meshSummary(r) });
   };
   /** Several files (architectural + structural sets) are read one by one and laid side by side. */
   const onFiles = async (files: File[]) => {
@@ -123,7 +128,7 @@ export function CadImport({ firstId, onBuilt, onSource, onClose }: {
       if (!fs.length) return;
       const files = [...st.files];
       for (const f of fs) if (!files.some(o => o.name === f.name && o.size === f.size)) files.push(f);
-      setSt({ s: 'pick', files });
+      pick(files);
     };
     const start = () => { setPicked(st.files); onFiles(st.files); };
     return (
@@ -143,7 +148,7 @@ export function CadImport({ firstId, onBuilt, onSource, onClose }: {
         {st.files.length > 0 && <ul className="files">
           {st.files.map((f, i) => <li key={f.name + f.size}>
             <span>{f.name}</span><small>{(f.size / 1048576).toFixed(1)} MB</small>
-            <button className="chip ghost" aria-label={`移除 ${f.name}`} onClick={() => setSt({ s: 'pick', files: st.files.filter((_, j) => j !== i) })}>移除</button>
+            <button className="chip ghost" aria-label={`移除 ${f.name}`} onClick={() => pick(st.files.filter((_, j) => j !== i))}>移除</button>
           </li>)}
         </ul>}
         <p>整套執照圖（各層平面、立面或剖面、門窗表）會自動分出樓層，依高程算樓高，門窗依門窗表的尺寸與窗台高開口，蓋出整棟 3D。</p>
@@ -157,7 +162,7 @@ export function CadImport({ firstId, onBuilt, onSource, onClose }: {
     onLayers={() => toLayers(st.dxf, st.name)} />;
   if (st.s === 'error') return <Modal title={st.stale ? '請先更新' : '無法匯入'} onClose={onClose} actions={<>{st.stale
     ? <button className="chip key" onClick={() => location.reload()}>更新並重試</button>
-    : <button className="chip" onClick={() => setSt({ s: 'pick', files: picked })}>重新選擇</button>}{close}</>}><p className={st.stale ? '' : 'err'}>{st.msg}</p></Modal>;
+    : <button className="chip" onClick={() => pick(picked)}>重新選擇</button>}{close}</>}><p className={st.stale ? '' : 'err'}>{st.msg}</p></Modal>;
 
   const { dxf, map, unit, wallH, name } = st;
   const layers = [...dxf.layers.entries()].sort((a, b) => b[1] - a[1]);
@@ -166,7 +171,7 @@ export function CadImport({ firstId, onBuilt, onSource, onClose }: {
     const r = buildFromDxf(dxf, map, UNIT_SCALE[unit], wallH, name, firstId);
     if (!r) return setSt({ s: 'error', msg: '選取的圖層裡沒有線條，請至少保留一個圖層。' });
     const s = r.stats;
-    onBuilt({ ...r, summary: `已建立 ${s.walls} 道牆、${s.doors} 樘門、${s.windows} 樘窗、${s.furniture} 件家具／櫃` + (s.singleWalls ? `（${s.singleWalls} 條單線當作 10cm 牆）` : '') });
+    keptFiles = []; onBuilt({ ...r, summary: `已建立 ${s.walls} 道牆、${s.doors} 樘門、${s.windows} 樘窗、${s.furniture} 件家具／櫃` + (s.singleWalls ? `（${s.singleWalls} 條單線當作 10cm 牆）` : '') });
   };
   return (
     <Modal title="圖層對應" desc={`來源：${name}。確認每個圖層要轉成什麼。`} onClose={onClose} actions={<>{close}<button className="chip on" onClick={build}>建立 3D 模型</button></>}>
@@ -244,7 +249,7 @@ function BuildingStep({ st, firstId, onBuilt, onLayers, onClose }: {
     try {
       const s = r.stats;
       const rc = r.cad.rc;
-      onBuilt({ objects: r.objects, cad: r.cad, style: sty, summary: `已建立 ${s.floors} 層：${s.walls} 道牆、${s.doors} 樘門、${s.windows} 樘窗` + (s.railings ? `、${s.railings} 段欄杆` : '')
+      keptFiles = []; onBuilt({ objects: r.objects, cad: r.cad, style: sty, summary: `已建立 ${s.floors} 層：${s.walls} 道牆、${s.doors} 樘門、${s.windows} 樘窗` + (s.railings ? `、${s.railings} 段欄杆` : '')
         + (rc ? `；讀到${rc.spec.sheets.join('、')}，鋼筋依配筋圖計算` : '')
         + (s.extColor !== undefined ? `；外牆線顏色為${ACI[s.extColor] || `色號 ${s.extColor}`}，同色內牆算 RC 牆，其他顏色算輕隔間牆` : '')
         + (Object.keys(known.roles).length ? `；套用「${sty.name}」圖面樣式 ${Object.keys(known.roles).length} 條規則` : '') });
