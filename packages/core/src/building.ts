@@ -47,6 +47,12 @@ export interface BuildingAnalysis {
   colLayers: string[];
   /** things the drawing set is missing that make the 3D come out empty */
   warnings: string[];
+  /** beams read off the sections (mark and size beside each cut beam), where there are no structural plans */
+  beams?: SectionBeam[];
+  /** lean-concrete blinding under the foundation written on a section (10cm 2000psi PC), cm */
+  blinding?: number;
+  /** a site wall drawn on the elevations beside the building (labelled 圍牆), height above the ground floor, cm */
+  fenceH?: number;
   /** the drawings checked against each other before the model is built (levels, storeys; widths after building) */
   checks: CrossCheck[];
 }
@@ -405,6 +411,90 @@ export function consensusLevels(rulers: ReturnType<typeof levelRulers>) {
   return { levels, odd };
 }
 
+/**
+ * A beam cut by a section: its mark and size written beside it (G5 / 50*70), placed on the grid by the section's grid
+ * bubbles (on grid line `a`, or a fraction `t` of the way from `a` to `b`), under the slab of `level`. `foot` = a
+ * foundation beam under the ground floor.
+ */
+export interface SectionBeam { kind: string; a: string; b: string; t: number; level: string; mark: string; w: number; h: number; foot: boolean; title: string }
+
+const SEC_BEAM_SIZE = /^(\d{2,3})\s*[*xX×]\s*(\d{2,3})$/, SEC_BEAM_MARK = /^[A-Za-z]{1,3}\d{1,2}[a-z]?$/;
+export function sectionBeams(d: DxfDrawing, views: SheetView[], storeys: Storey[], scale: number): { beams: SectionBeam[]; blinding?: number } {
+  const out: SectionBeam[] = [], seen = new Set<string>();
+  let blinding: number | undefined;
+  for (const v of views.filter(v => v.kind === 'section' && !/板剖面|中間帶|詳圖|大樣|廁所|樓梯/.test(v.title))) {
+    // a section's box often stops below its top floors (the frame finder): look up to its height again above it
+    const [x0, y0, x1, y1] = v.box, box: SheetView['box'] = [x0, y0, x1, y1 + (y1 - y0)];
+    const rows = gridLines(d, box, 'row', scale).sort((p, q) => q.at.size - p.at.size);
+    if (!rows.length) continue;
+    const row = rows[0], gl = [...row.at].sort((p, q) => p[1] - q[1]);
+    const ts = d.texts.filter(t => inBox(box, t.x, t.y));
+    const th = quantile(ts.map(t => t.h || 0).filter(h => h > 0), 0.5) || 15 / scale;
+    const pc = ts.map(t => /(\d{1,2})\s*cm[^0-9]{0,6}\d{4}\s*psi\s*PC/i.exec(t.s)).find(Boolean);
+    if (pc) blinding ??= +pc[1];
+    const cut: { x: number; y: number; mark: string; w: number; h: number }[] = [];
+    for (const t of ts) {
+      const m = SEC_BEAM_SIZE.exec(t.s.trim());
+      if (!m) continue;
+      const mk = ts.filter(o => SEC_BEAM_MARK.test(o.s.trim()) && !GRID_LBL.test(o.s.trim()) && o.y > t.y && o.y - t.y <= Math.max(th * 4, +m[2] * 0.95 / scale) && Math.abs(o.x - t.x) <= th * 3)
+        .sort((p, q) => (p.y - t.y) - (q.y - t.y))[0];
+      if (!mk) continue;
+      cut.push({ x: mk.x, y: mk.y, mark: mk.s.trim(), w: +m[1], h: +m[2] });
+    }
+    if (!cut.length) continue;
+    // heights: from the 1F level mark, else from the row of foundation beams (their marks sit just under the ground floor line)
+    const one = ts.find(t => normLevel(t.s) === '1F');
+    const foot = cut.filter(c => c.h >= 120);
+    const y1F = one ? one.y : foot.length ? quantile(foot.map(c => c.y), 0.5) + th * 1.2 : undefined;
+    if (y1F === undefined) continue;
+    for (const c of cut) {
+      const e = (c.y - y1F) * scale, isFoot = c.h >= 120 && Math.abs(e) < 80;
+      // the level line just above the mark
+      const st = isFoot ? storeys[0] : storeys.filter(s => s.base >= e - 5 && s.base - e <= 80).sort((p, q) => p.base - q.base)[0];
+      if (!st) continue;
+      // on a grid line, or between two
+      let a = '', b = '', t = 0;
+      const on = gl.find(([, gx]) => Math.abs(gx - c.x) * scale <= 40);
+      if (on) { a = b = on[0]; }
+      else {
+        const i = gl.findIndex(([, gx], k) => k < gl.length - 1 && gx < c.x && gl[k + 1][1] > c.x);
+        if (i < 0) continue;
+        a = gl[i][0]; b = gl[i + 1][0]; t = (c.x - gl[i][1]) / (gl[i + 1][1] - gl[i][1]);
+      }
+      const key = `${row.kind}|${a}|${b}|${Math.round(t * 20)}|${st.key}|${isFoot}`;
+      if (seen.has(key)) continue;
+      seen.add(key);
+      out.push({ kind: row.kind, a, b, t, level: st.key, mark: c.mark, w: c.w, h: c.h, foot: isFoot, title: v.title });
+    }
+  }
+  return { beams: out, blinding };
+}
+
+/** The height of a site wall on the elevations: the top of the low box nearest a 圍牆 label, above the 1F mark. */
+function fenceHeight(d: DxfDrawing, views: SheetView[], scale: number): number | undefined {
+  const hs: number[] = [];
+  for (const v of views.filter(v => v.kind === 'elevation')) {
+    const ts = d.texts.filter(t => inBox(v.box, t.x, t.y));
+    const one = ts.find(t => normLevel(t.s) === '1F'), lab = ts.find(t => /^圍牆$/.test(t.s.trim()));
+    if (!one || !lab) continue;
+    // horizontal lines 60–300 cm above 1F within 15 m of the label, held up by a vertical line reaching down to 1F at an end
+    const segs = d.segs.filter(s => inBox(v.box, s.a[0], s.a[1]));
+    let best: { h: number; dist: number } | undefined;
+    for (const s of segs) {
+      if (Math.abs(s.a[1] - s.b[1]) > 1) continue;
+      const h = (s.a[1] - one.y) * scale, x0 = Math.min(s.a[0], s.b[0]), x1 = Math.max(s.a[0], s.b[0]);
+      if (h < 60 || h > 300 || (x1 - x0) * scale < 100) continue;
+      const dist = lab.x < x0 ? x0 - lab.x : lab.x > x1 ? lab.x - x1 : 0;
+      if (dist * scale > 1500) continue;
+      const post = segs.some(q => Math.abs(q.a[0] - q.b[0]) < 1 && [x0, x1].some(x => Math.abs(q.a[0] - x) < 2)
+        && Math.max(q.a[1], q.b[1]) >= s.a[1] - 2 && Math.abs(Math.min(q.a[1], q.b[1]) - one.y) * scale <= 40);
+      if (post && (!best || dist < best.dist)) best = { h, dist };
+    }
+    if (best) hs.push(Math.round(best.h));
+  }
+  return hs.length ? quantile(hs, 0.5) : undefined;
+}
+
 const GRID_LBL = /^(\d{1,2}|[A-Z]|[XY]\d{1,2})$/;
 const gridKind = (l: string) => /^X/.test(l) ? 'X' : /^Y/.test(l) ? 'Y' : /^\d/.test(l) ? 'n' : 'a';
 const gridOrd = (l: string) => /\d/.test(l) ? +l.replace(/\D/g, '') : l.charCodeAt(0);
@@ -417,7 +507,9 @@ function gridLines(d: DxfDrawing, box: SheetView['box'], dir: 'row' | 'col', sca
   const out: { kind: string; at: Map<string, number> }[] = [], seen = new Set<string>();
   for (const t of ts) {
     const h = (t.h || 20 / scale) * 1.5, kind = gridKind(t.s.trim());
-    const same = ts.filter(o => gridKind(o.s.trim()) === kind && (dir === 'row' ? Math.abs(o.y - t.y) < h : Math.abs(o.x - t.x) < h));
+    // (bubbles share one letter height: other numbers on the same line, a neighbouring sheet's, are not grid labels)
+    const same = ts.filter(o => gridKind(o.s.trim()) === kind && (dir === 'row' ? Math.abs(o.y - t.y) < h : Math.abs(o.x - t.x) < h)
+      && (!t.h || !o.h || Math.abs(o.h - t.h) <= Math.max(o.h, t.h) * 0.1));
     const at = new Map<string, number>();
     for (const o of same.sort((p, q) => (dir === 'row' ? p.x - q.x : p.y - q.y))) if (!at.has(o.s.trim())) at.set(o.s.trim(), dir === 'row' ? o.x : o.y);
     const key = [...at.keys()].join(',');
@@ -556,7 +648,10 @@ export function analyzeBuilding(d: DxfDrawing, defaultH = WALL_H): BuildingAnaly
   for (const g of d.segs) if (wallSet.has(g.layer) || guessLayerKind(g.layer) === 'wall') wallSegs++;
   if (plans.length && wallSegs < 300) warnings.push(`整份圖只讀到 ${wallSegs} 條牆線，這比較像「面積檢討圖」或示意圖，不是畫有牆、門窗的施工平面圖，所以 3D 會幾乎是空的。請改匯入含牆線與門窗的各層平面圖（常見檔名如「各層平面圖」「平面配置圖」的施工圖版本），或直接把這份圖的樓地板面積當作對帳用。`);
   checks.push(...gridChecks(d, views, plans, scale));
-  return { views, plans, levels, storeys, schedule, parapet, scale, wallLayers, colLayers, warnings, checks };
+  const sb = sectionBeams(d, views, storeys, scale);
+  if (sb.beams.length) checks.push({ item: '梁（剖面圖）', ok: 'ok', text: `剖面圖讀到 ${sb.beams.length} 處梁的編號與尺寸（${[...new Set(sb.beams.map(b => `${b.mark} ${b.w}×${b.h}`))].slice(0, 8).join('、')}${sb.beams.length > 8 ? ' 等' : ''}），沒有結構圖的樓層依此建梁${sb.beams.some(b => b.foot) ? '與地梁' : ''}${sb.blinding ? `，基礎下 ${sb.blinding} cm PC 墊層` : ''}` });
+  const fenceH = fenceHeight(d, views, scale);
+  return { views, plans, levels, storeys, schedule, parapet, scale, wallLayers, colLayers, warnings, checks, beams: sb.beams, blinding: sb.blinding, fenceH };
 }
 
 /**
@@ -1780,7 +1875,8 @@ interface PlanLine { x1: number; z1: number; x2: number; z2: number; win: boolea
  */
 function fillBetweenColumns(objects: ModelObject[], f: CadFloor, lines: PlanLine[], outdoor: { x: number; z: number }[], id: number): number {
   const mine = objects.filter((o): o is BoxObject => isBox(o) && o.floor === f.key);
-  const cols = mine.filter(o => o.layer === 'wall' && !o.rot && Math.min(o.w, o.d) >= 25 && Math.max(o.w, o.d) <= 120 && Math.max(o.w, o.d) <= Math.min(o.w, o.d) * 2.5 && o.h >= f.h * 0.8);
+  // (columns read from a column layer stand in the walls already drawn: no fill between them)
+  const cols = mine.filter(o => o.layer === 'wall' && !o.rot && o.src !== 'column' && Math.min(o.w, o.d) >= 25 && Math.max(o.w, o.d) <= 120 && Math.max(o.w, o.d) <= Math.min(o.w, o.d) * 2.5 && o.h >= f.h * 0.8);
   if (cols.length < 2) return id;
   const doors = objects.filter((o): o is DoorObject => !isBox(o) && o.layer === 'door' && o.floor === f.key);
   const done = new Set<string>();
@@ -1910,7 +2006,7 @@ export function buildBuilding(d: DxfDrawing, a: BuildingAnalysis, name: string, 
   /** names of open-air spaces on each storey (外廊, 露台 …) on any layer: they are not under the roof */
   const outdoorOf = new Map<string, { x: number; z: number }[]>(), roomsOf = new Map<string, { x: number; z: number }[]>();
   const slants: { key: string; side: 'w' | 'e'; x1: number; z1: number; x2: number; z2: number }[] = [];
-  const beamLines: { st: Storey; xs: number[]; zs: number[] }[] = [];
+  const beamLines: { st: Storey; xs: number[]; zs: number[]; grids: Map<string, { axis: 'x' | 'z'; at: Map<string, number> }> }[] = [];
   /** drawing layer names, referred to by number from each floor's plan lines */
   const layerNames: string[] = [], layerNo = (l: string) => { const i = layerNames.indexOf(l); return i >= 0 ? i : layerNames.push(l) - 1; };
 
@@ -2172,6 +2268,51 @@ export function buildBuilding(d: DxfDrawing, a: BuildingAnalysis, name: string, 
       else add({ ...w, layer: rail.glass ? 'glass' : 'rail', y: 0, h: rail.h, w: w.w >= w.d ? w.w : 4, d: w.w >= w.d ? 4 : w.d, name: rail.name, color: rail.glass ? 0xa9dcff : 0x6b7280 });
       nRails++;
     }
+    // columns on a layer named for them (column, 柱): a red outline, often only three sides with the fourth on the wall
+    // line it stands against; each becomes a 柱 reaching through that wall (the pairs its lines made are not walls)
+    if (!parapet) {
+      const COLL = /(^|\$)(column|col|柱)[^$]*$/i;
+      const cs = [...g.segs.filter(q => COLL.test(q.layer)).map(q => [q.a, q.b]),
+        ...d.polys.filter(p => COLL.test(p.layer) && p.pts.length && inBox(plan.box, p.pts[0][0], p.pts[0][1])).flatMap(p => p.pts.slice(1).map((q, i) => [p.pts[i], q]).concat(p.closed ? [[p.pts[p.pts.length - 1], p.pts[0]]] : []))]
+        .map(([a, b]) => ({ x1: X(a[0]), z1: Z(a[1]), x2: X(b[0]), z2: Z(b[1]) }))
+        .filter(q => (Math.abs(q.x1 - q.x2) < 1 || Math.abs(q.z1 - q.z2) < 1) && Math.hypot(q.x2 - q.x1, q.z2 - q.z1) >= 5);
+      // connected outlines
+      const grp = cs.map((_, i) => i), root = (i: number): number => grp[i] === i ? i : (grp[i] = root(grp[i]));
+      const near = (p: number[], q: number[]) => Math.abs(p[0] - q[0]) < 3 && Math.abs(p[1] - q[1]) < 3;
+      for (let i = 0; i < cs.length; i++) for (let j = i + 1; j < cs.length; j++) {
+        const a = cs[i], b = cs[j];
+        if ([[a.x1, a.z1], [a.x2, a.z2]].some(p => [[b.x1, b.z1], [b.x2, b.z2]].some(q => near(p, q)))) grp[root(i)] = root(j);
+      }
+      const sets = new Map<number, typeof cs>();
+      cs.forEach((q, i) => (sets.get(root(i)) || sets.set(root(i), []).get(root(i))!).push(q));
+      const made: BoxObject[] = [];
+      for (const qs of sets.values()) {
+        let x0 = minOf(qs.flatMap(q => [q.x1, q.x2])), x1 = maxOf(qs.flatMap(q => [q.x1, q.x2])), z0 = minOf(qs.flatMap(q => [q.z1, q.z2])), z1 = maxOf(qs.flatMap(q => [q.z1, q.z2]));
+        if (x1 - x0 < 15 || z1 - z0 < 15 || x1 - x0 > 200 || z1 - z0 > 200) continue;
+        // a side with no line of its own is open onto the wall: carry the column through to the wall's far face
+        const on = (horiz: boolean, c: number, lo: number, hi: number) => qs.filter(q => horiz ? Math.abs(q.z1 - c) < 2 && Math.abs(q.z2 - c) < 2 : Math.abs(q.x1 - c) < 2 && Math.abs(q.x2 - c) < 2)
+          .reduce((n, q) => n + (horiz ? Math.abs(q.x2 - q.x1) : Math.abs(q.z2 - q.z1)), 0) >= (hi - lo) * 0.6;
+        const sides = { n: on(true, z0, x0, x1), s: on(true, z1, x0, x1), w: on(false, x0, z0, z1), e: on(false, x1, z0, z1) };
+        const through = (side: 'n' | 's' | 'w' | 'e') => {
+          const horiz = side === 'n' || side === 's', c = { n: z0, s: z1, w: x0, e: x1 }[side], out = side === 'n' || side === 'w' ? -1 : 1;
+          const host = walls.find(o => !o.rot && (horiz ? o.w > o.d && Math.abs((o.z - out * o.d / 2) - c) < 4 && o.x - o.w / 2 < x1 && o.x + o.w / 2 > x0
+            : o.d > o.w && Math.abs((o.x - out * o.w / 2) - c) < 4 && o.z - o.d / 2 < z1 && o.z + o.d / 2 > z0) && Math.min(o.w, o.d) <= 60);
+          return host ? (horiz ? host.z + out * host.d / 2 : host.x + out * host.w / 2) : c;
+        };
+        if (!sides.n) z0 = through('n');
+        if (!sides.s) z1 = through('s');
+        if (!sides.w) x0 = through('w');
+        if (!sides.e) x1 = through('e');
+        const x = (x0 + x1) / 2, z = (z0 + z1) / 2;
+        if (x < -50 || z < -50 || x > W + 50 || z > D + 50) continue;
+        if ([...made, ...objects.filter((o): o is BoxObject => isBox(o) && o.floor === st.key && o.name === '柱')].some(o => Math.abs(o.x - x) < 10 && Math.abs(o.z - z) < 10)) continue;
+        made.push({ id: 0, layer: 'wall', name: '柱', x, z, w: Math.round(x1 - x0), d: Math.round(z1 - z0), y: 0, h: H, color: 0xeeebe5, src: 'column' });
+      }
+      if (made.length) {
+        for (let i = walls.length - 1; i >= 0; i--) if (walls[i].src && COLL.test(walls[i].src!)) walls.splice(i, 1);
+        for (const c of made) { const { id: _, ...o } = c; add(o); }
+      }
+    }
     for (const b of walls) if (b.w > 1 && b.d > 1) add({ ...b, y: 0, name: parapet ? '女兒牆（CAD）' : b.name });
     for (const b of railCand) {
       add({ ...b, layer: 'wall', y: 0, h: railing.h, name: 'RC欄杆（CAD）', color: 0xeeebe5 });
@@ -2208,7 +2349,18 @@ export function buildBuilding(d: DxfDrawing, a: BuildingAnalysis, name: string, 
       const byWall = (x: number, z: number) => walls.some(b => Math.abs(x - b.x) <= b.w / 2 + 12 && Math.abs(z - b.z) <= b.d / 2 + 12 && (!b.rot || Math.abs(Math.sin(b.rot * 2)) < 0.01));
       for (const t of sp.rails) if (!byWall((t.x0 + t.x1) / 2, (t.z0 + t.z1) / 2)) add({ layer: 'rail', name: '樓梯扶手（CAD）', x: (t.x0 + t.x1) / 2, z: (t.z0 + t.z1) / 2, w: Math.max(4, t.x1 - t.x0), d: Math.max(4, t.z1 - t.z0), h: 90, y: t.top, color: 0x4b5563, rise: r });
     }
-    if (!parapet) beamLines.push({ st, xs: g.gx.map(X), zs: g.gy.map(Z) });
+    if (!parapet) {
+      // grid bubbles by label, for the beams read off the sections (bubbles may sit a little outside the view)
+      const [bx0, by0, bx1, by1] = plan.box, mx = (bx1 - bx0) * 0.3, my = (by1 - by0) * 0.3, gb: SheetView['box'] = [bx0 - mx, by0 - my, bx1 + mx, by1 + my];
+      const grids = new Map<string, { axis: 'x' | 'z'; at: Map<string, number> }>();
+      // per kind the longest run of bubbles (stair tread numbers or a table's row numbers can also line up)
+      for (const dir of ['row', 'col'] as const) for (const gr of gridLines(d, gb, dir, a.scale)) {
+        const cur = grids.get(gr.kind);
+        if (cur && cur.at.size >= gr.at.size) continue;
+        grids.set(gr.kind, { axis: dir === 'row' ? 'x' : 'z', at: new Map([...gr.at].map(([l, v]) => [l, dir === 'row' ? X(v) : Z(v)])) });
+      }
+      beamLines.push({ st, xs: g.gx.map(X), zs: g.gy.map(Z), grids });
+    }
     const holes = [...below, ...(passHoles.get(st.key) || [])];
     holesOf.set(st.key, holes);
     slabsOf.set(st.key, []);
@@ -2406,9 +2558,47 @@ export function buildBuilding(d: DxfDrawing, a: BuildingAnalysis, name: string, 
     }
   }
   // beams are rarely on architectural plans: estimate one along every grid line, under the slab of the storey above
+  // beams read off the sections (no structural plans): each on its grid line, its own size, where the slab above covers
+  // the line; the foundation beams under the ground floor slab, on a blinding of lean concrete
+  const secLines = new Map<string, { axis: 'x' | 'z'; at: number }[]>();
+  let footDeep = 0;
+  for (const { st, grids } of beamLines) {
+    if (drawn.has(st.key)) continue;
+    const i = a.storeys.indexOf(st), next = a.storeys[i + 1];
+    for (const sb of a.beams || []) {
+      const foot = sb.foot && i === 0;
+      if (!foot && (sb.foot || !next || sb.level !== next.key)) continue;
+      const gr = grids.get(sb.kind), pa = gr?.at.get(sb.a), pb = gr?.at.get(sb.b);
+      if (!gr || pa === undefined || pb === undefined) continue;
+      const at = pa + sb.t * (pb - pa), along = gr.axis === 'x' ? 'z' : 'x';
+      const over = slabsOf.get(foot ? st.key : next!.key) || [];
+      // (the slab beside the line: on a wall line the slab stops at the wall faces)
+      const reach = sb.w / 2 + 30;
+      const runs = over.filter(r => along === 'z' ? at >= r.x0 - reach && at <= r.x1 + reach : at >= r.z0 - reach && at <= r.z1 + reach)
+        .map(r => along === 'z' ? [r.z0, r.z1] : [r.x0, r.x1]).sort((p, q) => p[0] - q[0]);
+      const merged: number[][] = [];
+      for (const r of runs) { const m = merged[merged.length - 1]; if (m && r[0] <= m[1] + 1) m[1] = Math.max(m[1], r[1]); else merged.push([...r]); }
+      const top = foot ? st.base : next!.base;
+      for (const [lo, hi] of merged) {
+        if (hi - lo < 100) continue;
+        const c = along === 'z' ? Math.min(W - sb.w / 2, Math.max(sb.w / 2, at)) : Math.min(D - sb.w / 2, Math.max(sb.w / 2, at));
+        objects.push({ id: id++, layer: 'slab', name: `${foot ? '地梁' : '梁'} ${sb.mark} ${sb.w}×${sb.h}（剖面圖）`, floor: st.key, y: top - sb.h, h: sb.h, color: 0xcfc9bd,
+          ...(along === 'z' ? { x: c, z: (lo + hi) / 2, w: sb.w, d: hi - lo } : { x: (lo + hi) / 2, z: c, w: hi - lo, d: sb.w }), rc: { kind: 'beam', mark: sb.mark, fl: foot ? st.key : next!.key } });
+        (secLines.get(st.key) || secLines.set(st.key, []).get(st.key)!).push({ axis: gr.axis, at });
+        if (foot) footDeep = Math.max(footDeep, sb.h);
+      }
+    }
+  }
+  if (footDeep && a.blinding && a.storeys[0]) {
+    const g0 = a.storeys[0];
+    for (const r of slabsOf.get(g0.key) || [])
+      objects.push({ id: id++, layer: 'slab', name: `基礎PC墊層 ${a.blinding}cm（剖面圖）`, floor: g0.key, x: (r.x0 + r.x1) / 2, z: (r.z0 + r.z1) / 2, w: r.x1 - r.x0, d: r.z1 - r.z0, h: a.blinding, y: g0.base - footDeep - a.blinding, color: 0xbdb8ae });
+  }
   for (const { st, xs, zs } of beamLines) {
     if (drawn.has(st.key)) continue;
     const next = a.storeys[a.storeys.indexOf(st) + 1], above = next ? slabsOf.get(next.key) || [] : [];
+    // grid lines a section gave a beam on keep that beam
+    const done = secLines.get(st.key) || [];
     const beam = (axis: 'x' | 'z', at: number) => {
       // where the slab above covers the grid line
       const runs = above.filter(r => axis === 'x' ? at >= r.z0 && at <= r.z1 : at >= r.x0 && at <= r.x1)
@@ -2422,8 +2612,8 @@ export function buildBuilding(d: DxfDrawing, a: BuildingAnalysis, name: string, 
           ...(axis === 'x' ? { x: (lo + hi) / 2, z: c, w: hi - lo, d: BEAM_W } : { x: c, z: (lo + hi) / 2, w: BEAM_W, d: hi - lo }) });
       }
     };
-    for (const x of xs) if (x > -5 && x < W + 5) beam('z', x);
-    for (const z of zs) if (z > -5 && z < D + 5) beam('x', z);
+    for (const x of xs) if (x > -5 && x < W + 5 && !done.some(l => l.axis === 'x' && Math.abs(l.at - x) < 30)) beam('z', x);
+    for (const z of zs) if (z > -5 && z < D + 5 && !done.some(l => l.axis === 'z' && Math.abs(l.at - z) < 30)) beam('x', z);
   }
   // slab panels read from the structural plans fill the floor where no walls enclose it
   for (const p of rcPanels) {
@@ -2636,6 +2826,22 @@ export function buildBuilding(d: DxfDrawing, a: BuildingAnalysis, name: string, 
     for (const r of add) {
       objects.push({ id: id++, layer: 'slab', name: st.key === 'RF' ? '屋頂板（CAD）' : '樓板（CAD）', floor: st.key, x: (r.x0 + r.x1) / 2, z: (r.z0 + r.z1) / 2, w: r.x1 - r.x0, d: r.z1 - r.z0, h: SLAB, y: st.base - SLAB, color: 0xd6d1c7 });
       slabsOf.get(st.key)!.push(r);
+    }
+  }
+  // the ground floor slab runs under the whole storey above, open fronts too (parking bays, a shop front, an arcade
+  // with no wall closing it off on the plan)
+  {
+    const g = a.storeys[0], up = a.storeys.slice(1).find(q => !/MF$/.test(q.key));
+    if (g && up && slabsOf.has(g.key)) {
+      // within the storey's own structure (its full-height walls and columns), not under eaves or a cantilever
+      const full = objects.filter((o): o is BoxObject => isBox(o) && o.floor === g.key && o.layer === 'wall' && !o.rot && o.h >= g.h * 0.8);
+      const fx0 = minOf(full.map(o => o.x - o.w / 2)), fx1 = maxOf(full.map(o => o.x + o.w / 2)), fz0 = minOf(full.map(o => o.z - o.d / 2)), fz1 = maxOf(full.map(o => o.z + o.d / 2));
+      const inside = (slabsOf.get(up.key) || []).map(r => ({ x0: Math.max(r.x0, fx0), x1: Math.min(r.x1, fx1), z0: Math.max(r.z0, fz0), z1: Math.min(r.z1, fz1) })).filter(r => r.x1 > r.x0 && r.z1 > r.z0);
+      for (const r of full.length ? subtractRects(inside, slabsOf.get(g.key)!, W, D) : []) {
+        if ((r.x1 - r.x0) * (r.z1 - r.z0) < 2500) continue;
+        objects.push({ id: id++, layer: 'slab', name: '地坪（CAD）', floor: g.key, x: (r.x0 + r.x1) / 2, z: (r.z0 + r.z1) / 2, w: r.x1 - r.x0, d: r.z1 - r.z0, h: SLAB, y: g.base - SLAB, color: 0xd6d1c7 });
+        slabsOf.get(g.key)!.push(r);
+      }
     }
   }
   // floor openings marked on the plans: cut out of the slabs (beams stay where they are)
@@ -2887,6 +3093,25 @@ export function buildBuilding(d: DxfDrawing, a: BuildingAnalysis, name: string, 
   if (bb) for (let i = objects.length - 1; i >= 0; i--) {
     const o = objects[i];
     if (isBox(o) && o.layer === 'slab' && Math.max(o.w, o.d) <= 320 && (o.x - o.w / 2 > bb.x1 || o.x + o.w / 2 < bb.x0 || o.z - o.d / 2 > bb.z1 || o.z + o.d / 2 < bb.z0)) objects.splice(i, 1);
+  }
+  // site walls: low walls on the ground floor outside the building (beyond its full-height walls and the storey above),
+  // or on a 圍牆 layer; as high as the elevations draw them when a low box on an elevation stands over them
+  {
+    const g = a.storeys[0], up = a.storeys.slice(1).find(q => !/MF$/.test(q.key));
+    const mine = objects.filter((o): o is BoxObject => isBox(o) && o.floor === g?.key && o.layer === 'wall' && !o.rot);
+    const full = mine.filter(o => o.h >= (g?.h || 300) * 0.8 && Math.max(o.w, o.d) >= 150);
+    const plate = up ? slabsOf.get(up.key) || [] : [];
+    if (g && full.length) {
+      const fx0 = minOf(full.map(o => o.x - o.w / 2)), fx1 = maxOf(full.map(o => o.x + o.w / 2)), fz0 = minOf(full.map(o => o.z - o.d / 2)), fz1 = maxOf(full.map(o => o.z + o.d / 2));
+      for (const o of mine) {
+        const named = /圍牆/.test(o.src || '');
+        const outside = o.x + o.w / 2 < fx0 - 20 || o.x - o.w / 2 > fx1 + 20 || o.z + o.d / 2 < fz0 - 20 || o.z - o.d / 2 > fz1 + 20;
+        const under = plate.some(r => o.x + o.w / 2 > r.x0 - 30 && o.x - o.w / 2 < r.x1 + 30 && o.z + o.d / 2 > r.z0 - 30 && o.z - o.d / 2 < r.z1 + 30);
+        if (!named && !(o.h <= 200 && outside && !under)) continue;
+        o.name = '圍牆（CAD）'; o.wall = 'rc';
+        if (a.fenceH) { o.h = a.fenceH; }
+      }
+    }
   }
   // with the site items gone the model can start well inside the drawn area: move it to the origin so the
   // stated width and depth are the building's

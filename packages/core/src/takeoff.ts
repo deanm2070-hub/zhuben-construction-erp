@@ -96,7 +96,9 @@ export function computeTakeoff(inp: TakeoffInput): Takeoff {
   const fl = S.floor;
   const cx = bounds.W / 2, cz = bounds.D / 2;
   const boxes = objects.filter(isBox);
-  const walls = boxes.filter(o => o.layer === 'wall' && o.h > 0);
+  // a site wall (圍牆) is priced under 道路排水溝及圍牆, not with the building's walls
+  const fences = boxes.filter(o => o.layer === 'wall' && o.h > 0 && /^圍牆/.test(o.name));
+  const walls = boxes.filter(o => o.layer === 'wall' && o.h > 0 && !fences.includes(o));
   // concrete walls: by line colour when the plans give one (same colour as the exterior wall), else by name and thickness
   // a concrete wall is at least 12 cm thick: thinner pairs of lines in the exterior-wall colour are finishes or partitions
   const isExt = (o: BoxObject) => o.wall ? o.wall === 'rc' && Math.min(o.w, o.d) >= 12 : /外牆|窗台|窗楣|女兒牆/.test(o.name) || Math.min(o.w, o.d) >= 18;
@@ -112,7 +114,8 @@ export function computeTakeoff(inp: TakeoffInput): Takeoff {
   const ext = rcWalls.filter(o => !(o.wall === 'rc' && /^RC牆/.test(o.name))), int = full.filter(o => !isExt(o) && !o.rc);
   // a light partition over a door (and under a window in one) is part of the partition
   const intFill = walls.filter(o => !isExt(o) && !o.rc && !full.includes(o) && /^輕隔間(門楣|牆下)/.test(o.name));
-  const slabs = boxes.filter(o => o.layer === 'slab' && !/梁|屋簷/.test(o.name)), eaves = boxes.filter(o => o.layer === 'slab' && /屋簷/.test(o.name));
+  const slabs = boxes.filter(o => o.layer === 'slab' && !/梁|屋簷|PC墊層/.test(o.name)), eaves = boxes.filter(o => o.layer === 'slab' && /屋簷/.test(o.name));
+  const blinding = boxes.filter(o => o.layer === 'slab' && /PC墊層/.test(o.name));
   const railings = boxes.filter(o => /欄杆/.test(o.name) && (o.layer === 'glass' || o.layer === 'rail'));
   const map = roomMap(objects, bounds, inp.labels, inp.rects);
   const rooms: RoomWithFinish[] = map.rooms.map(r => ({ ...r, fl, fin: { ...defaultFinish(r.name), ...(inp.finishes[r.name] || {}) } }));
@@ -364,6 +367,16 @@ export function computeTakeoff(inp: TakeoffInput): Takeoff {
     if (name !== '屋頂板') slabArea = slabA;
     if (name === '屋頂板') row(SEC.water, '屋頂.露台防水處理（含保護層）', '㎡', '屋頂板', `面積 ${r2(slabA)} ㎡`, slabA);
   }
+  if (fences.length) {
+    const L = sum(fences, o => Math.max(o.w, o.d)) / 100, A = sum(fences, o => Math.max(o.w, o.d) * o.h) / 1e4, V = sum(fences, o => o.w * o.d * o.h) / 1e6;
+    const t = Math.min(fences[0].w, fences[0].d), h = fences[0].h;
+    row(SEC.road, '圍牆 3500PSI 預拌混凝土', 'M3', '圍牆', `長 ${r2(L)} m × 高 ${m(h)} m × 厚 ${m(t)} m`, V);
+    row(SEC.road, '圍牆 模板(含放樣)', '㎡', '圍牆', `長 ${r2(L)} m × 高 ${m(h)} m × 2 面`, A * 2);
+    row(SEC.road, '圍牆 泥作打底', '㎡', '圍牆', `長 ${r2(L)} m × 高 ${m(h)} m × 2 面`, A * 2);
+  }
+  // lean concrete under the foundation (no formwork)
+  const pcA = sum(blinding, o => o.w * o.d / 1e4);
+  if (pcA > 0) row(SEC.site, '2000PSI預拌混凝土', 'M3', '基礎PC墊層', `面積 ${r2(pcA)} ㎡ × 厚 ${m(blinding[0].h)} m`, pcA * blinding[0].h / 100);
   const eaveA = sum(eaves, o => o.w * o.d / 1e4);
   if (eaveA > 0) {
     const t = eaves[0].h || S.slab;
