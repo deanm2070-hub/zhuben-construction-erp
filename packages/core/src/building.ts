@@ -1564,12 +1564,13 @@ function stairsOf(segs: { x1: number; z1: number; x2: number; z2: number }[], no
     }
     return far;
   };
-  return planStairs(flights, H, start, extent).map(sp => {
+  const labOf = new Map<StairPlan, { x: number; z: number; s: string }>();
+  const plans = planStairs(flights, H, start, extent).map(sp => {
     // the 上 label of this stair gives its riser count
     const xs = sp.holes.flatMap(h => [h.x0, h.x1]), zs = sp.holes.flatMap(h => [h.z0, h.z1]);
     const lab = start.find(n => n.x > minOf(xs) - 60 && n.x < maxOf(xs) + 60 && n.z > minOf(zs) - 60 && n.z < maxOf(zs) + 60)
       // a riser count (U22) may sit a little further off, by the first step between two columns
-      ?? start.find(n => /^U\d/i.test(n.s.trim()) && n.x > minOf(xs) - 150 && n.x < maxOf(xs) + 150 && n.z > minOf(zs) - 150 && n.z < maxOf(zs) + 150);
+      ?? start.find(n => /^U(P)?\s*\d/i.test(n.s.trim()) && n.x > minOf(xs) - 150 && n.x < maxOf(xs) + 150 && n.z > minOf(zs) - 150 && n.z < maxOf(zs) + 150);
     const N = lab ? +(/\d+/.exec(lab.s)?.[0] || 0) : 0;
     if (!(N >= 4 && N <= 80)) {
       // a few steps with no count written that would need risers over 21 cm to reach the floor above are only a
@@ -1593,11 +1594,25 @@ function stairsOf(segs: { x1: number; z1: number; x2: number; z2: number }[], no
         if (go) return { ...go, labelled: N, climb };
       }
     }
-    if (climb === H) return { ...sp, labelled: N, climb };
     const box = { x0: minOf(xs), x1: maxOf(xs), z0: minOf(zs), z1: maxOf(zs) };
-    const again = planStairs(flights, climb, [lab!], extent).find(q => q.holes.some(h => h.x0 < box.x1 && h.x1 > box.x0 && h.z0 < box.z1 && h.z1 > box.z0));
+    const over = (q: StairPlan) => q.holes.some(h => h.x0 < box.x1 && h.x1 > box.x0 && h.z0 < box.z1 && h.z1 > box.z0);
+    // a U stair with its count written: risers of climb / N each, round its flights until all N are climbed
+    const round = planStairs(flights, climb, [lab!], extent, N).find(q => over(q) && q.risers === N && q.landings.length > 0);
+    if (round && (climb > H || sp.landings.length)) {
+      const r = { ...round, labelled: N, climb };
+      labOf.set(r, lab!);
+      return r;
+    }
+    if (climb === H) return { ...sp, labelled: N, climb };
+    const again = planStairs(flights, climb, [lab!], extent).find(over);
     return again ? { ...again, labelled: N, climb } : { ...sp, labelled: N, climb: H };
   });
+  // a U stair drawn as two flights is planned once per flight; the round one built from its count covers both
+  const hit = (a: StairPlan, b: StairPlan) => a.holes.some(h => b.holes.some(o => h.x0 < o.x1 && h.x1 > o.x0 && h.z0 < o.z1 && h.z1 > o.z0));
+  const rounds = plans.filter(p => labOf.has(p));
+  return plans.filter(p => labOf.has(p)
+    ? rounds.find(r => labOf.get(r) === labOf.get(p)) === p
+    : !rounds.some(r => r.labelled === p.labelled && hit(r, p)));
 }
 
 /** Choices the user made on the review page; each defaults to what the drawing suggests. */

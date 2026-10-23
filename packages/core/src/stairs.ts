@@ -63,6 +63,33 @@ export function findFlights(segs: Seg[]): StairFlight[] {
     }
     flush();
   }
+  return joinFlights(out);
+}
+
+/**
+ * Pieces of one flight drawn apart: tread lines broken by a cut line (the part above the cut drawn shorter or longer)
+ * or a straight stair with a landing part-way (the same width and tread depth on both sides of a gap up to 2.5 m).
+ * They become one flight whose lines keep the gap; the gap is the landing.
+ */
+function joinFlights(fl: StairFlight[]): StairFlight[] {
+  const run = (f: StairFlight) => (f.at[f.at.length - 1] - f.at[0]) / (f.at.length - 1);
+  const out = [...fl];
+  for (let again = true; again;) {
+    again = false;
+    for (const a of out) for (const b of out) {
+      if (a === b || a.axis !== b.axis || b.at[0] <= a.at[a.at.length - 1]) continue;
+      // across: the narrower one lies within the wider, give or take 10 cm
+      const inside = (p: StairFlight, q: StairFlight) => p.lo >= q.lo - 10 && p.hi <= q.hi + 10;
+      if (!inside(a, b) && !inside(b, a)) continue;
+      if (Math.min(a.hi, b.hi) - Math.max(a.lo, b.lo) < 0.7 * Math.min(a.hi - a.lo, b.hi - b.lo)) continue;
+      const ra = run(a), rb = run(b), gap = b.at[0] - a.at[a.at.length - 1];
+      if (Math.abs(ra - rb) > 3 || gap > 250 || gap < ra - 3) continue;
+      const j: StairFlight = { axis: a.axis, lo: Math.min(a.lo, b.lo), hi: Math.max(a.hi, b.hi), at: [...a.at, ...b.at] };
+      out.splice(out.indexOf(a), 1, j); out.splice(out.indexOf(b), 1);
+      again = true;
+      break;
+    }
+  }
   return out;
 }
 
@@ -74,7 +101,10 @@ export function findFlights(segs: Seg[]): StairFlight[] {
  * `start` is where the up arrow / 上 label sits; the flight closest to it starts the climb.
  * `extent` returns how far the stair linework reaches along a flight past a given position.
  */
-export function planStairs(flights: StairFlight[], H: number, start: { x: number; z: number }[], extent: (f: StairFlight, dir: 1 | -1) => number): StairPlan[] {
+export function planStairs(flights: StairFlight[], H: number, start: { x: number; z: number }[], extent: (f: StairFlight, dir: 1 | -1) => number,
+  /** a riser count written on the plan (UP45): every riser is H / N, and a U stair goes on round its two flights
+   * (one storey above another, past a mezzanine) until all N are climbed */
+  count?: number): StairPlan[] {
   const used = new Set<StairFlight>();
   const plans: StairPlan[] = [];
   const near = (f: StairFlight, p: { x: number; z: number }) => {
@@ -100,9 +130,14 @@ export function planStairs(flights: StairFlight[], H: number, start: { x: number
     // the two flights of a U stair lie side by side; one may show a tread or two fewer (cut short on the plan)
     const B = flights.find(q => q !== A && !used.has(q) && q.axis === A.axis
       && (q.at.length === n ? Math.abs(q.at[0] - A.at[0]) < 3 && Math.abs(q.at[n - 1] - A.at[n - 1]) < 3
-        : Math.abs(q.at.length - n) <= 3 && ov(q) > 0.7 * Math.min(q.at[q.at.length - 1] - q.at[0], A.at[n - 1] - A.at[0]))
+        : Math.abs(q.at.length - n) <= (count ? 6 : 3) && ov(q) > 0.7 * Math.min(q.at[q.at.length - 1] - q.at[0], A.at[n - 1] - A.at[0]))
       && (Math.abs(q.lo - A.hi) < 40 || Math.abs(A.lo - q.hi) < 40));
     used.add(A);
+    if (B && count && A.at.length + B.at.length >= Math.min(count, 1.5 * Math.max(A.at.length, B.at.length))) {
+      used.add(B);
+      plans.push(roundU(A, B));
+      continue;
+    }
     // unequal flights: both take the treads of the longer one
     if (B && B.at.length > n) { A = { ...A, at: B.at }; n = A.at.length; }
     const first = A.at[0], last = A.at[n - 1];
@@ -140,4 +175,37 @@ export function planStairs(flights: StairFlight[], H: number, start: { x: number
     plans.push({ steps, landings, rails, holes, risers: risers * 2, width: up.hi - up.lo, run: (A.at[n - 1] - A.at[0]) / (n - 1) });
   }
   return plans;
+
+  /** a U stair climbed riser by riser at H / count, each flight as drawn, round and round until count risers */
+  function roundU(A: StairFlight, B: StairFlight): StairPlan {
+    const N = count!, r = H / N;
+    const startA = start.find(p => near(A, p)), startB = start.find(p => near(B, p));
+    const first = startB && !startA ? B : A, s = startA || startB;
+    const along = (f: StairFlight) => s ? (f.axis === 'z' ? s.z : s.x) : f.at[0];
+    // the first flight climbs away from the label; the second comes back
+    let dir: 1 | -1 = Math.abs(along(first) - first.at[0]) <= Math.abs(along(first) - first.at[first.at.length - 1]) ? 1 : -1;
+    const steps: StairStep[] = [], landings: StairStep[] = [], rails: StairPlan['rails'] = [];
+    const lo = Math.min(A.lo, B.lo), hi = Math.max(A.hi, B.hi), inner = A.hi <= B.lo + 1 ? (A.hi + B.lo) / 2 : (A.lo + B.hi) / 2;
+    let f = first, k = 0;
+    const ends: number[] = [];
+    while (k < N - 1) {
+      const at = dir > 0 ? f.at : [...f.at].reverse();
+      for (let j = 1; j < at.length && k < N - 1; j++) {
+        k++;
+        steps.push({ ...rect(f, at[j - 1], at[j]), top: k * r, soffit: sof(f, at[j - 1], at[j], (k - 1) * r, k * r) });
+        rails.push(railAt(f, inner, at[j - 1], at[j], k * r));
+      }
+      if (k >= N - 1) break;
+      // the turn: a landing across both flights past the last tread, one riser up
+      k++;
+      const end = at[at.length - 1], far = extent(f, dir);
+      const out = Math.abs(far - end) > 20 ? far : end + dir * (f.hi - f.lo);
+      ends.push(out);
+      landings.push({ ...rect(f, end, out, lo, hi), top: k * r });
+      f = f === A ? B : A;
+      dir = dir > 0 ? -1 : 1;
+    }
+    const a0 = Math.min(...A.at, ...B.at, ...ends), a1 = Math.max(...A.at, ...B.at, ...ends);
+    return { steps, landings, rails, holes: [rect(A, a0, a1, lo, hi)], risers: N, width: first.hi - first.lo, run: (A.at[A.at.length - 1] - A.at[0]) / (A.at.length - 1) };
+  }
 }
