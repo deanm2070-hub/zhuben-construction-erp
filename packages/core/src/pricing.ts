@@ -49,7 +49,8 @@ export interface PricedBudget {
 }
 
 /** Prices the budget lines of a takeoff and the hand-typed lines, section by section, then adds the fees and tax. */
-export function priceBudget(budget: BudgetLine[], P: Pricing): PricedBudget {
+/** defaults: unit prices by `name|unit` (from the 建材項目 list), used where the budget has none typed */
+export function priceBudget(budget: BudgetLine[], P: Pricing, defaults: Record<string, PriceRate> = {}): PricedBudget {
   const sections: PricedSection[] = [], hidden: PricedBudget['hidden'] = [];
   let cur: PricedSection | null = null;
   const line = (sec: string, i: number, name: string, unit: string, q0: number | string | undefined, note: string, rate: PriceRate, custom?: CustomLine, tpl?: boolean): PricedLine => {
@@ -64,7 +65,7 @@ export function priceBudget(budget: BudgetLine[], P: Pricing): PricedBudget {
   for (const b of budget) {
     if (b.sec) { cur = { sec: b.sec, lines: [], mat: 0, lab: 0, eq: 0, total: 0 }; sections.push(cur); continue; }
     if (!cur) continue;
-    const key = budgetKey(cur.sec, b.name || '', b.unit || ''), rate = P.rates[key] || {};
+    const key = budgetKey(cur.sec, b.name || '', b.unit || ''), rate: PriceRate = { ...defaults[`${b.name}|${b.unit}`], ...P.rates[key] };
     if (rate.hidden) { hidden.push({ key, sec: cur.sec, name: b.name || '', unit: b.unit || '' }); continue; }
     cur.lines.push(line(cur.sec, cur.lines.length + 1, b.name || '', b.unit || '', b.q, b.note || '', rate, undefined, b.tpl));
   }

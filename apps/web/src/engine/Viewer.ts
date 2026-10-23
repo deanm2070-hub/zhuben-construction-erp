@@ -1,6 +1,6 @@
 import {
   isBox, isDoor, memberOf, roomSlabAt, unpackMesh, SAMPLE_D, SAMPLE_ROOMS, SAMPLE_W, WALL_H,
-  type BoxObject, type CadData, type DoorObject, type ModelObject, type RoomRect, type SketchLine,
+  type BoxObject, type CadData, type Material, type DoorObject, type ModelObject, type RoomRect, type SketchLine,
 } from '@cloud-modeler/core';
 import * as THREE from 'three';
 import { OrbitControls } from 'three/examples/jsm/controls/OrbitControls.js';
@@ -109,6 +109,12 @@ export class Viewer {
   /** 材質 tool: the finish put on a clicked face ('' clears it), and how far it spreads */
   finishMat = '外牆1:3水泥砂漿打底+抿石子';
   finishScope: 'one' | 'plane' | 'all' = 'all';
+  /** the project's 建材項目: how a picked finish looks */
+  private materials: Material[] = [];
+  setMaterials(list: Material[]) {
+    this.materials = list;
+    if (this.objects.some(o => isBox(o) && o.faces)) this.rebuild();
+  }
   selectedId: number | null = null;
   /** member kinds (柱, 梁, 樓板 …) hidden from the view */
   hidden = new Set<string>();
@@ -661,7 +667,7 @@ export class Viewer {
     const g = m.geometry as THREE.BoxGeometry, uv = g.getAttribute('uv') as THREE.BufferAttribute, cur = m.material;
     const mats = Array.isArray(cur) ? [...cur] : [0, 1, 2, 3, 4, 5].map(() => cur as THREE.Material);
     for (const [f, name] of fs) {
-      const look = finishLook(name, this.scheme()?.main);
+      const look = finishLook(name, this.scheme()?.main, this.materials.find(x => x.name === name));
       mats[f] = look.mat;
       // texture repeats in cm: across the face, and up (top and bottom faces: across the depth)
       const wid = f < 2 ? b.d : b.w, hgt = f === 2 || f === 3 ? b.d : b.h;
@@ -1886,10 +1892,24 @@ export const FACADE_SCHEMES: FacadeScheme[] = [
 const tileCache = new Map<string, THREE.Texture>();
 const lookCache = new Map<string, { mat: THREE.MeshStandardMaterial; u: number; v: number }>();
 /** what a finish looks like on a face: a texture and the size in cm one repeat of it covers */
-export function finishLook(name: string, tileHex = '#d9ceb8') {
-  const key = `${name}|${tileHex}`, hit = lookCache.get(key);
+export function finishLook(name: string, tileHex = '#d9ceb8', m?: Material) {
+  const key = `${name}|${tileHex}|${m?.look || ''}|${m?.color || ''}`, hit = lookCache.get(key);
   if (hit) return hit;
   let out: { mat: THREE.MeshStandardMaterial; u: number; v: number };
+  // a look set in the 建材項目 list wins over the one read from the name; its colour tints the pattern
+  const look = m?.look;
+  if (look) {
+    const col = new THREE.Color(m!.color || '#d8d2c4');
+    if (look === 'tile') out = { mat: new THREE.MeshStandardMaterial({ map: tileTexture(m!.color || tileHex), roughness: 0.72 }), u: TILE_U, v: TILE_V };
+    else if (look === 'paint') out = { mat: new THREE.MeshStandardMaterial({ color: col, roughness: 0.9 }), u: 100, v: 100 };
+    else {
+      const kind = look === 'ceramic' ? 'tile' : look;
+      const tint = col.clone().lerp(new THREE.Color('#ffffff'), 0.35);
+      out = { mat: new THREE.MeshStandardMaterial({ map: patternTexture(kind), color: tint, roughness: look === 'stone' ? 0.95 : 0.45, metalness: look === 'rib' || look === 'panel' ? 0.35 : 0 }), u: look === 'stone' ? 50 : look === 'panel' ? 120 : look === 'ceramic' ? 60 : 100, v: look === 'panel' ? 60 : look === 'stone' ? 50 : look === 'ceramic' ? 60 : 100 };
+    }
+    lookCache.set(key, out);
+    return out;
+  }
   if (/二丁掛/.test(name)) out = { mat: new THREE.MeshStandardMaterial({ map: tileTexture(tileHex), roughness: 0.72 }), u: TILE_U, v: TILE_V };
   else if (/磁磚/.test(name)) out = { mat: new THREE.MeshStandardMaterial({ map: patternTexture('tile'), roughness: 0.4 }), u: 60, v: 60 };
   else if (/抿石子/.test(name)) out = { mat: new THREE.MeshStandardMaterial({ map: patternTexture('stone'), roughness: 0.95 }), u: 50, v: 50 };

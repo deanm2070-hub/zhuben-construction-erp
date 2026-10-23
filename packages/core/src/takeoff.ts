@@ -1,4 +1,5 @@
 import { BUDGET_TEMPLATE, covers, type TemplateItem } from './budgetTemplate';
+import { materialFor, materialItems, materialsOf, sectionOf } from './materials';
 import { computeRebar, type RebarKind, type RebarRow } from './rebar';
 import { roomMap, type RoomLabel, type RoomStat } from './rooms';
 import { WALL_H } from './sample';
@@ -167,7 +168,8 @@ export function computeTakeoff(inp: TakeoffInput): Takeoff {
     beamOf.delete(r.name);
     return bm && bm.a > 0 ? { a: bm.a, expr: `梁底＋梁側：梁長 ${r2(bm.L)} m × (底寬 + 2 側 × 梁深扣板厚) ${[...bm.parts].join('、')} m` } : null;
   };
-  const wetH = S.wetH ?? 200;
+  const wetH = S.wetH ?? 200, mats = materialsOf(S.materials);
+  const extName = S.extName || EXT_FINISHES[S.ext] || EXT_FINISHES[0], extMat = mats.find(x => x.name === extName);
   for (const r of rooms) {
     const { f, c, w } = r.fin;
     const win = winsOf.get(r.name), wa = win?.a || 0;
@@ -176,10 +178,16 @@ export function computeTakeoff(inp: TakeoffInput): Takeoff {
     const area = `面積 ${r2(r.area)} ㎡`;
     const F = FINISHES.f as Record<string, string>, Cc = FINISHES.c as Record<string, string>, Wd = FINISHES.w as Record<string, string>;
     const bm = beamRow(r);
+    // finishes of the 建材項目 list go under their own name and section
+    const ownF = f !== '-' && !F[f] ? materialFor(mats, 'floor', f) : undefined, ownC = c !== '-' && !Cc[c] ? materialFor(mats, 'ceil', c) : undefined;
+    const ownW = w !== '-' && !Wd[w] ? materialFor(mats, 'wall', w) : undefined;
     if (f !== '-' && F[f]) add(`(地坪)${f}-${F[f]}`, 'M2', r.name, r.area, area);
+    if (ownF) add(`(地坪)${ownF.name}`, 'M2', r.name, r.area, area, sectionOf(ownF));
     if (c !== '-' && Cc[c]) add(`(平頂)${c}-${Cc[c]}`, 'M2', r.name, r.area, area);
-    if (w === 'W1A' || w === 'W1B') {
-      add(`(牆面)${w}-${Wd[w]}`, 'M2', r.name, wallA, wallExpr);
+    if (ownC) add(`(平頂)${ownC.name}`, 'M2', r.name, r.area, area, sectionOf(ownC));
+    if (w === 'W1A' || w === 'W1B' || ownW) {
+      if (ownW) add(`(牆面)${ownW.name}`, 'M2', r.name, wallA, wallExpr, sectionOf(ownW));
+      else add(`(牆面)${w}-${Wd[w]}`, 'M2', r.name, wallA, wallExpr);
       // the beams are concrete whatever the walls are: plaster and paint
       if (bm && S.beamDry !== false) add(`(牆面)W1A-${Wd.W1A}`, 'M2', `${r.name}（梁）`, bm.a, bm.expr);
       add('(踢腳)綠建材水泥漆踢腳 H=15cm', 'M', r.name, r.perim, `周長 ${r2(r.perim)} m（門洞已扣）`);
@@ -214,7 +222,10 @@ export function computeTakeoff(inp: TakeoffInput): Takeoff {
     if (o.faces?.[outFace(o)]) continue;
     const k = facadeOf(o, cx, cz); const cur = facade[k] || { a: 0, L: 0 }; cur.a += len(o) * o.h / 100; cur.L += len(o); facade[k] = cur;
   }
-  for (const [mat, byWhere] of picked) for (const [where, v] of byWhere) add(`(牆面)${mat}`, 'M2', where, v.a, `3D 模型指定材質 ${v.n} 面 Σ 長×高`);
+  for (const [mat, byWhere] of picked) for (const [where, v] of byWhere) {
+    const mm = mats.find(x => x.name === mat);
+    add(`(牆面)${mat}`, 'M2', where, v.a, `3D 模型指定材質 ${v.n} 面 Σ 長×高`, mm ? sectionOf(mm) : SEC.finish);
+  }
   // imported single drawings have solid walls behind their windows, so take the glass off
   const winOff: Partial<Record<Facade, number>> = {};
   if (inp.cadDoors) for (const w of wins) { const k = facadeOf(w.o, cx, cz); winOff[k] = (winOff[k] || 0) + w.w * w.h / 1e4; }
@@ -222,7 +233,7 @@ export function computeTakeoff(inp: TakeoffInput): Takeoff {
     const v = facade[k];
     if (!v) continue;
     const q = v.a - (winOff[k] || 0), expr = `Σ 牆段 長×高（${r2(v.L)} m 牆段，開口已扣）${winOff[k] ? ` − 窗 ${r2(winOff[k]!)} ㎡` : ''}`;
-    add(`(牆面)${EXT_FINISHES[S.ext] || EXT_FINISHES[0]}`, 'M2', `${k}外牆`, q, expr);
+    add(`(牆面)${extName}`, 'M2', `${k}外牆`, q, expr, extMat ? sectionOf(extMat) : SEC.finish);
     if (S.extWater === 'area') add('(牆面)外牆防水處理', 'M2', `${k}外牆`, q, expr);
   }
   if (S.extWater !== 'area') {
@@ -424,11 +435,11 @@ export function computeTakeoff(inp: TakeoffInput): Takeoff {
   row(SEC.bath, '明鏡', '面', '浴廁', bathNote, basins);
   row(SEC.bath, '馬桶(座式)', '組', '浴廁', bathNote, wc);
   for (const t of ['水電工程', '弱電工程', '消防工程']) row(SEC.mep, t, '坪', '室內', `樓地板面積 ${r2(floorArea)} ㎡ ÷ 3.3058（依設備圖確認）`, floorArea / PING);
-  return { budget: budgetOf(calc, fl), groups: G, rooms, calc, floorArea, wallH: H, slabArea: r2(slabArea), ...(rebar ? { rebar } : {}) };
+  return { budget: budgetOf(calc, fl, materialItems(mats)), groups: G, rooms, calc, floorArea, wallH: H, slabArea: r2(slabArea), ...(rebar ? { rebar } : {}) };
 }
 
 /** Budget lines from calculation rows, in the template's section order; door and window types lead their section. */
-export function budgetOf(calc: CalcRow[], fl?: string): BudgetLine[] {
+export function budgetOf(calc: CalcRow[], fl?: string, extra: Record<string, TemplateItem[]> = {}): BudgetLine[] {
   const lines = new Map<string, BudgetLine & { sec0: string; n: number; fls: Set<string> }>();
   for (const c of calc) {
     const k = `${c.sec}|${c.item}|${c.unit}`;
@@ -446,7 +457,7 @@ export function budgetOf(calc: CalcRow[], fl?: string): BudgetLine[] {
     // template order: a measured item takes the place of the first template item it covers;
     // template items nothing covers are listed blank; measured items not in the template go last
     const ordered: (typeof rest[number] | { item: TemplateItem })[] = [...types];
-    for (const t of BUDGET_TEMPLATE[sec] || []) {
+    for (const t of [...(BUDGET_TEMPLATE[sec] || []), ...(extra[sec] || [])]) {
       const hit = rest.filter(l => covers(l.name!, t.name));
       if (!hit.length) { ordered.push({ item: t }); continue; }
       for (const l of hit) if (!used.has(l)) { used.add(l); ordered.push(l); }
@@ -458,7 +469,7 @@ export function budgetOf(calc: CalcRow[], fl?: string): BudgetLine[] {
       const multi = l.fls.size > 1 ? `${l.fls.size} 層合計` : fl || [...l.fls][0] || '';
       out.push({ i: ++i, name: l.name, unit: l.unit, q: typeof l.q === 'number' ? r2(l.q) : l.q, note: l.n ? `${multi}，見數量計算式` : '' });
     }
-    if (!body.length && !BUDGET_TEMPLATE[sec]) out.pop();
+    if (!body.length && !BUDGET_TEMPLATE[sec] && !extra[sec]) out.pop();
   }
   return out;
 }
@@ -507,7 +518,7 @@ export function computeBuildingTakeoff(objects: ModelObject[], cad: CadData, fin
   }
   return {
     ...(rebar ? { rebar } : {}),
-    budget: budgetOf(calc),
+    budget: budgetOf(calc, undefined, materialItems(materialsOf(settings.materials))),
     groups: [...groups.values()],
     rooms: parts.flatMap(p => p.rooms),
     calc,

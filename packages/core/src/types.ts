@@ -170,6 +170,10 @@ export interface TakeoffSettings {
   wetH?: number;
   /** exterior waterproofing: frame lengths of the openings + floor joints (M, default), or the wall area (㎡) */
   extWater?: 'joint' | 'area';
+  /** default exterior finish by 建材項目 name (wins over ext) */
+  extName?: string;
+  /** the project's 建材項目: changes to the built-in items and items of its own */
+  materials?: import('./materials').Material[];
 }
 
 export interface ProjectModel {

@@ -1,5 +1,7 @@
-import { EXT_FINISHES, FINISH_SHORT, FINISHES, groupQuantities, PING, REBAR_KINDS, REBAR_STD, rebarSummary, type FinishChoice, type GroupBy, type PricedBudget, type Pricing, type Takeoff as T, type PriceRate, type TakeoffSettings } from '@cloud-modeler/core';
+import { EXT_FINISHES, FINISH_SHORT, FINISHES, groupQuantities, materialsOf, PING, REBAR_KINDS, REBAR_STD, rebarSummary, type FinishChoice, type GroupBy, type PricedBudget, type Pricing, type Takeoff as T, type PriceRate, type TakeoffSettings } from '@cloud-modeler/core';
 import { Deleted } from './BudgetPane';
+import { Materials } from './Materials';
+import { saveMaterials } from '../lib/materials';
 import { useState } from 'react';
 import { download } from '../lib/files';
 import { reportWorkbook } from '../lib/report';
@@ -22,7 +24,7 @@ function toTsv(t: T, tab: string) {
   return ['空間\t面積㎡\t坪\t地坪\t天花\t牆面', ...t.rooms.map(r => `${r.name}\t${r2(r.area)}\t${r2(r.area / PING)}\t${r.fin.f}\t${r.fin.c}\t${r.fin.w}`)].join('\n');
 }
 
-type Tab = 'budget' | 'calc' | 'floor' | 'member' | 'area' | 'rebar' | 'rebarSum' | 'detail' | 'spaces';
+type Tab = 'budget' | 'calc' | 'floor' | 'member' | 'area' | 'rebar' | 'rebarSum' | 'detail' | 'spaces' | 'mats';
 
 export function Takeoff({ takeoff: t, pb, pricing, project, subtitle, settings, readOnly, onSettings, onPricing, onFinish, toast }: {
   takeoff: T; pb: PricedBudget; pricing: Pricing; project: string; subtitle: string; settings: TakeoffSettings; readOnly: boolean;
@@ -55,11 +57,15 @@ export function Takeoff({ takeoff: t, pb, pricing, project, subtitle, settings, 
     try { await navigator.clipboard.writeText(toTsv(t, tab)); toast('已複製，可直接貼進 Excel'); }
     catch { toast('瀏覽器不允許寫入剪貼簿，請改用「下載 Excel」'); }
   };
+  const mats = materialsOf(settings.materials);
+  const USE = { f: 'floor', c: 'ceil', w: 'wall' } as const;
   const sel = (k: 'f' | 'c' | 'w', room: string, cur: string) => (
     <select id={`fin-${k}-${room}`} value={cur} disabled={readOnly} onChange={e => onFinish(room, { [k]: e.target.value })}>
-      {Object.keys(FINISHES[k]).map(c => <option key={c} value={c}>{c === '-' ? '不施作' : `${c} ${FINISH_SHORT[c]}`}</option>)}
+      {Object.keys(FINISHES[k]).filter(c => c === '-' || c === cur || !mats.find(m => m.builtin && m.name.startsWith(`${c}-`))?.hidden).map(c => <option key={c} value={c}>{c === '-' ? '不施作' : `${c} ${FINISH_SHORT[c]}`}</option>)}
+      {mats.filter(m => !m.builtin && m.use === USE[k] && (!m.hidden || m.name === cur)).map(m => <option key={m.name} value={m.name}>{m.name}</option>)}
     </select>
   );
+  const extCur = settings.extName || EXT_FINISHES[settings.ext] || EXT_FINISHES[0];
   return (
     <div className="pane">
       <div className="paneHead">
@@ -72,8 +78,8 @@ export function Takeoff({ takeoff: t, pb, pricing, project, subtitle, settings, 
       <details className="conds" open>
         <summary>算量條件（本案）</summary>
         <div className="kv">
-          <label>外牆做法 <select id="q-ext" disabled={readOnly} value={settings.ext} onChange={e => set({ ext: +e.target.value })}>
-            {EXT_FINISHES.map((x, i) => <option key={i} value={i}>{x}</option>)}
+          <label>外牆做法 <select id="q-ext" disabled={readOnly} value={extCur} onChange={e => { const i = EXT_FINISHES.indexOf(e.target.value); set({ extName: e.target.value, ext: i >= 0 ? i : settings.ext }); }}>
+            {mats.filter(m => m.use === 'ext' && (!m.hidden || m.name === extCur)).map(m => <option key={m.name} value={m.name}>{m.name}</option>)}
           </select></label>
           <label>樓板厚 <input id="q-slab" disabled={readOnly} type="number" min={0} max={50} value={settings.slab} style={{ width: 64 }} onChange={e => set({ slab: +e.target.value || 0 })} /> cm</label>
           <label>開挖深 <input id="q-dig" disabled={readOnly} type="number" min={0} max={1000} value={settings.dig ?? 150} style={{ width: 70 }} onChange={e => set({ dig: +e.target.value || 0 })} /> cm</label>
@@ -103,7 +109,7 @@ export function Takeoff({ takeoff: t, pb, pricing, project, subtitle, settings, 
         <div><span>工項</span><b>{pb.count}</b><small>{t.calc.length} 筆計算</small></div>
       </div>
       <div className="kv tabs">
-        {([['budget', '依工項（預算書）'], ['floor', '依樓層'], ['member', '依構件'], ['area', '依施工區域'], ['calc', '數量計算式'], ...(rb.length ? [['rebar', '鋼筋料單'], ['rebarSum', '鋼筋統計']] as const : []), ['detail', '裝修細項'], ['spaces', '空間做法設定']] as const).map(([k, l]) => (
+        {([['budget', '依工項（預算書）'], ['floor', '依樓層'], ['member', '依構件'], ['area', '依施工區域'], ['calc', '數量計算式'], ...(rb.length ? [['rebar', '鋼筋料單'], ['rebarSum', '鋼筋統計']] as const : []), ['detail', '裝修細項'], ['spaces', '空間做法設定'], ['mats', '建材項目']] as const).map(([k, l]) => (
           <button key={k} className={`chip ${tab === k ? 'on' : ''}`} onClick={() => setTab(k)}>{l}</button>
         ))}
       </div>
@@ -188,6 +194,7 @@ export function Takeoff({ takeoff: t, pb, pricing, project, subtitle, settings, 
           </tbody>
         </table></div>
       ))}
+      {tab === 'mats' && <Materials own={settings.materials} readOnly={readOnly} onChange={list => { set({ materials: list }); saveMaterials(list); }} />}
       {tab === 'spaces' && <>
         <div className="kv">
           <label>樓層 <input id="q-floor" disabled={readOnly} type="text" value={settings.floor} style={{ width: 56 }} onChange={e => onSettings({ ...settings, floor: e.target.value || '1F' })} /></label>

@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { buildFromDxf, computeTakeoff, DEFAULT_SETTINGS, guessLayerKind, parseDxf, SAMPLE_D, SAMPLE_ROOMS, SAMPLE_W, sampleDxf, sampleObjects, type LayerKind } from '../src';
+import { buildFromDxf, computeTakeoff, DEFAULT_SETTINGS, guessLayerKind, parseDxf, SAMPLE_D, SAMPLE_ROOMS, SAMPLE_W, sampleDxf, sampleObjects, materialRates, materialsOf, priceBudget, withPricing, type LayerKind } from '../src';
 
 const line = (t: ReturnType<typeof computeTakeoff>, name: string) => t.budget.find(b => b.name === name)?.q;
 
@@ -42,6 +42,20 @@ describe('takeoff on the sample flat', () => {
     const t4 = computeTakeoff({ objects: sampleObjects(), bounds: { W: SAMPLE_W, D: SAMPLE_D }, labels: [], rects: SAMPLE_ROOMS, finishes: {}, settings: { ...DEFAULT_SETTINGS, extWater: 'area', wetH: 120 } });
     expect(t4.groups.find(g => g.title === '(牆面)外牆防水處理')!.unit).toBe('M2');
     expect(t4.groups.some(g => g.title.includes('防水處理(H=1.2M)'))).toBe(true);
+  });
+  it('uses the 建材項目 list: own finishes, own budget items and default prices', () => {
+    const materials = [
+      { name: '地坪超耐磨木地板', use: 'floor' as const, unit: '㎡', mat: 2800 },
+      { name: '外牆1:3水泥砂漿打底+石材乾掛', use: 'ext' as const, unit: '㎡' },
+      { name: '室內門檻石', use: 'item' as const, unit: '支', sec: '四、泥作.裝修工程' },
+    ];
+    const t5 = computeTakeoff({ objects: sampleObjects(), bounds: { W: SAMPLE_W, D: SAMPLE_D }, labels: [], rects: SAMPLE_ROOMS,
+      finishes: { 次臥室: { f: '地坪超耐磨木地板' } }, settings: { ...DEFAULT_SETTINGS, materials, extName: '外牆1:3水泥砂漿打底+石材乾掛' } });
+    expect(t5.groups.find(g => g.title === '(地坪)地坪超耐磨木地板')!.rows.map(r => r.name)).toEqual(['次臥室']);
+    expect(t5.groups.some(g => g.title === '(牆面)外牆1:3水泥砂漿打底+石材乾掛')).toBe(true);
+    expect(t5.budget.find(b => b.name === '室內門檻石')).toMatchObject({ tpl: true, unit: '支' });
+    const pb = priceBudget(t5.budget, withPricing(null), materialRates(materialsOf(materials)));
+    expect(pb.sections.flatMap(s => s.lines).find(l => l.name === '地坪超耐磨木地板')!.mat).toBe(2800);
   });
   it('honours finish overrides', () => {
     const t2 = computeTakeoff({

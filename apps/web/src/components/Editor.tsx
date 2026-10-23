@@ -1,4 +1,5 @@
-import { computeBuildingTakeoff, computeTakeoff, DEFAULT_SETTINGS, FACE_FINISHES, learnRoles, memberOf, MEMBERS, priceBudget, ROLE_NAME, trackFixes, withPricing, type CalcVersion, type DrawingStyle, type Fix, type FinishChoice, type ModelObject, type Pricing, type ProjectInfo, type TakeoffSettings } from '@cloud-modeler/core';
+import { loadMaterials } from '../lib/materials';
+import { computeBuildingTakeoff, computeTakeoff, DEFAULT_SETTINGS, learnRoles, materialRates, materialsOf, memberOf, MEMBERS, priceBudget, ROLE_NAME, trackFixes, withPricing, type CalcVersion, type DrawingStyle, type Fix, type FinishChoice, type ModelObject, type Pricing, type ProjectInfo, type TakeoffSettings } from '@cloud-modeler/core';
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { DRAW_KINDS, FACADE_SCHEMES, TOOL_HINT, Viewer, type DrawKind, type FixKind, type RenderMode, type SceneKey, type Tool } from '../engine/Viewer';
 import { download, PROJECT_EXT, projectFile } from '../lib/files';
@@ -194,7 +195,7 @@ export function Editor({ projectId, importNow, trial = false, onExit }: { projec
       if (!alive) return;
       setName(p.name);
       setFinishes(p.model.finishes || {});
-      setSettings({ ...DEFAULT_SETTINGS, ...(p.model.settings || {}) });
+      setSettings({ ...DEFAULT_SETTINGS, ...(p.model.settings || {}), materials: p.model.settings?.materials ?? loadMaterials() });
       setPricing(withPricing(p.model.pricing));
       setVersions(p.model.versions || []);
       setPinfo({ ...(p.model.info || {}), ...(p.meta || {}) });
@@ -244,7 +245,9 @@ export function Editor({ projectId, importNow, trial = false, onExit }: { projec
   // quantities and prices are worked out only for the panes that show them, again after every model change
   const needQty = module !== '3d' && module !== 'import' && !!viewer.current;
   const t = useMemo(() => needQty ? takeoffNow() : null, [needQty, rev, finishes, settings]); // eslint-disable-line react-hooks/exhaustive-deps
-  const pb = useMemo(() => t ? priceBudget(t.budget, pricing) : null, [t, pricing]);
+  const mats = useMemo(() => materialsOf(settings.materials), [settings.materials]);
+  const pb = useMemo(() => t ? priceBudget(t.budget, pricing, materialRates(mats)) : null, [t, pricing, mats]);
+  useEffect(() => { const vw = viewer.current; if (vw) vw.setMaterials(mats); }, [mats]);
   const present = useMemo(() => new Set((viewer.current?.objects || []).map(memberOf)), [rev, module]); // eslint-disable-line react-hooks/exhaustive-deps
   useEffect(() => { if (module !== '3d') viewer.current?.selectId(null); }, [module]);
   const toggleKind = (k: string) => { const n = new Set(hidden); if (n.has(k)) n.delete(k); else n.add(k); setHidden(n); v().setHidden(n); };
@@ -354,7 +357,7 @@ export function Editor({ projectId, importNow, trial = false, onExit }: { projec
               <button key={c} className={`sw ${paint === c ? 'on' : ''}`} style={{ background: hex(c) }} aria-label={`顏色 ${hex(c)}`} onClick={() => { v().paintColor = c; setPaint(c); }} />)}</>}
             {tool === 'finish' && <><span className="t">材質</span>
               <select id="finish-mat" aria-label="材質" value={finishMat} onChange={e => { v().finishMat = e.target.value; setFinishMat(e.target.value); }}>
-                {FACE_FINISHES.map(x => <option key={x} value={x}>{x.replace(/^外牆1:3水泥砂漿打底\+/, '外牆 ')}</option>)}
+                {mats.filter(m => (m.use === 'ext' || m.use === 'wall') && !m.hidden).map(m => <option key={m.name} value={m.name}>{m.name.replace(/^外牆1:3水泥砂漿打底\+/, '外牆 ')}</option>)}
                 <option value="">清除指定（回到預設）</option>
               </select>
               <span className="t">套用到</span>
