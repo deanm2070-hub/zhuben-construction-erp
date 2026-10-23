@@ -47,7 +47,12 @@ export interface BuildingAnalysis {
   colLayers: string[];
   /** things the drawing set is missing that make the 3D come out empty */
   warnings: string[];
+  /** the drawings checked against each other before the model is built (levels, storeys; widths after building) */
+  checks: CrossCheck[];
 }
+
+/** One comparison between drawings: agreed (ok), disagreed and settled by the program (fixed), or left to look at (warn). */
+export interface CrossCheck { item: string; ok: 'ok' | 'fixed' | 'warn'; text: string }
 
 const TITLE_RE = /(平面圖|立面圖|剖面圖|門窗表|門窗圖|門窗詳圖)$/;
 const SKIP_RE = /綠化|檢討|面積|計算|配置|位置|覆土|景觀|消防|排水|基地|地籍|樓梯|詳圖|大樣|結構|管線|水電|求積|透視|[梁樑]|配筋|基礎|樓版|版筋|柱|框架|筏|椿|樁/;
@@ -89,7 +94,7 @@ const levelOrder = (k: string) => {
   if (!m) return 5000;
   return m[1] === 'B' ? -+m[2] : m[1] === 'R' ? 1000 + +m[2] : +m[2];
 };
-const normLevel = (s: string) => {
+export const normLevel = (s: string) => {
   const t = s.replace(/\s/g, '').toUpperCase();
   if (/^(B\d+F|\d+M?F|R\d+F|RF|PRF)$/.test(t)) return t === 'PRF' ? 'RF' : t;
   if (/^(B\d+|\d+M?|R\d*)FL$/.test(t)) return t.slice(0, -1);
@@ -348,6 +353,131 @@ export function readLevels(d: DxfDrawing, views: SheetView[], scale: number): Re
   return out;
 }
 
+/**
+ * Level rulers: each column of level marks (1F, 2F … RF) in each elevation and section, as heights above its own 1F
+ * mark, cm. A sheet that draws several sections side by side gives one ruler per section. A number written beside a
+ * mark (2FL ▽ +850) is read too: written heights win over where the mark is drawn.
+ */
+export function levelRulers(d: DxfDrawing, views: SheetView[], scale: number) {
+  const out: { title: string; vals: Record<string, number>; written: boolean }[] = [];
+  for (const v of views.filter(v => v.kind === 'elevation' || v.kind === 'section')) {
+    const marks = d.texts.filter(t => inBox(v.box, t.x, t.y)).map(t => ({ k: normLevel(t.s), t })).filter((m): m is { k: string; t: DxfText } => !!m.k).sort((p, q) => p.t.x - q.t.x);
+    if (marks.length < 2) continue;
+    const hs = marks.map(m => m.t.h || 0).filter(h => h > 0), th = hs.length ? quantile(hs, 0.5) : (v.box[2] - v.box[0]) / 200;
+    const cols: (typeof marks)[] = [];
+    for (const m of marks) { const c = cols[cols.length - 1]; if (c && m.t.x - c[c.length - 1].t.x <= th * 8) c.push(m); else cols.push([m]); }
+    for (const c of cols) {
+      const y: Record<string, number> = {}, w: Record<string, number> = {};
+      for (const m of c) {
+        if (m.k in y) continue;
+        y[m.k] = m.t.y;
+        // a height written on the same line to the right: +850, ±0, 2730
+        const num = d.texts.filter(t => t !== m.t && Math.abs(t.y - m.t.y) <= th * 0.8 && t.x > m.t.x && t.x - m.t.x <= th * 10 && /^[+±-]?\s*\d{1,5}(\.\d+)?$/.test(t.s.replace(/[▽▼]/g, '').trim()))
+          .sort((p, q) => Math.abs(p.y - m.t.y) - Math.abs(q.y - m.t.y) || p.x - q.x)[0];
+        if (num) w[m.k] = parseFloat(num.s.replace(/[▽▼±+\s]/g, '')) * (/-/.test(num.s) ? -1 : 1);
+      }
+      if (!('1F' in y) || Object.keys(y).length < 2) continue;
+      const vals: Record<string, number> = {};
+      const drawn = (k: string) => (y[k] - y['1F']) * scale;
+      const unit = Object.keys(y).some(k => Math.abs(w[k] - w['1F']) < 100 && Math.abs(drawn(k)) > 150) ? 100 : 1;
+      const wr = (k: string) => (w[k] - w['1F']) * unit;
+      // written numbers are used when each agrees with where its mark is drawn (else the pairing is off)
+      const written = Object.keys(y).every(k => k in w && Math.abs(wr(k) - drawn(k)) <= Math.max(10, Math.abs(drawn(k)) * 0.15));
+      for (const k of Object.keys(y)) vals[k] = Math.round(written ? wr(k) : drawn(k));
+      out.push({ title: v.title, vals, written });
+    }
+  }
+  return out;
+}
+
+/** The level of each storey agreed by most rulers (within 5 cm), and the rulers that say otherwise. */
+export function consensusLevels(rulers: ReturnType<typeof levelRulers>) {
+  const keys = [...new Set(rulers.flatMap(r => Object.keys(r.vals)))].sort((a, b) => levelOrder(a) - levelOrder(b));
+  const levels: Record<string, number> = {}, odd: { title: string; k: string; v: number; agreed: number }[] = [];
+  for (const k of keys) {
+    const vs = rulers.filter(r => k in r.vals).map(r => r.vals[k]);
+    // the value most rulers are within 5 cm of; ties go to written heights, then to the median
+    const votes = vs.map(v => ({ v, n: vs.filter(u => Math.abs(u - v) <= 5).length }));
+    const best = Math.max(...votes.map(x => x.n)), win = quantile(votes.filter(x => x.n === best).map(x => x.v), 0.5);
+    levels[k] = win;
+    for (const r of rulers) if (k in r.vals && Math.abs(r.vals[k] - win) > 5) odd.push({ title: r.title, k, v: r.vals[k], agreed: win });
+  }
+  return { levels, odd };
+}
+
+const GRID_LBL = /^(\d{1,2}|[A-Z]|[XY]\d{1,2})$/;
+const gridKind = (l: string) => /^X/.test(l) ? 'X' : /^Y/.test(l) ? 'Y' : /^\d/.test(l) ? 'n' : 'a';
+const gridOrd = (l: string) => /\d/.test(l) ? +l.replace(/\D/g, '') : l.charCodeAt(0);
+/**
+ * Rows (along x) or columns (along y) of grid bubbles in a view: labels of one kind (1 2 3 / A B C / X1 X2 / Y1 Y2)
+ * on one line, in order along it (either way: elevations seen from the back run backwards), at least 1 m apart.
+ */
+function gridLines(d: DxfDrawing, box: SheetView['box'], dir: 'row' | 'col', scale: number) {
+  const ts = d.texts.filter(t => inBox(box, t.x, t.y) && GRID_LBL.test(t.s.trim()));
+  const out: { kind: string; at: Map<string, number> }[] = [], seen = new Set<string>();
+  for (const t of ts) {
+    const h = (t.h || 20 / scale) * 1.5, kind = gridKind(t.s.trim());
+    const same = ts.filter(o => gridKind(o.s.trim()) === kind && (dir === 'row' ? Math.abs(o.y - t.y) < h : Math.abs(o.x - t.x) < h));
+    const at = new Map<string, number>();
+    for (const o of same.sort((p, q) => (dir === 'row' ? p.x - q.x : p.y - q.y))) if (!at.has(o.s.trim())) at.set(o.s.trim(), dir === 'row' ? o.x : o.y);
+    const key = [...at.keys()].join(',');
+    if (at.size < 3 || seen.has(key)) continue;
+    seen.add(key);
+    const ord = [...at.keys()].map(gridOrd), pos = [...at.values()];
+    const mono = ord.every((o, i) => i === 0 || o > ord[i - 1]) || ord.every((o, i) => i === 0 || o < ord[i - 1]);
+    const gaps = pos.slice(1).map((p, i) => Math.abs(p - pos[i]) * scale);
+    if (mono && Math.min(...gaps) >= 100) out.push({ kind, at });
+  }
+  return out;
+}
+
+/**
+ * Grid spacing on every elevation, section and structural plan against the architectural plans: the distance between
+ * each pair of neighbouring axes must be the same. A bubble labelled differently at the same spacing (X6 where the
+ * plans say X7) is a slip on one drawing; the plans are kept.
+ */
+export function gridChecks(d: DxfDrawing, views: SheetView[], plans: SheetView[], scale: number): CrossCheck[] {
+  const ref = new Map<string, Map<string, number>>();
+  for (const p of plans) for (const dir of ['row', 'col'] as const) for (const g of gridLines(d, p.box, dir, scale)) {
+    const cur = ref.get(g.kind);
+    if (!cur || g.at.size > cur.size) ref.set(g.kind, g.at);
+  }
+  if (!ref.size) return [];
+  const out: CrossCheck[] = [], okViews: string[] = [], m = (v: number) => (v / 100).toFixed(2);
+  // detail sections (slab strips, enlarged parts) are not drawn to the building's grid
+  for (const v of views.filter(v => (v.kind === 'elevation' || v.kind === 'section' || v.kind === 'structure') && !/板剖面|中間帶|詳圖|大樣|廁所/.test(v.title))) {
+    const lines = gridLines(d, v.box, 'row', scale).concat(v.kind === 'structure' ? gridLines(d, v.box, 'col', scale) : []);
+    const notes: string[] = [];
+    let compared = 0;
+    for (const g of lines) {
+      const r = ref.get(g.kind);
+      if (!r) continue;
+      const rl = [...r.keys()].sort((p, q) => r.get(p)! - r.get(q)!), vl = [...g.at.keys()];
+      // labels the plans do not have: matched by spacing to the plan axis at that distance from a shared axis
+      const shared = vl.filter(l => r.has(l));
+      if (shared.length < 2) continue;
+      const a0 = shared[0], sgn = Math.sign((g.at.get(shared[1])! - g.at.get(a0)!) / (r.get(shared[1])! - r.get(a0)!)) || 1;
+      for (const l of vl.filter(l => !r.has(l))) {
+        const dv = (g.at.get(l)! - g.at.get(a0)!) * sgn * scale;
+        const hit = rl.find(q => Math.abs((r.get(q)! - r.get(a0)!) * scale - dv) <= Math.max(5, Math.abs(dv) * 0.005));
+        if (hit && !g.at.has(hit)) notes.push(`標「${l}」的軸線在平面圖是「${hit}」（距 ${a0} ${m(Math.abs(dv))} m，間距相同，以平面圖為準）`);
+      }
+      for (let i = 1; i < shared.length; i++) {
+        const p = shared[i - 1], q = shared[i];
+        const dv = Math.abs(g.at.get(q)! - g.at.get(p)!) * scale, dr = Math.abs(r.get(q)! - r.get(p)!) * scale;
+        compared++;
+        if (Math.abs(dv - dr) > Math.max(10, dr * 0.02)) notes.push(`${p}–${q} 間距 ${m(dv)} m，平面圖 ${m(dr)} m`);
+      }
+    }
+    if (!compared) continue;
+    // the model is built on the plans' grid: a different spacing on another drawing is listed, the plans win
+    if (notes.length) out.push({ item: '軸線間距', ok: 'fixed', text: `${v.title}：${notes.join('；')}${notes.some(n => !n.includes('以平面圖為準')) ? '（3D 依平面圖的間距建立）' : ''}` });
+    else okViews.push(v.title);
+  }
+  if (okViews.length) out.unshift({ item: '軸線間距', ok: 'ok', text: `${okViews.length} 張圖（${okViews.slice(0, 6).join('、')}${okViews.length > 6 ? ' 等' : ''}）的軸線間距與平面圖一致（${[...ref].map(([, r]) => { const l = [...r.keys()].sort((p, q) => r.get(p)! - r.get(q)!); return `${l[0]}–${l[l.length - 1]}`; }).join('、')}）` });
+  return out;
+}
+
 /** upstand round the top roof slab (屋頂層), read off the sections, cm */
 const ROOF_UPSTAND = 30;
 
@@ -371,10 +501,43 @@ export function analyzeBuilding(d: DxfDrawing, defaultH = WALL_H): BuildingAnaly
   // a site plan that also shows the ground floor (全區暨一層平面圖) only when there is no plan of the building alone
   const site = (v: SheetView) => /全區|總平面|配置/.test(v.title) ? 1 : 0;
   const plans = planViews.map(v => ({ v, n: walls(v) })).sort((a, b) => site(a.v) - site(b.v) || b.n - a.n).map(p => p.v);
-  const levels = readLevels(d, views, scale);
+  // levels: every ruler on every elevation and section is compared, and the height most of them agree on is used
+  const checks: CrossCheck[] = [];
+  const rulers = levelRulers(d, views, scale);
+  let levels: Record<string, number>;
+  if (rulers.length) {
+    const c = consensusLevels(rulers);
+    levels = c.levels;
+    const list = Object.entries(levels).sort((p, q) => p[1] - q[1]).map(([k, v]) => `${k} ${v >= 0 ? '+' : ''}${v}`).join('、');
+    const where = [...new Set(rulers.map(r => r.title))];
+    if (!c.odd.length) checks.push({ item: '樓層高程', ok: 'ok', text: `${rulers.length} 處標高（${where.slice(0, 6).join('、')}${where.length > 6 ? ' 等' : ''}）一致：${list} cm${rulers.every(r => r.written) ? '；標註的高程數字與標高線位置也相符' : ''}` });
+    else checks.push({ item: '樓層高程', ok: 'fixed', text: `${c.odd.slice(0, 6).map(o => `${o.title} 的 ${o.k} 標 ${o.v}`).join('、')}，與其他 ${rulers.length - new Set(c.odd.map(o => o.title)).size} 處不同，採多數：${c.odd.slice(0, 6).map(o => `${o.k} ${o.agreed}`).join('、')}（全部：${list} cm）` });
+  } else {
+    levels = readLevels(d, views, scale);
+    checks.push(Object.keys(levels).length
+      ? { item: '樓層高程', ok: 'warn', text: `立面、剖面只找到一組標高（沒有 1F 對照），直接採用：${Object.entries(levels).map(([k, v]) => `${k} ${v}`).join('、')} cm` }
+      : { item: '樓層高程', ok: 'warn', text: '立面、剖面圖上沒有讀到樓層標高（1F、2F…），各層樓高用預設值，請在下方樓高欄確認' });
+  }
   const schedule = parseSchedule(d);
   const pm = d.texts.map(t => /女兒牆[^0-9]{0,6}(\d{2,3})\s*(㎝|cm|公分)/i.exec(t.s)).find(Boolean);
   const parapet = pm ? +pm[1] : 120;
+  // storeys: a level on the elevations with no plan between two planned storeys is a typical floor, built from the plan below
+  {
+    const planned = new Set(plans.flatMap(p => p.floors)), num = (k: string) => /^\d+M?F$/.test(k);
+    const pk = [...planned].filter(num).sort((a, b) => levelOrder(a) - levelOrder(b));
+    const filled: string[] = [];
+    if (pk.length) for (const k of Object.keys(levels).filter(k => num(k) && !planned.has(k)).sort((a, b) => levelOrder(a) - levelOrder(b))) {
+      if (levelOrder(k) < levelOrder(pk[0]) || levelOrder(k) > levelOrder(pk[pk.length - 1]) || /M/.test(k)) continue;
+      const below = [...planned].filter(num).filter(q => levelOrder(q) < levelOrder(k) && !/M/.test(q)).sort((a, b) => levelOrder(b) - levelOrder(a))[0];
+      const p = below && plans.find(v => v.floors.includes(below));
+      if (!p) continue;
+      p.floors.push(k); planned.add(k); filled.push(`${k}（比照 ${below}）`);
+    }
+    const unlevelled = Object.keys(levels).length ? [...planned].filter(k => !(k in levels) && k !== 'RF') : [];
+    if (filled.length) checks.push({ item: '樓層數', ok: 'fixed', text: `立面／剖面有 ${filled.map(f => f.split('（')[0]).join('、')} 的標高，但沒有這層平面圖，視為標準層：${filled.join('、')}` });
+    else checks.push({ item: '樓層數', ok: 'ok', text: `平面圖 ${[...planned].sort((a, b) => levelOrder(a) - levelOrder(b)).join('、')}，立面／剖面標高都有對應` });
+    if (unlevelled.length) checks.push({ item: '樓層數', ok: 'warn', text: `${unlevelled.join('、')} 有平面圖，但立面／剖面沒有標高，樓高由上下層推算` });
+  }
   const keys = [...new Set(plans.flatMap(p => p.floors))].sort((a, b) => levelOrder(a) - levelOrder(b));
   const lv = Object.entries(levels).sort((a, b) => a[1] - b[1]);
   const storeys: Storey[] = [];
@@ -392,7 +555,8 @@ export function analyzeBuilding(d: DxfDrawing, defaultH = WALL_H): BuildingAnaly
   let wallSegs = 0;
   for (const g of d.segs) if (wallSet.has(g.layer) || guessLayerKind(g.layer) === 'wall') wallSegs++;
   if (plans.length && wallSegs < 300) warnings.push(`整份圖只讀到 ${wallSegs} 條牆線，這比較像「面積檢討圖」或示意圖，不是畫有牆、門窗的施工平面圖，所以 3D 會幾乎是空的。請改匯入含牆線與門窗的各層平面圖（常見檔名如「各層平面圖」「平面配置圖」的施工圖版本），或直接把這份圖的樓地板面積當作對帳用。`);
-  return { views, plans, levels, storeys, schedule, parapet, scale, wallLayers, colLayers, warnings };
+  checks.push(...gridChecks(d, views, plans, scale));
+  return { views, plans, levels, storeys, schedule, parapet, scale, wallLayers, colLayers, warnings, checks };
 }
 
 /**
@@ -1463,6 +1627,8 @@ export interface BuildReport {
   /** door / window schedule against what was built */
   /** 樓地板面積 written on the drawing (法規檢討) against the slab built */
   areaChecks: { floor: string; stated: number; built: number }[];
+  /** drawings compared with each other: levels and storeys before building, elevation widths after */
+  cross: CrossCheck[];
   tally: { code: string; name: string; qty?: number; built: number; guessed?: number; tagged?: number }[];
 }
 
@@ -2719,6 +2885,7 @@ export function buildBuilding(d: DxfDrawing, a: BuildingAnalysis, name: string, 
     slantWalls: objects.filter(o => isBox(o) && o.layer === 'wall' && o.rot && Math.max(o.w, o.d) >= 300).length,
     unmatchedTags,
     areaChecks: areaChecks(d, a.storeys.map(st => st.key), objects),
+    cross: a.checks || [],
     tally: a.schedule.map(i => {
       const n = objects.filter(o => (o.layer === 'door' || o.layer === 'glass') && o.name.split(' ')[0] === i.code).length;
       return { code: i.code, name: i.name, ...(i.qty !== undefined ? { qty: i.qty } : {}), built: i.legs ? Math.ceil(n / 2) : n, ...(guessedN.get(i.code) ? { guessed: guessedN.get(i.code) } : {}), tagged: taggedN.get(i.code) || 0 };

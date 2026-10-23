@@ -287,6 +287,12 @@ function BuildingStep({ st, firstId, onBuilt, onLayers, onClose }: {
       </table></div>}
       {rep && <>
         {a.warnings.map((w, i) => <p key={'w' + i} className="warn" style={{ margin: '8px 0' }}>⚠ {w}</p>)}
+        {rep.cross?.length > 0 && <>
+          <h4 style={{ margin: '12px 0 4px' }}>圖面交叉比對（建模前先核對各張圖）</h4>
+          <p className="note">平面、立面、剖面、結構圖彼此核對樓層標高、樓層數、軸線間距；對不上的地方軟體已自動決定採用哪張圖（✎），列在這裡供你參考。</p>
+          <div className="tbl"><table><tbody>{rep.cross.map((c, i) => (
+            <tr key={i}><td style={{ whiteSpace: 'nowrap' }}>{c.ok === 'ok' ? '✓' : c.ok === 'fixed' ? '✎' : '⚠'} {c.item}</td><td className={c.ok === 'warn' ? 'warn' : ''}>{c.text}</td></tr>))}</tbody></table></div>
+        </>}
         <h4 style={{ margin: '12px 0 4px' }}>圖面樣式（自動學習）</h4>
         {Object.keys(known.roles).length > 0
           ? <><p className="note">認得這是「{style!.name}」的圖，已自動套用之前從修正學到的規則：</p>
