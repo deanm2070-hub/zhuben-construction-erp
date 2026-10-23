@@ -224,8 +224,10 @@ export function computeTakeoff(inp: TakeoffInput): Takeoff {
   const faceA = (o: BoxObject, f: number) => (f < 2 ? o.d * o.h : f < 4 ? o.w * o.d : o.w * o.h) / 1e4;
   const secOf = (name: string) => { const mm = mats.find(x => x.name === name); return mm ? sectionOf(mm) : SEC.finish; };
   const picked = new Map<string, { a: number; n: number }>();
+  // (an exterior finish on a top or underside is a mis-tap on a slab edge, from before the tool stopped allowing it)
+  const extMat = (name: string) => mats.find(x => x.name === name)?.use === 'ext' || /^外牆/.test(name);
   for (const o of boxes) for (const [f, mat] of Object.entries(o.faces || {})) {
-    if (!mat || (ext.includes(o) && +f === outFace(o))) continue;
+    if (!mat || (ext.includes(o) && +f === outFace(o)) || ((+f === 2 || +f === 3) && extMat(mat))) continue;
     const cur = picked.get(mat) || { a: 0, n: 0 };
     cur.a += faceA(o, +f); cur.n++; picked.set(mat, cur);
   }

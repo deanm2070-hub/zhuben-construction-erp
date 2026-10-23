@@ -342,3 +342,17 @@ body{overflow-x:hidden}
 .conds{margin:0 0 12px;padding:8px 12px;border:1px solid var(--line,#ddd);border-radius:8px;background:var(--panel,#fafafa)}
 .conds summary{cursor:pointer;font-weight:600}
 .conds .kv{margin-top:8px;flex-wrap:wrap}
+
+.folder-pick{flex:none;position:relative;overflow:hidden;align-self:flex-start;margin-top:8px}
+.folder-list{flex:none;display:flex;flex-direction:column;gap:6px;max-height:46vh;overflow:auto;padding:8px;border:1px solid var(--line);border-radius:12px;margin-top:8px}
+.folder-head{display:flex;align-items:center;gap:8px;flex-wrap:wrap}
+.folder-head small{color:var(--muted);flex:1}
+.folder-grp{flex:none;display:flex;flex-direction:column;gap:2px}
+.folder-name{display:flex;align-items:center;gap:8px;font-weight:600;padding:4px 2px;position:sticky;top:-8px;background:var(--panel-solid)}
+.folder-name .chip{margin-left:auto;font-weight:400}
+.folder-file{display:flex;align-items:center;gap:8px;padding:6px 8px 6px 18px;border-radius:8px;cursor:pointer}
+.folder-file.on{background:var(--chip)}
+.folder-file input{width:20px;height:20px;flex:none}
+.folder-file span{flex:1;min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.folder-file small{color:var(--muted)}
+.modal .body > *{flex-shrink:0}

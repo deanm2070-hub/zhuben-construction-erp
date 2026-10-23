@@ -15,8 +15,18 @@ const MULTI_HINT = /iPhone|iPad|iPod/.test(navigator.userAgent) || (navigator.pl
   : /Android/.test(navigator.userAgent)
     ? 'Android：在檔案上長按，就能一次勾多個檔，最後按「選取」。'
     : '按住 Ctrl（Mac 按 ⌘）可以一次點選多個檔。'
-/** The system's file picker forgets the ticks when you move to another folder: those files are added in a second pick. */
-const FOLDER_HINT = '不同資料夾的檔案請分次加入：先選好一個資料夾的檔案按「開啟」，再按「＋ 再加入檔案」去另一個資料夾選，前面選的會留在下面的清單。'
+/** The system's file picker forgets the ticks when you move to another folder: a whole folder is opened instead and its
+ * drawings are ticked in our own list, across its subfolders. */
+const FOLDER_HINT = canFolderHint() ? '檔案分在好幾個資料夾時，按下面「📁 開啟整個資料夾」選上層資料夾，裡面所有子資料夾的圖檔都會列出來，在清單裡跨資料夾勾選，勾選不會消失。' : '不同資料夾的檔案請分次加入：選好一個資料夾的檔案按「開啟」，再按「＋ 再加入檔案」選另一個資料夾，前面選的會留在清單裡。'
+function canFolderHint() { return typeof document !== 'undefined' && 'webkitdirectory' in document.createElement('input'); }
+const CAD_FILE = /\.(dwg|dxf|skp|dae|obj|glb|gltf|fbx|stl)$/i;
+const canFolder = canFolderHint();
+/** a file's folder inside the opened folder ('' at its top) */
+const folderOf = (f: File) => pathOf(f).split('/').slice(0, -1).join(' / ');
+const pathOf = (f: File) => (f as File & { webkitRelativePath?: string }).webkitRelativePath || f.name;
+const same = (a: File, b: File) => a === b || (pathOf(a) === pathOf(b) && a.size === b.size);
+/** drawings found in the folders opened so far, kept like the picked files */
+let keptFound: File[] = [];
 
 type Stage =
   | { s: 'pick'; files: File[] }
@@ -45,6 +55,8 @@ export function CadImport({ firstId, onBuilt, onSource, onClose }: {
   const [st, setSt] = useState<Stage>({ s: 'pick', files: keptFiles });
   const [picked, setPicked] = useState<File[]>(keptFiles);
   const pick = (files: File[]) => { keptFiles = files; setSt({ s: 'pick', files }); };
+  const [found, setFoundState] = useState<File[]>(keptFound);
+  const setFound = (fs: File[]) => { keptFound = fs; setFoundState(fs); };
   const [drag, setDrag] = useState(false);
 
   const toLayers = (dxf: DxfDrawing, name: string) => {
@@ -68,7 +80,11 @@ export function CadImport({ firstId, onBuilt, onSource, onClose }: {
 
   /** One file to a drawing; null after showing the error. */
   const readOne = async (f: File, n: number, of: number): Promise<DxfDrawing | null> => {
-    const raw = await f.arrayBuffer(), buf = new Uint8Array(raw);
+    // (a file moved, renamed or synced away after it was ticked can no longer be read)
+    let raw: ArrayBuffer;
+    try { raw = await f.arrayBuffer(); }
+    catch { setSt({ s: 'error', msg: `${f.name} 讀不到：檔案可能在勾選之後被移動、改名或還在雲端硬碟同步中。請按「重新選擇」移除它，再重新加入一次。` }); return null; }
+    const buf = new Uint8Array(raw);
     const sig = dwgSignature(buf);
     if (sig) {
       const ver = DWG_VERSIONS[sig] ? `AutoCAD ${DWG_VERSIONS[sig]}（${sig}）` : sig;
@@ -103,7 +119,7 @@ export function CadImport({ firstId, onBuilt, onSource, onClose }: {
     try { r = buildFromMesh(parts, files.map(f => f.name).join('、'), firstId); }
     catch (e) { return setSt({ s: 'error', msg: `辨識模型時出錯：${(e as Error).message}。可以把這個檔傳給我檢查。` }); }
     if (!r) return setSt({ s: 'error', msg: '模型裡找不到牆或樓板的面（可能是空檔，或只有線條沒有面）。' });
-    keptFiles = []; onBuilt({ objects: r.objects, cad: r.cad, summary: meshSummary(r) });
+    keptFiles = []; keptFound = []; onBuilt({ objects: r.objects, cad: r.cad, summary: meshSummary(r) });
   };
   /** Several files (architectural + structural sets) are read one by one and laid side by side. */
   const onFiles = async (files: File[]) => {
@@ -129,7 +145,7 @@ export function CadImport({ firstId, onBuilt, onSource, onClose }: {
       const fs = [...(list || [])];
       if (!fs.length) return;
       const files = [...st.files];
-      for (const f of fs) if (!files.some(o => o.name === f.name && o.size === f.size)) files.push(f);
+      for (const f of fs) if (!files.some(o => same(o, f))) files.push(f);
       pick(files);
     };
     const start = () => { setPicked(st.files); onFiles(st.files); };
@@ -147,9 +163,32 @@ export function CadImport({ firstId, onBuilt, onSource, onClose }: {
           <small className="how">{MULTI_HINT}<br />{FOLDER_HINT}</small>
           <input id="cad-file" className="tap-input" type="file" multiple onChange={e => { add(e.target.files); e.target.value = ''; }} />
         </label>
+        {canFolder && <label className="chip folder-pick">📁 開啟整個資料夾（可跨子資料夾勾選）
+          <input className="tap-input" type="file" {...{ webkitdirectory: '', directory: '' }} multiple onChange={e => {
+            const fs = [...(e.target.files || [])].filter(f => CAD_FILE.test(f.name));
+            e.target.value = '';
+            if (!fs.length) return;
+            setFound([...found.filter(o => !fs.some(f => same(o, f))), ...fs]);
+          }} />
+        </label>}
+        {found.length > 0 && <div className="folder-list">
+          <div className="folder-head"><b>資料夾裡的圖檔（{found.length}）</b><small>勾選要匯入的檔，已勾 {found.filter(f => st.files.some(o => same(o, f))).length} 個</small>
+            <button className="chip ghost" onClick={() => setFound([])}>收起</button></div>
+          {[...new Set(found.map(folderOf))].sort().map(dir => <div key={dir} className="folder-grp">
+            <div className="folder-name">📂 {dir || '（最上層）'}
+              <button className="chip ghost" onClick={() => { const inDir = found.filter(f => folderOf(f) === dir); const all = inDir.every(f => st.files.some(o => same(o, f))); pick(all ? st.files.filter(o => !inDir.some(f => same(o, f))) : [...st.files, ...inDir.filter(f => !st.files.some(o => same(o, f)))]); }}>全選／取消</button></div>
+            {found.filter(f => folderOf(f) === dir).sort((a, b) => a.name.localeCompare(b.name)).map(f => {
+              const on = st.files.some(o => same(o, f));
+              return <label key={pathOf(f) + f.size} className={`folder-file ${on ? 'on' : ''}`}>
+                <input type="checkbox" checked={on} onChange={() => pick(on ? st.files.filter(o => !same(o, f)) : [...st.files, f])} />
+                <span>{f.name}</span><small>{(f.size / 1048576).toFixed(1)} MB</small>
+              </label>;
+            })}
+          </div>)}
+        </div>}
         {st.files.length > 0 && <ul className="files">
-          {st.files.map((f, i) => <li key={f.name + f.size}>
-            <span>{f.name}</span><small>{(f.size / 1048576).toFixed(1)} MB</small>
+          {st.files.map((f, i) => <li key={pathOf(f) + f.size}>
+            <span>{folderOf(f) ? `${folderOf(f)} / ` : ''}{f.name}</span><small>{(f.size / 1048576).toFixed(1)} MB</small>
             <button className="chip ghost" aria-label={`移除 ${f.name}`} onClick={() => pick(st.files.filter((_, j) => j !== i))}>移除</button>
           </li>)}
         </ul>}
@@ -173,7 +212,7 @@ export function CadImport({ firstId, onBuilt, onSource, onClose }: {
     const r = buildFromDxf(dxf, map, UNIT_SCALE[unit], wallH, name, firstId);
     if (!r) return setSt({ s: 'error', msg: '選取的圖層裡沒有線條，請至少保留一個圖層。' });
     const s = r.stats;
-    keptFiles = []; onBuilt({ ...r, summary: `已建立 ${s.walls} 道牆、${s.doors} 樘門、${s.windows} 樘窗、${s.furniture} 件家具／櫃` + (s.singleWalls ? `（${s.singleWalls} 條單線當作 10cm 牆）` : '') });
+    keptFiles = []; keptFound = []; onBuilt({ ...r, summary: `已建立 ${s.walls} 道牆、${s.doors} 樘門、${s.windows} 樘窗、${s.furniture} 件家具／櫃` + (s.singleWalls ? `（${s.singleWalls} 條單線當作 10cm 牆）` : '') });
   };
   return (
     <Modal title="圖層對應" desc={`來源：${name}。確認每個圖層要轉成什麼。`} onClose={onClose} actions={<>{close}<button className="chip on" onClick={build}>建立 3D 模型</button></>}>
@@ -251,7 +290,7 @@ function BuildingStep({ st, firstId, onBuilt, onLayers, onClose }: {
     try {
       const s = r.stats;
       const rc = r.cad.rc;
-      keptFiles = []; onBuilt({ objects: r.objects, cad: r.cad, style: sty, summary: `已建立 ${s.floors} 層：${s.walls} 道牆、${s.doors} 樘門、${s.windows} 樘窗` + (s.railings ? `、${s.railings} 段欄杆` : '')
+      keptFiles = []; keptFound = []; onBuilt({ objects: r.objects, cad: r.cad, style: sty, summary: `已建立 ${s.floors} 層：${s.walls} 道牆、${s.doors} 樘門、${s.windows} 樘窗` + (s.railings ? `、${s.railings} 段欄杆` : '')
         + (rc ? `；讀到${rc.spec.sheets.join('、')}，鋼筋依配筋圖計算` : '')
         + (s.extColor !== undefined ? `；外牆線顏色為${ACI[s.extColor] || `色號 ${s.extColor}`}，同色內牆算 RC 牆，其他顏色算輕隔間牆` : '')
         + (Object.keys(known.roles).length ? `；套用「${sty.name}」圖面樣式 ${Object.keys(known.roles).length} 條規則` : '') });

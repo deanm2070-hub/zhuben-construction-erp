@@ -662,7 +662,7 @@ export class Viewer {
   /** faces given a finish by hand show that finish in every look but the x-ray */
   private finishFaces(m: THREE.Mesh, o: ModelObject) {
     if (this.xray || isDoor(o) || !(o as BoxObject).faces) return;
-    const b = o as BoxObject, fs = Object.entries(b.faces!).filter(([, v]) => v).map(([f, v]) => [+f, v] as const);
+    const b = o as BoxObject, fs = Object.entries(b.faces!).filter(([f, v]) => v && !((+f === 2 || +f === 3) && this.extFinish(v))).map(([f, v]) => [+f, v] as const);
     if (!fs.length) return;
     const g = m.geometry as THREE.BoxGeometry, uv = g.getAttribute('uv') as THREE.BufferAttribute, cur = m.material;
     const mats = Array.isArray(cur) ? [...cur] : [0, 1, 2, 3, 4, 5].map(() => cur as THREE.Material);
@@ -677,15 +677,36 @@ export class Viewer {
     m.material = mats;
     uv.needsUpdate = true;
   }
+  /** an exterior finish (外牆面): only ever on upright faces */
+  private extFinish(name: string) { return this.materials.find(x => x.name === name)?.use === 'ext' || /^外牆/.test(name); }
   /** 材質 tool: put the chosen finish on the clicked face, and on the faces in the same plane when asked */
   private finishClick(e: PointerEvent) {
     const h = this.hitObject(e);
     if (!h || isDoor(h.o) || h.o.stair || h.o.soffit || !h.normal) { this.ev.toast('請點牆或構件的一個面'); return; }
-    const n = h.normal, f = Math.abs(n.x) > 0.5 ? (n.x > 0 ? 0 : 1) : Math.abs(n.y) > 0.5 ? (n.y > 0 ? 2 : 3) : (n.z > 0 ? 4 : 5);
-    const o = h.o as BoxObject, plane = (q: BoxObject) => f < 2 ? q.x + (f === 0 ? 1 : -1) * q.w / 2 : f < 4 ? q.y + (f === 2 ? q.h : 0) : q.z + (f === 4 ? 1 : -1) * q.d / 2;
+    const n = h.normal;
+    let f = Math.abs(n.x) > 0.5 ? (n.x > 0 ? 0 : 1) : Math.abs(n.y) > 0.5 ? (n.y > 0 ? 2 : 3) : (n.z > 0 ? 4 : 5);
+    const o = h.o as BoxObject;
+    const ext = !!this.finishMat && this.extFinish(this.finishMat);
+    if (ext && (f === 2 || f === 3)) {
+      // an exterior finish goes on an upright face: a tap on the top or underside of a slab or ledge (its edge is
+      // only 15 cm high) means the edge nearest the tap
+      const p = h.point, edges = o.rot ? [] : ([[0, o.x + o.w / 2 - p.x], [1, p.x - (o.x - o.w / 2)], [4, o.z + o.d / 2 - p.z], [5, p.z - (o.z - o.d / 2)]] as const)
+        .filter(([e]) => this.exterior().get(o.id)?.includes(e) ?? true).slice().sort((a, b) => a[1] - b[1]);
+      if (!edges.length || edges[0][1] > 80) { this.ev.toast('外牆材質請點牆、樓板的外側立面（側邊），不能貼在地坪或天花'); return; }
+      f = edges[0][0];
+    }
+    const plane = (q: BoxObject) => f < 2 ? q.x + (f === 0 ? 1 : -1) * q.w / 2 : f < 4 ? q.y + (f === 2 ? q.h : 0) : q.z + (f === 4 ? 1 : -1) * q.d / 2;
     const p0 = plane(o);
-    const same = this.finishScope === 'one' || o.rot ? [o] : this.objects.filter((q): q is BoxObject => isBox(q) && !q.rot && !q.stair && q.layer === o.layer
-      && (this.finishScope === 'all' || q.floor === o.floor) && Math.abs(plane(q) - p0) < 3);
+    // the same plane: upright faces only (the tops of all the floor slabs share a level, the floor is not one face),
+    // and with an exterior finish only those that look outdoors (not the indoor face of a wall on that line)
+    const slabOut = (q: BoxObject) => {
+      // a slab edge looks outdoors when no other slab piece of that floor carries on past it
+      const d = 5, px = q.x + (f === 0 ? q.w / 2 + d : f === 1 ? -q.w / 2 - d : 0), pz = q.z + (f === 4 ? q.d / 2 + d : f === 5 ? -q.d / 2 - d : 0);
+      return !this.objects.some(r => isBox(r) && r !== q && r.layer === 'slab' && r.floor === q.floor && !r.rot && Math.abs(px - r.x) < r.w / 2 && Math.abs(pz - r.z) < r.d / 2);
+    };
+    const outward = (q: BoxObject) => !ext || q === o || (q.layer === 'slab' ? slabOut(q) : !!this.exterior().get(q.id)?.includes(f));
+    const same = this.finishScope === 'one' || o.rot || f === 2 || f === 3 ? [o] : this.objects.filter((q): q is BoxObject => isBox(q) && !q.rot && !q.stair && q.layer === o.layer
+      && (this.finishScope === 'all' || q.floor === o.floor) && Math.abs(plane(q) - p0) < 3 && outward(q));
     this.snapshot();
     for (const q of same) {
       const fs = { ...(q.faces || {}) };
