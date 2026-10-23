@@ -2013,6 +2013,8 @@ export function buildBuilding(d: DxfDrawing, a: BuildingAnalysis, name: string, 
   const areaOf = new Map<string, { kind: 'floor' | 'balcony'; rects: Rect[] }[]>();
   /** every drawn line of a storey's plan but notes, dimensions and grids: what closes off a space on the drawing */
   const drawnOf = new Map<string, { x1: number; z1: number; x2: number; z2: number }[]>();
+  /** the plan's short texts in model coordinates, per storey */
+  const notesOf = new Map<string, { x: number; z: number; s: string }[]>();
   // a piece of floor is carried up only inside a space closed off on the plan above (walls, parapets, grilles,
   // any line): a piece off the outer corner of the walls, or the outdoor steps beside the building, lies in the open
   const closedOn = (lines: { x1: number; z1: number; x2: number; z2: number }[] | undefined, ws: { x: number; z: number; w: number; d: number; rot?: number }[]) => {
@@ -2269,6 +2271,7 @@ export function buildBuilding(d: DxfDrawing, a: BuildingAnalysis, name: string, 
     const shut = openings.map(op => ({ ...walls[0], x: op.cx, z: op.cz, w: op.axis === 'x' ? op.len : op.t, d: op.axis === 'x' ? op.t : op.len, rot: 0 }));
     // thin lines round balconies are railings, round canopies the slab edge, and projections nothing
     const notes = d.texts.filter(t => inBox(plan.box, t.x, t.y)).map(t => ({ x: X(t.x), z: Z(t.y), s: t.s }));
+    notesOf.set(st.key, notes);
     // in a balcony a double line on any layer (often the stair layer), or a short slanted pair on the wall layer, is an RC railing
     const railCand: BoxObject[] = [];
     if (!parapet) {
@@ -2636,6 +2639,14 @@ export function buildBuilding(d: DxfDrawing, a: BuildingAnalysis, name: string, 
         .map(r => along === 'z' ? [r.z0, r.z1] : [r.x0, r.x1]).sort((p, q) => p[0] - q[0]);
       const merged: number[][] = [];
       for (const r of runs) { const m = merged[merged.length - 1]; if (m && r[0] <= m[1] + 1) m[1] = Math.max(m[1], r[1]); else merged.push([...r]); }
+      // no slab beside the line (a beam under a terrace edge, over an open front): the beam spans the walls and
+      // columns standing on the line on this storey
+      if (!merged.some(([lo, hi]) => hi - lo >= 100)) {
+        const on = objects.filter((o): o is BoxObject => isBox(o) && o.floor === st.key && o.layer === 'wall' && !o.rot && o.h >= st.h * 0.8
+          && (along === 'z' ? Math.abs(o.x - at) <= o.w / 2 + reach : Math.abs(o.z - at) <= o.d / 2 + reach));
+        const ext = on.map(o => along === 'z' ? [o.z - o.d / 2, o.z + o.d / 2] : [o.x - o.w / 2, o.x + o.w / 2]);
+        if (on.length >= 2 || ext.some(([lo, hi]) => hi - lo >= 100)) merged.splice(0, merged.length, [minOf(ext.map(e => e[0])), maxOf(ext.map(e => e[1]))]);
+      }
       const top = foot ? st.base : next!.base;
       for (const [lo, hi] of merged) {
         if (hi - lo < 100) continue;
@@ -3107,6 +3118,12 @@ export function buildBuilding(d: DxfDrawing, a: BuildingAnalysis, name: string, 
       o.h = headH;
       o.name = /柱/.test(o.name) || o.rc ? o.name : `${o.name}（露台頂，同女兒牆高）`;
       cutHeads++;
+      // an outdoor kerb or step on the ground with its level written beside it (+20, FL+40): that high
+      if (i === 0 && !/柱/.test(o.name)) {
+        const lv = (notesOf.get(st.key) || []).map(n => ({ n, dd: Math.hypot(Math.max(0, Math.abs(n.x - o.x) - o.w / 2), Math.max(0, Math.abs(n.z - o.z) - o.d / 2)), m: /^(?:FL\s*)?\+\s*(\d{1,3})$/.exec(n.s.trim()) }))
+          .filter(q => q.m && q.dd <= 120 && +q.m![1] >= 5 && +q.m![1] <= 100).sort((p, q) => p.dd - q.dd)[0];
+        if (lv) { o.h = +lv.m![1]; o.name = `台階 +${lv.m![1]}（CAD）`; }
+      }
     }
   });
   // the same plan referenced twice (an xref nested in itself) draws every wall twice: keep one of each identical box
