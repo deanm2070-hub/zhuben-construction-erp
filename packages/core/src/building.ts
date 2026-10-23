@@ -1890,6 +1890,8 @@ export function buildBuilding(d: DxfDrawing, a: BuildingAnalysis, name: string, 
   const objects: ModelObject[] = [];
   const floors: CadFloor[] = [];
   const linesOf = new Map<string, PlanLine[]>();
+  /** every drawn line of a storey's plan but notes, dimensions and grids: what closes off a space on the drawing */
+  const drawnOf = new Map<string, { x1: number; z1: number; x2: number; z2: number }[]>();
   let nWalls = 0, nDoors = 0, nWins = 0, nRails = 0, cutHeads = 0;
   let below: StairPlan['holes'] = [];
   /** a stair that climbs past a storey (over a mezzanine): holes in the storeys it passes and in the one it arrives at */
@@ -2226,6 +2228,7 @@ export function buildBuilding(d: DxfDrawing, a: BuildingAnalysis, name: string, 
       openAt.set(st.key, texts.filter(t => /露台/.test(t.s) && !/上方|投影|範圍|面積|計算/.test(t.s)));
       const lineSegs = g.segs.filter(q => !/GRID|AXIS|DIM|軸|尺寸|FURN|傢俱|家具|TEXT|HAT|落水|toilet|編號|Defpoints|BEAM|梁|STA|樓梯|AREA|面積|高程|標高/i.test(q.layer))
         .map(q => ({ x1: X(q.a[0]), z1: Z(q.a[1]), x2: X(q.b[0]), z2: Z(q.b[1]) }));
+      drawnOf.set(st.key, lineSegs);
       // green lines (colour 3) round a balcony or terrace are its 120 cm RC railing
       greenOf.set(st.key, g.segs.filter(q => q.color === 3 && !/TEXT|DIM|HAT|FURN|AREA|面積|尺寸|GRID|AXIS|軸|Defpoints/i.test(q.layer))
         .map(q => ({ x1: X(q.a[0]), z1: Z(q.a[1]), x2: X(q.b[0]), z2: Z(q.b[1]) }))
@@ -2609,7 +2612,24 @@ export function buildBuilding(d: DxfDrawing, a: BuildingAnalysis, name: string, 
         };
         return [along(r.x0, r.x1, r.z0, true), along(r.x0, r.x1, r.z1, true), along(r.z0, r.z1, r.x0, false), along(r.z0, r.z1, r.x1, false)].filter(Boolean).length;
       };
-      from = from.filter(r => Math.min(r.x1 - r.x0, r.z1 - r.z0) < 60 || sides(r) >= 2);
+      // and inside a space closed off on the drawing (walls, parapets, grilles, any line): a piece off the outer corner
+      // of the walls has walls on two sides too, but on the plan it lies in the open
+      const drawn = roofOver ? undefined : drawnOf.get(st.key);
+      const spaces: Rect[] = [];
+      const inSpace = (r: Rect) => {
+        if (!drawn?.length) return true;
+        // (not from inside a wall: the space between its two lines, or over a line at a space's edge)
+        const seeds = [[(r.x0 + r.x1) / 2, (r.z0 + r.z1) / 2], [r.x0 + 5, r.z0 + 5], [r.x1 - 5, r.z0 + 5], [r.x0 + 5, r.z1 - 5], [r.x1 - 5, r.z1 - 5]]
+          .filter(([x, z]) => !ws.some(o => Math.abs(x - o.x) < o.w / 2 + 5 && Math.abs(z - o.z) < o.d / 2 + 5));
+        const at = ([x, z]: number[]) => spaces.some(q => x >= q.x0 && x <= q.x1 && z >= q.z0 && z <= q.z1);
+        if (seeds.some(at)) return true;
+        for (const [x, z] of seeds) {
+          const got = spaceFromLines(drawn, x, z, 1e6);
+          if (got?.length && Math.min(maxOf(got.map(q => q.x1)) - minOf(got.map(q => q.x0)), maxOf(got.map(q => q.z1)) - minOf(got.map(q => q.z0))) >= 60) { spaces.push(...got); return true; }
+        }
+        return false;
+      };
+      from = from.filter(r => (Math.min(r.x1 - r.x0, r.z1 - r.z0) < 60 || sides(r) >= 2) && inSpace(r));
     }
     const add = subtractRects(from, slabsOf.get(st.key) || [], W, D);
     if (!slabsOf.has(st.key)) slabsOf.set(st.key, []);
