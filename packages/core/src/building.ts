@@ -1511,7 +1511,9 @@ function roofSplit(roof: Rect[], below: Rect[], walls: BoxObject[], outdoor: { x
   const rfOut = fillHoles(paint(roof)), eave = new Uint8Array(N);
   let nRf = 0;
   for (let k = 0; k < N; k++) if (!rfOut[k]) nRf++;
-  if (nRf >= nIn * 0.3) for (let k = 0; k < N; k++) eave[k] = !rfOut[k] && !indoor[k] ? 1 : 0;
+  // (a usable roof outline also bounds the roof: a walled yard or the outdoor steps are not roofed because the
+  // walls round them close them off)
+  if (nRf >= nIn * 0.3) for (let k = 0; k < N; k++) { eave[k] = !rfOut[k] && !indoor[k] ? 1 : 0; if (rfOut[k]) indoor[k] = 0; }
   // strips narrower than 20 cm along the outline are drawing slack, not eaves
   const eaves = maskRects(eave, nx, nz, C, M, 2000).filter(r => Math.min(r.x1 - r.x0, r.z1 - r.z0) >= 20);
   return { indoor: maskRects(indoor, nx, nz, C, M), eaves };
@@ -2011,6 +2013,26 @@ export function buildBuilding(d: DxfDrawing, a: BuildingAnalysis, name: string, 
   const areaOf = new Map<string, { kind: 'floor' | 'balcony'; rects: Rect[] }[]>();
   /** every drawn line of a storey's plan but notes, dimensions and grids: what closes off a space on the drawing */
   const drawnOf = new Map<string, { x1: number; z1: number; x2: number; z2: number }[]>();
+  // a piece of floor is carried up only inside a space closed off on the plan above (walls, parapets, grilles,
+  // any line): a piece off the outer corner of the walls, or the outdoor steps beside the building, lies in the open
+  const closedOn = (lines: { x1: number; z1: number; x2: number; z2: number }[] | undefined, ws: { x: number; z: number; w: number; d: number; rot?: number }[]) => {
+    const spaces: Rect[] = [];
+    return (r: Rect) => {
+      if (!lines?.length) return true;
+      // (not from inside a wall: the space between its two lines, or over a line at a space's edge)
+      const seeds = [[(r.x0 + r.x1) / 2, (r.z0 + r.z1) / 2], [r.x0 + 5, r.z0 + 5], [r.x1 - 5, r.z0 + 5], [r.x0 + 5, r.z1 - 5], [r.x1 - 5, r.z1 - 5]]
+        .filter(([x, z]) => !ws.some(o => Math.abs(x - o.x) < (o.rot ? Math.max(o.w, o.d) : o.w) / 2 + 5 && Math.abs(z - o.z) < (o.rot ? Math.max(o.w, o.d) : o.d) / 2 + 5));
+      // (a strip wholly under a wall, the roof under its parapet, belongs to the space the wall bounds)
+      if (!seeds.length) return true;
+      const at = ([x, z]: number[]) => spaces.some(q => x >= q.x0 && x <= q.x1 && z >= q.z0 && z <= q.z1);
+      if (seeds.some(at)) return true;
+      for (const [x, z] of seeds) {
+        const got = spaceFromLines(lines, x, z, 1e6);
+        if (got?.length && Math.min(maxOf(got.map(q => q.x1)) - minOf(got.map(q => q.x0)), maxOf(got.map(q => q.z1)) - minOf(got.map(q => q.z0))) >= 60) { spaces.push(...got); return true; }
+      }
+      return false;
+    };
+  };
   let nWalls = 0, nDoors = 0, nWins = 0, nRails = 0, cutHeads = 0;
   let below: StairPlan['holes'] = [];
   /** a stair that climbs past a storey (over a mezzanine): holes in the storeys it passes and in the one it arrives at */
@@ -2437,7 +2459,10 @@ export function buildBuilding(d: DxfDrawing, a: BuildingAnalysis, name: string, 
         return rects ? [{ kind, rects, h: kind === 'ac' ? heightNear(t.x, t.z, /格柵|欄杆|百葉/) : kind === 'panel' ? heightNear(t.x, t.z) : undefined }] : [];
       }));
     }
+    // (the roof only within the decks outlined on the roof plan: the flood also fills between a parapet and the sheet's edge)
+    const onRoof = parapet && drawnOf.get(st.key)?.length ? closedOn(drawnOf.get(st.key), walls) : () => true;
     for (const r of slabRects(walls.length ? [...walls, ...shut, ...slabEdges] : walls, texts, W, D, holes)) {
+      if (!onRoof(r)) continue;
       add({ layer: 'slab', name: st.key === '1F' ? '地坪（CAD）' : st.key === 'RF' ? '屋頂板（CAD）' : '樓板（CAD）', x: (r.x0 + r.x1) / 2, z: (r.z0 + r.z1) / 2, w: r.x1 - r.x0, d: r.z1 - r.z0, h: SLAB, y: -SLAB, color: 0xd6d1c7 });
       slabsOf.get(st.key)!.push(r);
     }
@@ -2837,24 +2862,17 @@ export function buildBuilding(d: DxfDrawing, a: BuildingAnalysis, name: string, 
       };
       // and inside a space closed off on the drawing (walls, parapets, grilles, any line): a piece off the outer corner
       // of the walls has walls on two sides too, but on the plan it lies in the open
-      const drawn = roofOver ? undefined : drawnOf.get(st.key);
-      const spaces: Rect[] = [];
-      const inSpace = (r: Rect) => {
-        if (!drawn?.length) return true;
-        // (not from inside a wall: the space between its two lines, or over a line at a space's edge)
-        const seeds = [[(r.x0 + r.x1) / 2, (r.z0 + r.z1) / 2], [r.x0 + 5, r.z0 + 5], [r.x1 - 5, r.z0 + 5], [r.x0 + 5, r.z1 - 5], [r.x1 - 5, r.z1 - 5]]
-          .filter(([x, z]) => !ws.some(o => Math.abs(x - o.x) < o.w / 2 + 5 && Math.abs(z - o.z) < o.d / 2 + 5));
-        const at = ([x, z]: number[]) => spaces.some(q => x >= q.x0 && x <= q.x1 && z >= q.z0 && z <= q.z1);
-        if (seeds.some(at)) return true;
-        for (const [x, z] of seeds) {
-          const got = spaceFromLines(drawn, x, z, 1e6);
-          if (got?.length && Math.min(maxOf(got.map(q => q.x1)) - minOf(got.map(q => q.x0)), maxOf(got.map(q => q.z1)) - minOf(got.map(q => q.z0))) >= 60) { spaces.push(...got); return true; }
-        }
-        return false;
-      };
+      const inSpace = closedOn(roofOver ? undefined : drawnOf.get(st.key), ws);
       from = from.filter(r => (Math.min(r.x1 - r.x0, r.z1 - r.z0) < 60 || sides(r) >= 2) && inSpace(r));
     }
-    const add = subtractRects(from, slabsOf.get(st.key) || [], W, D);
+    // (not over this storey's stair holes and voids: the floor below has no hole, the stair arrives through it)
+    if (st.key === 'RF' && !/^R\d+F$/.test(lower.key) && drawnOf.get('RF')?.length) {
+      // the roof over a one-storey building: within the roof decks drawn on the roof plan, not over the steps and
+      // the deck walls outside the building (the deck's curved edge wall, its planter)
+      const inRoof = closedOn(drawnOf.get('RF'), objects.filter((o): o is BoxObject => isBox(o) && o.floor === lower.key && o.layer === 'wall'));
+      from = from.filter(r => Math.min(r.x1 - r.x0, r.z1 - r.z0) >= 20 && inRoof(r));
+    }
+    const add = subtractRects(from, [...slabsOf.get(st.key) || [], ...holesOf.get(st.key) || [], ...voidsOf.get(st.key) || []], W, D);
     if (!slabsOf.has(st.key)) slabsOf.set(st.key, []);
     for (const r of add) {
       objects.push({ id: id++, layer: 'slab', name: st.key === 'RF' ? '屋頂板（CAD）' : '樓板（CAD）', floor: st.key, x: (r.x0 + r.x1) / 2, z: (r.z0 + r.z1) / 2, w: r.x1 - r.x0, d: r.z1 - r.z0, h: SLAB, y: st.base - SLAB, color: 0xd6d1c7 });
@@ -3000,9 +3018,11 @@ export function buildBuilding(d: DxfDrawing, a: BuildingAnalysis, name: string, 
     const ws = objects.filter((o): o is BoxObject => isBox(o) && o.floor === st.key && o.layer === 'wall' && !o.rot && o.y + o.h >= top);
     const ds = objects.filter((o): o is DoorObject => isDoor(o) && o.floor === st.key);
     const cover = [...(slabsOf.get(next.key) || []), ...(holesOf.get(next.key) || []), ...(voidsOf.get(next.key) || [])];
+    // (under the roof plan only where it outlines a deck: a walled yard or the outdoor steps stay open)
+    const onRoof = next.key === 'RF' ? closedOn(drawnOf.get('RF'), objects.filter((o): o is BoxObject => isBox(o) && o.floor === 'RF' && o.layer === 'wall')) : () => true;
     for (const r of [...(slabsOf.get(st.key) || [])]) {
       const w = r.x1 - r.x0, d = r.z1 - r.z0;
-      if (w < 80 || d < 80 || w * d > 60e4) continue;
+      if (w < 80 || d < 80 || w * d > 60e4 || !onRoof(r)) continue;
       if ((terraces.get(st.key) || []).some(t => t.x >= r.x0 && t.x <= r.x1 && t.z >= r.z0 && t.z <= r.z1)) continue;
       const open = subtractRects([r], cover, W, D);
       if (open.reduce((n, q) => n + (q.x1 - q.x0) * (q.z1 - q.z0), 0) < w * d * 0.5) continue;
@@ -3068,7 +3088,8 @@ export function buildBuilding(d: DxfDrawing, a: BuildingAnalysis, name: string, 
     const terr = (terraces.get(st.key) || []).map(t => roomSlabAt(stWalls, t.x, t.z, W, D, [], 0, slabsOf.get(st.key) || []));
     const inR = (rs: Rect[], x: number, z: number) => rs.some(r => x >= r.x0 && x <= r.x1 && z >= r.z0 && z <= r.z1);
     for (const o of objects) {
-      if (!isBox(o) || o.floor !== st.key || o.layer !== 'wall' || o.rot || o.y !== st.base || o.h < headH + 40 || o.h < st.h - 5) continue;
+      // (a curved wall round a deck is many short turned pieces: each one is judged by its centre)
+      if (!isBox(o) || o.floor !== st.key || o.layer !== 'wall' || o.y !== st.base || o.h < headH + 40 || o.h < st.h - 5) continue;
       if (/窗台|窗楣|門楣|隔間牆下/.test(o.name)) continue;
       const inside = (r: { x0: number; x1: number; z0: number; z1: number }) => o.x >= r.x0 - 30 && o.x <= r.x1 + 30 && o.z >= r.z0 - 30 && o.z <= r.z1 + 30;
       // a terrace's own slab: a 露台 / 平台 label inside it, the sunshade slab over it does not count as a roof
