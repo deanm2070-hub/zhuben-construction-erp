@@ -105,7 +105,7 @@ export function Takeoff({ takeoff: t, pb, pricing, project, subtitle, settings, 
           const q = t.calc.filter(c => re.test(c.item) && c.unit === u).reduce((a, c) => a + c.q, 0);
           return <div key={l}><span>{l}</span><b>{f2(r2(q))} {u}</b></div>;
         })}
-        <div><span>牆面（內＋外）</span><b>{f2(r2(t.calc.filter(c => /牆面|外牆|內牆/.test(c.item) && c.unit === '㎡' && !/防水/.test(c.item)).reduce((a, c) => a + c.q, 0)))} ㎡</b></div>
+        <div><span>牆面（內＋外）</span><b>{f2(r2(t.calc.filter(c => /牆面|外牆|內牆/.test(c.item) && c.unit === '㎡' && !/防水|^外牆1:3水泥砂漿打底$|^W2C/.test(c.item)).reduce((a, c) => a + c.q, 0)))} ㎡</b></div>
         <div><span>工項</span><b>{pb.count}</b><small>{t.calc.length} 筆計算</small></div>
       </div>
       <div className="kv tabs">

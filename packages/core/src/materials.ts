@@ -22,6 +22,8 @@ export interface Material {
   /** default unit prices, used on the budget until a price is typed there */
   mat?: number;
   lab?: number;
+  /** exterior finishes: goes on a 1:3 mortar base coat (counted as 外牆1:3水泥砂漿打底); default read from the name */
+  base?: boolean;
   /** a built-in item taken off the pickers */
   hidden?: boolean;
   /** shipped with the program (finish codes F1, W1A … and the exterior finishes) */

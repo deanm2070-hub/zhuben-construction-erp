@@ -13,9 +13,17 @@ export const FINISHES = {
 } as const;
 export const FINISH_SHORT: Record<string, string> = { F1: '粉光金鋼砂', F2A: '拋光石英磚', F2B: '樓梯石英磚', F4: '地磚', F5: '止滑地磚', C1: '石膏板天花', C2: 'PVC天花', W1A: '水泥粉光＋漆', W1B: '矽酸鈣板＋漆', W2: '防水＋磁磚' };
 export const EXT_FINISHES = ['外牆1:3水泥砂漿打底+抿石子', '外牆1:3水泥砂漿打底+水泥漆', '外牆複合式鍍鋁鋅彩色鋼板', '外牆企口型金屬飾板', '外牆1:3水泥砂漿打底+二丁掛'];
+/** an exterior finish on the budget without its base coat: 外牆1:3水泥砂漿打底+二丁掛 → 外牆二丁掛 (the base coat is its own line) */
+export const extFinishName = (name: string) => name.replace(/^外牆1:3水泥砂漿打底\+/, '外牆');
+/** whether a finish goes on a 1:3 mortar base coat: as set in the 建材項目 list, else read from the name (not stone or cladding) */
+export function needsBase(name: string, mats: { name: string; base?: boolean }[] = []) {
+  const m = mats.find(x => x.name === name);
+  if (m?.base != null) return m.base;
+  return /1:3水泥砂漿打底/.test(name) && !/石材|乾掛|鋼板|金屬/.test(name);
+}
 /** finishes that can be put on single faces in the 3D model (材質 tool) */
 export const FACE_FINISHES = [...EXT_FINISHES, '內牆1:3水泥粉光+水泥漆(綠建材)', '內牆貼30*60cm磁磚', '內牆矽酸鈣板批土整平+水泥漆(綠建材)'];
-export const DEFAULT_SETTINGS: TakeoffSettings = { ext: 0, floor: '1F', slab: 15, rebar: 120 };
+export const DEFAULT_SETTINGS: TakeoffSettings = { ext: 4, floor: '1F', slab: 15, rebar: 120 };
 
 /** Finish codes picked from the room name. */
 export function defaultFinish(name: string): FinishChoice {
@@ -169,7 +177,7 @@ export function computeTakeoff(inp: TakeoffInput): Takeoff {
     return bm && bm.a > 0 ? { a: bm.a, expr: `梁底＋梁側：梁長 ${r2(bm.L)} m × (底寬 + 2 側 × 梁深扣板厚) ${[...bm.parts].join('、')} m` } : null;
   };
   const wetH = S.wetH ?? 200, mats = materialsOf(S.materials);
-  const extName = S.extName || EXT_FINISHES[S.ext] || EXT_FINISHES[0], extMat = mats.find(x => x.name === extName);
+  const extName = S.extName || EXT_FINISHES[S.ext] || EXT_FINISHES[4];
   for (const r of rooms) {
     const { f, c, w } = r.fin;
     const win = winsOf.get(r.name), wa = win?.a || 0;
@@ -206,35 +214,43 @@ export function computeTakeoff(inp: TakeoffInput): Takeoff {
     if (/露台|平台|屋頂/.test(r.name)) add('(屋頂)屋頂.露台防水處理（含保護層）', 'M2', r.name, r.area, area);
   }
   // exterior walls: the pieces next to openings are already cut, so area is length × height
-  const facade: Partial<Record<Facade, { a: number; L: number }>> = {};
-  /* faces given a finish by hand in the 3D model: the outward face of an exterior wall leaves the project's default
-     exterior finish; every picked face is counted under its own finish */
+  /* faces given a finish by hand in the 3D model: the outward face of an exterior wall takes that finish instead of the
+     project's default (二丁掛 unless changed); other picked faces are listed on their own. The 1:3 mortar base coat is
+     counted under the finishes that need it, not under dry-hung stone or cladding */
   const outFace = (o: BoxObject) => o.rot ? -1 : o.w >= o.d ? (o.z >= cz ? 4 : 5) : (o.x >= cx ? 0 : 1);
   const faceA = (o: BoxObject, f: number) => (f < 2 ? o.d * o.h : f < 4 ? o.w * o.d : o.w * o.h) / 1e4;
-  const picked = new Map<string, Map<string, { a: number; n: number }>>();
+  const secOf = (name: string) => { const mm = mats.find(x => x.name === name); return mm ? sectionOf(mm) : SEC.finish; };
+  const picked = new Map<string, { a: number; n: number }>();
   for (const o of boxes) for (const [f, mat] of Object.entries(o.faces || {})) {
-    if (!mat) continue;
-    const k = ext.includes(o) && +f === outFace(o) ? `${facadeOf(o, cx, cz)}外牆（指定）` : '指定面';
-    const byMat = picked.get(mat) || picked.set(mat, new Map()).get(mat)!, cur = byMat.get(k) || { a: 0, n: 0 };
-    cur.a += faceA(o, +f); cur.n++; byMat.set(k, cur);
+    if (!mat || (ext.includes(o) && +f === outFace(o))) continue;
+    const cur = picked.get(mat) || { a: 0, n: 0 };
+    cur.a += faceA(o, +f); cur.n++; picked.set(mat, cur);
   }
+  for (const [mat, v] of picked) add(`(牆面)${mat}`, 'M2', '指定面', v.a, `3D 模型指定材質 ${v.n} 面 Σ 長×高`, secOf(mat));
+  const extA = new Map<string, Partial<Record<Facade, { a: number; L: number; n: number }>>>();
   for (const o of ext) {
-    if (o.faces?.[outFace(o)]) continue;
-    const k = facadeOf(o, cx, cz); const cur = facade[k] || { a: 0, L: 0 }; cur.a += len(o) * o.h / 100; cur.L += len(o); facade[k] = cur;
-  }
-  for (const [mat, byWhere] of picked) for (const [where, v] of byWhere) {
-    const mm = mats.find(x => x.name === mat);
-    add(`(牆面)${mat}`, 'M2', where, v.a, `3D 模型指定材質 ${v.n} 面 Σ 長×高`, mm ? sectionOf(mm) : SEC.finish);
+    const own = o.faces?.[outFace(o)], mat = own || extName, k = facadeOf(o, cx, cz);
+    const byK = extA.get(mat) || extA.set(mat, {}).get(mat)!, cur = byK[k] ||= { a: 0, L: 0, n: 0 };
+    cur.a += len(o) * o.h / 100; cur.L += len(o); if (own) cur.n++;
   }
   // imported single drawings have solid walls behind their windows, so take the glass off
   const winOff: Partial<Record<Facade, number>> = {};
   if (inp.cadDoors) for (const w of wins) { const k = facadeOf(w.o, cx, cz); winOff[k] = (winOff[k] || 0) + w.w * w.h / 1e4; }
-  for (const k of FACADES) {
-    const v = facade[k];
+  const base: Partial<Record<Facade, { a: number; skip: Set<string> }>> = {}, whole: Partial<Record<Facade, number>> = {};
+  for (const [mat, byK] of extA) for (const k of FACADES) {
+    const v = byK[k];
     if (!v) continue;
-    const q = v.a - (winOff[k] || 0), expr = `Σ 牆段 長×高（${r2(v.L)} m 牆段，開口已扣）${winOff[k] ? ` − 窗 ${r2(winOff[k]!)} ㎡` : ''}`;
-    add(`(牆面)${extName}`, 'M2', `${k}外牆`, q, expr, extMat ? sectionOf(extMat) : SEC.finish);
-    if (S.extWater === 'area') add('(牆面)外牆防水處理', 'M2', `${k}外牆`, q, expr);
+    const off = mat === extName ? winOff[k] || 0 : 0, q = v.a - off;
+    const expr = `Σ 牆段 長×高（${r2(v.L)} m 牆段，開口已扣${v.n ? `，3D 指定 ${v.n} 面` : ''}）${off ? ` − 窗 ${r2(off)} ㎡` : ''}`;
+    add(`(牆面)${extFinishName(mat)}`, 'M2', `${k}外牆`, q, expr, secOf(mat));
+    whole[k] = (whole[k] || 0) + q;
+    const b = base[k] ||= { a: 0, skip: new Set() };
+    if (needsBase(mat, mats)) b.a += q; else b.skip.add(extFinishName(mat).replace(/^外牆/, ''));
+  }
+  for (const k of FACADES) {
+    const b = base[k];
+    if (b && b.a > 0) add('(牆面)外牆1:3水泥砂漿打底', 'M2', `${k}外牆`, b.a, `外牆面積${b.skip.size ? `，不含${[...b.skip].join('、')}（不需打底）` : ''}`);
+    if (S.extWater === 'area' && whole[k]) add('(牆面)外牆防水處理', 'M2', `${k}外牆`, whole[k]!, '外牆面積');
   }
   if (S.extWater !== 'area') {
     /* exterior waterproofing is run along lines: round every opening frame in an outside wall, and along the joint

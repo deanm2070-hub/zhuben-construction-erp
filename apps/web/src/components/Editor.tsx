@@ -195,7 +195,10 @@ export function Editor({ projectId, importNow, trial = false, onExit }: { projec
       if (!alive) return;
       setName(p.name);
       setFinishes(p.model.finishes || {});
-      setSettings({ ...DEFAULT_SETTINGS, ...(p.model.settings || {}), materials: p.model.settings?.materials ?? loadMaterials() });
+      const ps = p.model.settings;
+      // unpicked exterior faces count as 二丁掛 (v0.17.6): projects that kept the old default 抿石子 move to it
+      const extDefault = ps && !ps.extName && !ps.ext ? { ext: DEFAULT_SETTINGS.ext } : {};
+      setSettings({ ...DEFAULT_SETTINGS, ...(ps || {}), ...extDefault, materials: ps?.materials ?? loadMaterials() });
       setPricing(withPricing(p.model.pricing));
       setVersions(p.model.versions || []);
       setPinfo({ ...(p.model.info || {}), ...(p.meta || {}) });

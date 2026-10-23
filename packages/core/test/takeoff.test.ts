@@ -27,15 +27,22 @@ describe('takeoff on the sample flat', () => {
     expect(t.rooms.find(r => r.name === '雙衛浴區')!.fin).toEqual({ f: 'F5', c: 'C2', w: 'W2' });
     expect(t.groups.some(g => g.title.startsWith('(牆面)廁所'))).toBe(true);
   });
-  it('counts faces given a finish by hand instead of the default exterior finish', () => {
+  it('counts faces given a finish by hand instead of the default 二丁掛, and leaves the base coat off stone', () => {
+    const tot = (tk: ReturnType<typeof computeTakeoff>, title: string) => tk.groups.find(g => g.title === title)?.total || 0;
+    const g0 = tot(t, '(牆面)外牆二丁掛');
+    expect(g0).toBeGreaterThan(0);
+    expect(tot(t, '(牆面)外牆1:3水泥砂漿打底')).toBeCloseTo(g0, 1);
     const objs = sampleObjects();
-    const g0 = t.groups.find(g => g.title === '(牆面)外牆1:3水泥砂漿打底+抿石子')!.total;
     const w = objs.find(o => 'w' in o && o.layer === 'wall' && o.name.startsWith('外牆') && o.w > o.d) as import('../src').BoxObject;
-    w.faces = { [w.z >= SAMPLE_D / 2 ? 4 : 5]: '外牆1:3水泥砂漿打底+二丁掛' };
-    const t3 = computeTakeoff({ objects: objs, bounds: { W: SAMPLE_W, D: SAMPLE_D }, labels: [], rects: SAMPLE_ROOMS, finishes: {}, settings: DEFAULT_SETTINGS });
-    const a = w.w * w.h / 1e4;
-    expect(t3.groups.find(g => g.title === '(牆面)外牆1:3水泥砂漿打底+二丁掛')!.total).toBeCloseTo(a, 1);
-    expect(t3.groups.find(g => g.title === '(牆面)外牆1:3水泥砂漿打底+抿石子')!.total).toBeCloseTo(g0 - a, 1);
+    const f = w.z >= SAMPLE_D / 2 ? 4 : 5, a = w.w * w.h / 1e4;
+    const run = (mat: string) => { w.faces = { [f]: mat }; return computeTakeoff({ objects: objs, bounds: { W: SAMPLE_W, D: SAMPLE_D }, labels: [], rects: SAMPLE_ROOMS, finishes: {}, settings: DEFAULT_SETTINGS }); };
+    const t3 = run('外牆1:3水泥砂漿打底+抿石子');
+    expect(tot(t3, '(牆面)外牆抿石子')).toBeCloseTo(a, 1);
+    expect(tot(t3, '(牆面)外牆二丁掛')).toBeCloseTo(g0 - a, 1);
+    expect(tot(t3, '(牆面)外牆1:3水泥砂漿打底')).toBeCloseTo(g0, 1);
+    const t4 = run('外牆石材乾掛');
+    expect(tot(t4, '(牆面)外牆石材乾掛')).toBeCloseTo(a, 1);
+    expect(tot(t4, '(牆面)外牆1:3水泥砂漿打底')).toBeCloseTo(g0 - a, 1);
   });
   it('runs exterior waterproofing along frames and floor joints, or over the wall area when asked', () => {
     expect(t.groups.find(g => g.title === '(牆面)外牆防水處理')!.unit).toBe('M');
@@ -52,7 +59,8 @@ describe('takeoff on the sample flat', () => {
     const t5 = computeTakeoff({ objects: sampleObjects(), bounds: { W: SAMPLE_W, D: SAMPLE_D }, labels: [], rects: SAMPLE_ROOMS,
       finishes: { 次臥室: { f: '地坪超耐磨木地板' } }, settings: { ...DEFAULT_SETTINGS, materials, extName: '外牆1:3水泥砂漿打底+石材乾掛' } });
     expect(t5.groups.find(g => g.title === '(地坪)地坪超耐磨木地板')!.rows.map(r => r.name)).toEqual(['次臥室']);
-    expect(t5.groups.some(g => g.title === '(牆面)外牆1:3水泥砂漿打底+石材乾掛')).toBe(true);
+    expect(t5.groups.some(g => g.title === '(牆面)外牆石材乾掛')).toBe(true);
+    expect(t5.groups.some(g => g.title === '(牆面)外牆1:3水泥砂漿打底')).toBe(false);
     expect(t5.budget.find(b => b.name === '室內門檻石')).toMatchObject({ tpl: true, unit: '支' });
     const pb = priceBudget(t5.budget, withPricing(null), materialRates(materialsOf(materials)));
     expect(pb.sections.flatMap(s => s.lines).find(l => l.name === '地坪超耐磨木地板')!.mat).toBe(2800);
