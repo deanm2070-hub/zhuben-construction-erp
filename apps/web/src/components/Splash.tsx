@@ -7,13 +7,14 @@ const STEP = 59; // the dot grid's spacing (.splash-dots background-size)
 function twinkles() {
   const nx = Math.ceil(innerWidth / STEP / 2) + 1, ny = Math.ceil(innerHeight / STEP / 2) + 1;
   const n = Math.min(60, Math.round((2 * nx + 1) * (2 * ny + 1) * 0.18));
-  return Array.from({ length: n }, (_, k) => ({
-    k,
-    x: Math.round((Math.random() * 2 - 1) * nx) * STEP,
-    y: Math.round((Math.random() * 2 - 1) * ny) * STEP,
-    delay: Math.random() * 2.4,
-    dur: 1.1 + Math.random() * 1.5,
-  }));
+  const out: { k: number; x: number; y: number; delay: number; dur: number }[] = [];
+  for (let k = 0; out.length < n && k < n * 4; k++) {
+    const x = Math.round((Math.random() * 2 - 1) * nx) * STEP, y = Math.round((Math.random() * 2 - 1) * ny) * STEP;
+    // none behind the logo and the name, so they stay easy to read
+    if (Math.abs(x) < Math.min(innerWidth / 2, 360) && y > -130 && y < 150) continue;
+    out.push({ k, x, y, delay: Math.random() * 2.4, dur: 1.1 + Math.random() * 1.5 });
+  }
+  return out;
 }
 
 /** Start screen each time the app opens: the logo and name on deep blue, fading out on its own or at a tap. */
@@ -32,7 +33,7 @@ export function Splash() {
         {stars.map(t => <i key={t.k} style={{ left: `calc(50% + ${t.x}px)`, top: `calc(50% + ${t.y}px)`, animationDelay: `${t.delay}s`, animationDuration: `${t.dur}s` }} />)}
       </div>
       <div className="splash-mid">
-        <div className="splash-logo"><img src="/logo.png" alt="" width={84} height={84} /></div>
+        <img className="splash-logo" src="/logo-mark.png" alt="" width={150} height={150} />
         <h1>{APP_NAME}</h1>
         <p>{APP_EN}</p>
       </div>

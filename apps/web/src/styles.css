@@ -365,9 +365,7 @@ body{overflow-x:hidden}
 .splash-dots{position:absolute;inset:-30px;background-image:radial-gradient(circle,rgba(150,170,255,.55) 0 5px,transparent 6px);background-size:59px 59px;background-position:center;
   -webkit-mask-image:radial-gradient(ellipse at center,#000 30%,rgba(0,0,0,.35) 75%,transparent 100%);mask-image:radial-gradient(ellipse at center,#000 30%,rgba(0,0,0,.35) 75%,transparent 100%)}
 .splash-mid{position:relative;display:flex;flex-direction:column;align-items:center;text-align:center;padding:0 16px;animation:splashIn .9s ease both}
-.splash-logo{width:116px;height:116px;border-radius:50%;display:flex;align-items:center;justify-content:center;overflow:hidden;
-  background:#fff;box-shadow:0 0 0 6px rgba(190,205,255,.25),0 0 60px 10px rgba(140,165,255,.5)}
-.splash-logo img{width:92px;height:92px;mix-blend-mode:multiply}
+.splash-logo{width:150px;height:150px;display:block;filter:drop-shadow(0 6px 18px rgba(0,0,0,.45)) drop-shadow(0 0 22px rgba(150,175,255,.35))}
 .splash h1{margin:22px 0 0;color:#fff;font-family:'Noto Serif TC','Noto Sans TC',serif;font-weight:900;font-size:clamp(28px,6vw,40px);letter-spacing:.12em;text-shadow:0 2px 14px rgba(0,0,0,.35)}
 .splash p{margin:12px 0 0;color:rgba(225,232,255,.85);font-family:'Noto Serif TC',Georgia,serif;font-size:clamp(11px,2.6vw,14px);letter-spacing:.32em;text-transform:uppercase}
 .splash-dots i{position:absolute;width:12px;height:12px;margin:-6px 0 0 -6px;border-radius:50%;background:#fff;opacity:0;
