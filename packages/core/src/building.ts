@@ -2834,9 +2834,8 @@ export function buildBuilding(d: DxfDrawing, a: BuildingAnalysis, name: string, 
     // over a roof storey (its terrace inside the parapet looks indoor) only a roof with no slab of its own is filled
     // (a stray patch off the building, a north arrow or a site item, is not a roof of its own)
     const below = slabsOf.get(lower.key) || [];
-    const own = (slabsOf.get('RF') || []).filter(r => below.some(b => r.x0 < b.x1 + 50 && b.x0 < r.x1 + 50 && r.z0 < b.z1 + 50 && b.z0 < r.z1 + 50));
     let from = below;
-    if (/^R\d+F$/.test(lower.key) && (st.key !== 'RF' || own.length)) {
+    if (/^R\d+F$/.test(lower.key)) {
       // a rooftop structure stands on the roof below it: its floor is that roof, within the walls it stands in;
       // the roof over a rooftop structure covers it within its own walls, over its stair and voids too
       // (a roof plan with no walls of its own: the walls of the rooftop structure under it)
@@ -3098,10 +3097,13 @@ export function buildBuilding(d: DxfDrawing, a: BuildingAnalysis, name: string, 
     const stWalls = objects.filter((o): o is BoxObject => isBox(o) && o.floor === st.key && (o.layer === 'wall' || o.layer === 'glass') && o.h >= 60);
     const terr = (terraces.get(st.key) || []).map(t => roomSlabAt(stWalls, t.x, t.z, W, D, [], 0, slabsOf.get(st.key) || []));
     const inR = (rs: Rect[], x: number, z: number) => rs.some(r => x >= r.x0 && x <= r.x1 && z >= r.z0 && z <= r.z1);
+    const upOn = objects.filter((o): o is BoxObject => isBox(o) && o.floor === next.key && o.layer === 'wall' && !o.rot && o.h >= next.h * 0.8 && o.y === next.base);
     for (const o of objects) {
       // (a curved wall round a deck is many short turned pieces: each one is judged by its centre)
       if (!isBox(o) || o.floor !== st.key || o.layer !== 'wall' || o.y !== st.base || o.h < headH + 40 || o.h < st.h - 5) continue;
       if (/窗台|窗楣|門楣|隔間牆下/.test(o.name)) continue;
+      // a column or wall with one standing on it on the storey above runs on up to it (a column at a terrace edge)
+      if (upOn.some(u => Math.abs(u.x - o.x) <= (u.w + o.w) / 2 - 5 && Math.abs(u.z - o.z) <= (u.d + o.d) / 2 - 5)) continue;
       const inside = (r: { x0: number; x1: number; z0: number; z1: number }) => o.x >= r.x0 - 30 && o.x <= r.x1 + 30 && o.z >= r.z0 - 30 && o.z <= r.z1 + 30;
       // a terrace's own slab: a 露台 / 平台 label inside it, the sunshade slab over it does not count as a roof
       const onTerrace = (slabsOf.get(st.key) || []).some(r => inside(r) && (terraces.get(st.key) || []).some(t => t.x >= r.x0 && t.x <= r.x1 && t.z >= r.z0 && t.z <= r.z1));
