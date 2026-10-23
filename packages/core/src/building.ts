@@ -1402,6 +1402,27 @@ function subtractRects(a: Rect[], b: Rect[], W: number, D: number, open = 3): Re
   return maskRects(opened, nx, nz, C, M, 2000);
 }
 /** Cells of a raster merged into rectangles: runs per row, stacked while the next row has the same run. */
+/** An outline of square corners as rectangles (5 cm raster). */
+function polyRects(pts: number[][]): Rect[] {
+  const C = 5, x0 = minOf(pts.map(p => p[0])), z0 = minOf(pts.map(p => p[1]));
+  const nx = Math.ceil((maxOf(pts.map(p => p[0])) - x0) / C), nz = Math.ceil((maxOf(pts.map(p => p[1])) - z0) / C);
+  if (nx <= 0 || nz <= 0 || nx * nz > 4e6) return [];
+  const keep = new Uint8Array(nx * nz);
+  for (let j = 0; j < nz; j++) {
+    const z = z0 + (j + 0.5) * C;
+    for (let i = 0; i < nx; i++) {
+      const x = x0 + (i + 0.5) * C;
+      let inside = false;
+      for (let k = 0, l = pts.length - 1; k < pts.length; l = k++) {
+        const [xi, zi] = pts[k], [xj, zj] = pts[l];
+        if ((zi > z) !== (zj > z) && x < (xj - xi) * (z - zi) / (zj - zi) + xi) inside = !inside;
+      }
+      if (inside) keep[j * nx + i] = 1;
+    }
+  }
+  return maskRects(keep, nx, nz, C, 0, 0).map(r => ({ x0: r.x0 + x0, x1: r.x1 + x0, z0: r.z0 + z0, z1: r.z1 + z0 }));
+}
+
 function maskRects(keep: Uint8Array, nx: number, nz: number, C: number, M: number, minArea = 400): Rect[] {
   const rects: Rect[] = [];
   const open = new Map<string, Rect>();
@@ -1986,6 +2007,8 @@ export function buildBuilding(d: DxfDrawing, a: BuildingAnalysis, name: string, 
   const objects: ModelObject[] = [];
   const floors: CadFloor[] = [];
   const linesOf = new Map<string, PlanLine[]>();
+  /** floor and balcony outlines of the area review drawn on each plan */
+  const areaOf = new Map<string, { kind: 'floor' | 'balcony'; rects: Rect[] }[]>();
   /** every drawn line of a storey's plan but notes, dimensions and grids: what closes off a space on the drawing */
   const drawnOf = new Map<string, { x1: number; z1: number; x2: number; z2: number }[]>();
   let nWalls = 0, nDoors = 0, nWins = 0, nRails = 0, cutHeads = 0;
@@ -2381,6 +2404,16 @@ export function buildBuilding(d: DxfDrawing, a: BuildingAnalysis, name: string, 
       const lineSegs = g.segs.filter(q => !/GRID|AXIS|DIM|軸|尺寸|FURN|傢俱|家具|TEXT|HAT|落水|toilet|編號|Defpoints|BEAM|梁|STA|樓梯|AREA|面積|高程|標高/i.test(q.layer))
         .map(q => ({ x1: X(q.a[0]), z1: Z(q.a[1]), x2: X(q.b[0]), z2: Z(q.b[1]) }));
       drawnOf.set(st.key, lineSegs);
+      // the floor-area outlines of the area review (樓地板面積範圍 on layer area, 陽台面積範圍 on area-陽台): floor there
+      for (const p of d.polys) {
+        const kind = /(^|\$)area$/i.test(p.layer) ? 'floor' : /(^|\$)area-陽台$/i.test(p.layer) ? 'balcony' : '';
+        if (!kind || p.pts.length < 4 || !p.pts.every(q => inBox(plan.box, q[0], q[1]))) continue;
+        const pts = p.pts.map(q => [X(q[0]), Z(q[1])]);
+        if (!pts.every((q, i) => { const r = pts[(i + 1) % pts.length]; return Math.abs(q[0] - r[0]) < 1 || Math.abs(q[1] - r[1]) < 1; })) continue;
+        const rs = polyRects(pts);
+        if (rs.reduce((n, r) => n + (r.x1 - r.x0) * (r.z1 - r.z0), 0) < 40000) continue;
+        (areaOf.get(st.key) || areaOf.set(st.key, []).get(st.key)!).push({ kind, rects: rs });
+      }
       // green lines (colour 3) round a balcony or terrace are its 120 cm RC railing
       greenOf.set(st.key, g.segs.filter(q => q.color === 3 && !/TEXT|DIM|HAT|FURN|AREA|面積|尺寸|GRID|AXIS|軸|Defpoints/i.test(q.layer))
         .map(q => ({ x1: X(q.a[0]), z1: Z(q.a[1]), x2: X(q.b[0]), z2: Z(q.b[1]) }))
@@ -2853,6 +2886,15 @@ export function buildBuilding(d: DxfDrawing, a: BuildingAnalysis, name: string, 
       (slabsOf.get(st.key) || slabsOf.set(st.key, []).get(st.key)!).push(r);
     }
   };
+  // the area review's floor outlines are floor even where no walls close them off on the plan (a mezzanine room with
+  // brick walls on an unnamed layer); not over the voids and holes marked on the plans
+  for (const st of a.storeys) for (const ar of areaOf.get(st.key) || []) {
+    // the ground storey stands on the 地坪 above; the roof is built from its own plan
+    if (st.key === 'RF' || st === a.storeys[0]) continue;
+    const open = [...voidsOf.get(st.key) || [], ...holesOf.get(st.key) || []];
+    const rs = open.length ? subtractRects(ar.rects, open, W, D) : ar.rects;
+    slabAt(st, rs, ar.kind === 'balcony' ? '陽台樓板（CAD）' : '樓板（CAD）');
+  }
   for (const st of a.storeys) for (const sp of outSpaces.get(st.key) || []) {
     slabAt(st, sp.rects, sp.kind === 'balcony' ? '陽台樓板（CAD）' : sp.kind === 'ac' ? '冷氣平台板（CAD）' : sp.kind === 'panel' ? '外挑板（CAD）' : '露台樓板（CAD）', sp.kind === 'ac' || sp.kind === 'panel' ? 1 : 3);
     if (sp.kind === 'terrace') (voidsUp.get(st.key) || voidsUp.set(st.key, []).get(st.key)!).push(...sp.rects);
