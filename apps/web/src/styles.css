@@ -370,4 +370,8 @@ body{overflow-x:hidden}
 .splash-logo img{width:92px;height:92px;mix-blend-mode:multiply}
 .splash h1{margin:22px 0 0;color:#fff;font-family:'Noto Serif TC','Noto Sans TC',serif;font-weight:900;font-size:clamp(28px,6vw,40px);letter-spacing:.12em;text-shadow:0 2px 14px rgba(0,0,0,.35)}
 .splash p{margin:12px 0 0;color:rgba(225,232,255,.85);font-family:'Noto Serif TC',Georgia,serif;font-size:clamp(11px,2.6vw,14px);letter-spacing:.32em;text-transform:uppercase}
+.splash-dots i{position:absolute;width:12px;height:12px;margin:-6px 0 0 -6px;border-radius:50%;background:#fff;opacity:0;
+  box-shadow:0 0 8px 2px rgba(255,255,255,.9),0 0 22px 6px rgba(140,170,255,.6);animation:splashTwinkle 1.6s ease-in-out infinite both}
+@keyframes splashTwinkle{0%,100%{opacity:0;transform:scale(.5)}45%{opacity:1;transform:scale(1)}}
+@media (prefers-reduced-motion:reduce){.splash-dots i{animation:none}}
 @keyframes splashIn{from{opacity:0;transform:translateY(10px) scale(.97)}to{opacity:1;transform:none}}
