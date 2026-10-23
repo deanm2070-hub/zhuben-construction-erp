@@ -32,6 +32,7 @@ export function Takeoff({ takeoff: t, pb, pricing, project, subtitle, settings, 
   toast: (s: string) => void;
 }) {
   const [tab, setTab] = useState<Tab>('budget');
+  const set = (p: Partial<TakeoffSettings>) => onSettings({ ...settings, ...p });
   const grouped = GROUPS[tab] ? groupQuantities(t.calc, GROUPS[tab][0]) : [];
   const [rbFloor, setRbFloor] = useState('全部');
   const [rbKind, setRbKind] = useState('全部');
@@ -68,6 +69,28 @@ export function Takeoff({ takeoff: t, pb, pricing, project, subtitle, settings, 
           <button className="chip on" onClick={() => download(`${project}-工程數量.xlsx`, reportWorkbook(['boq', 'floor', 'member', 'area', 'calc', ...(rb.length ? ['rebar', 'rebarSum'] as const : []), 'finish', 'rooms'], { project, t, pb, pricing }), 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet')}>下載 Excel</button>
         </div>
       </div>
+      <details className="conds" open>
+        <summary>算量條件（本案）</summary>
+        <div className="kv">
+          <label>外牆做法 <select id="q-ext" disabled={readOnly} value={settings.ext} onChange={e => set({ ext: +e.target.value })}>
+            {EXT_FINISHES.map((x, i) => <option key={i} value={i}>{x}</option>)}
+          </select></label>
+          <label>樓板厚 <input id="q-slab" disabled={readOnly} type="number" min={0} max={50} value={settings.slab} style={{ width: 64 }} onChange={e => set({ slab: +e.target.value || 0 })} /> cm</label>
+          <label>開挖深 <input id="q-dig" disabled={readOnly} type="number" min={0} max={1000} value={settings.dig ?? 150} style={{ width: 70 }} onChange={e => set({ dig: +e.target.value || 0 })} /> cm</label>
+        </div>
+        <div className="kv">
+          <label><input type="checkbox" disabled={readOnly} checked={settings.beamDry !== false} onChange={e => set({ beamDry: e.target.checked })} /> 室內粉刷油漆含梁底、梁側</label>
+          <label><input type="checkbox" disabled={readOnly} checked={settings.beamWet !== false} onChange={e => set({ beamWet: e.target.checked })} /> 廁所浴室粉刷含梁底、梁側</label>
+          <label>壁磚貼到 <select disabled={readOnly} value={settings.tileTo || 'beam'} onChange={e => set({ tileTo: e.target.value as TakeoffSettings['tileTo'] })}>
+            <option value="beam">梁底</option><option value="slab">樓板底</option><option value="h">指定高度</option>
+          </select></label>
+          {settings.tileTo === 'h' && <label>壁磚高 <input type="number" disabled={readOnly} min={0} max={600} value={settings.tileH ?? 240} style={{ width: 64 }} onChange={e => set({ tileH: +e.target.value || 0 })} /> cm</label>}
+          <label>廁所浴室防水高 <input type="number" disabled={readOnly} min={0} max={600} value={settings.wetH ?? 200} style={{ width: 64 }} onChange={e => set({ wetH: +e.target.value || 0 })} /> cm</label>
+          <label>外牆防水算法 <select disabled={readOnly} value={settings.extWater || 'joint'} onChange={e => set({ extWater: e.target.value as TakeoffSettings['extWater'] })}>
+            <option value="joint">門窗框長＋樓層接縫長（M）</option><option value="area">外牆面積（㎡）</option>
+          </select></label>
+        </div>
+      </details>
       <div className="stats">
         {t.floorArea > 0 || !t.slabArea
           ? <div><span>樓地板面積（室內空間）</span><b>{f2(r2(t.floorArea))} ㎡</b><small>{f2(r2(t.floorArea / PING))} 坪{t.slabArea ? `・樓板 ${f2(t.slabArea)} ㎡` : ''}</small></div>
@@ -168,11 +191,6 @@ export function Takeoff({ takeoff: t, pb, pricing, project, subtitle, settings, 
       {tab === 'spaces' && <>
         <div className="kv">
           <label>樓層 <input id="q-floor" disabled={readOnly} type="text" value={settings.floor} style={{ width: 56 }} onChange={e => onSettings({ ...settings, floor: e.target.value || '1F' })} /></label>
-          <label>外牆做法 <select id="q-ext" disabled={readOnly} value={settings.ext} onChange={e => onSettings({ ...settings, ext: +e.target.value })}>
-            {EXT_FINISHES.map((x, i) => <option key={i} value={i}>{x}</option>)}
-          </select></label>
-          <label>樓板厚 <input id="q-slab" disabled={readOnly} type="number" min={0} max={50} value={settings.slab} style={{ width: 64 }} onChange={e => onSettings({ ...settings, slab: +e.target.value || 0 })} /> cm</label>
-          <label>開挖深 <input id="q-dig" disabled={readOnly} type="number" min={0} max={1000} value={settings.dig ?? 150} style={{ width: 70 }} onChange={e => onSettings({ ...settings, dig: +e.target.value || 0 })} /> cm</label>
         </div>
         <div className="tbl"><table>
           <thead><tr><th>空間</th><th className="num">面積 ㎡</th><th className="num">坪</th><th>地坪</th><th>天花</th><th>牆面</th></tr></thead>

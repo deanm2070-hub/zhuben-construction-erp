@@ -10,6 +10,7 @@ const I: Record<string, JSX.Element> = {
   push: <><path d="M12 20V6M7 10l5-5 5 5" /><path d="M4 20h16" /></>,
   move: <path d="M12 3v18M3 12h18M9 6l3-3 3 3M9 18l3 3 3-3M6 9l-3 3 3 3M18 9l3 3-3 3" />,
   draw: <><rect x="4" y="7" width="16" height="10" rx="1" /><path d="M4 12h16" /></>,
+  finish: <><rect x="4" y="4" width="16" height="16" rx="1" /><path d="M4 10h16M4 16h16M10 4v6M14 10v6M8 16v4M16 16v4" /></>,
   paint: <><path d="M5 11l7-7 7 7-7 7z" /><path d="M19 15c1 1.6 1.5 2.6 1.5 3.3a1.5 1.5 0 0 1-3 0c0-.7.5-1.7 1.5-3.3z" /></>,
   flip: <><path d="M6 21V3h8v18" /><path d="M14 21a8 8 0 0 0-8-8" /></>,
   fix: <><path d="M4 20V8M20 20V8" /><path d="M4 14h16" strokeDasharray="3 2" /><path d="M2 20h20" /></>,
@@ -23,7 +24,7 @@ const Icon = ({ k }: { k: string }) => <svg viewBox="0 0 24 24" aria-hidden="tru
 
 const GROUPS: [string, string, string, string][][] = [
   [['orbit', '旋轉', '旋轉視角', ''], ['pan', '平移', '平移視角', ''], ['select', '構件', '選取構件，查看尺寸', ''], ['measure', '捲尺', '捲尺：點兩點量距離', '']],
-  [['line', '畫線', '畫線：點各點連成線，會鎖點，可輸入長度', 'edit'], ['push', '推拉', '推拉：頂面上下拖曳改高度，側面左右拖曳改長度', 'edit'], ['move', '移動', '移動構件', 'edit'], ['draw', '繪圖', '畫牆、RC牆、欄杆、柱、樓板、櫃', 'edit'], ['fix', '補牆板', '點兩根柱補牆、點房間補樓板', 'edit'], ['paint', '油漆桶', '點構件換顏色', 'edit'], ['flip', '改門向', '點門片切換開門方向', 'edit'], ['del', '刪除', '點構件刪除', 'danger']],
+  [['line', '畫線', '畫線：點各點連成線，會鎖點，可輸入長度', 'edit'], ['push', '推拉', '推拉：頂面上下拖曳改高度，側面左右拖曳改長度', 'edit'], ['move', '移動', '移動構件', 'edit'], ['draw', '繪圖', '畫牆、RC牆、欄杆、柱、樓板、櫃', 'edit'], ['fix', '補牆板', '點兩根柱補牆、點房間補樓板', 'edit'], ['paint', '油漆桶', '點構件換顏色', 'edit'], ['finish', '材質', '點牆面指定材質（抿石子、二丁掛…），數量依面統計', 'edit'], ['flip', '改門向', '點門片切換開門方向', 'edit'], ['del', '刪除', '點構件刪除', 'danger']],
 ];
 
 export function Dock({ tool, section, onTool, onUndo, onSection, onHome }: { tool: Tool; section: boolean; onTool: (t: Tool) => void; onUndo: () => void; onSection: () => void; onHome: () => void }) {

@@ -1,4 +1,4 @@
-import { computeBuildingTakeoff, computeTakeoff, DEFAULT_SETTINGS, learnRoles, memberOf, MEMBERS, priceBudget, ROLE_NAME, trackFixes, withPricing, type CalcVersion, type DrawingStyle, type Fix, type FinishChoice, type ModelObject, type Pricing, type ProjectInfo, type TakeoffSettings } from '@cloud-modeler/core';
+import { computeBuildingTakeoff, computeTakeoff, DEFAULT_SETTINGS, FACE_FINISHES, learnRoles, memberOf, MEMBERS, priceBudget, ROLE_NAME, trackFixes, withPricing, type CalcVersion, type DrawingStyle, type Fix, type FinishChoice, type ModelObject, type Pricing, type ProjectInfo, type TakeoffSettings } from '@cloud-modeler/core';
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { DRAW_KINDS, FACADE_SCHEMES, TOOL_HINT, Viewer, type DrawKind, type FixKind, type RenderMode, type SceneKey, type Tool } from '../engine/Viewer';
 import { download, PROJECT_EXT, projectFile } from '../lib/files';
@@ -59,8 +59,12 @@ export function Editor({ projectId, importNow, trial = false, onExit }: { projec
   const [drawThick, setDrawThick] = useState(''), [drawH, setDrawH] = useState('');
   const [paint, setPaint] = useState(0x2f6fd6);
   const [fixKind, setFixKind] = useState<FixKind>('wall');
+  const [finishMat, setFinishMat] = useState('外牆1:3水泥砂漿打底+抿石子');
+  const [finishScope, setFinishScope] = useState<'one' | 'plane' | 'all'>('all');
   const [explode, setExplode] = useState(0);
   const [xray, setXray] = useState(false);
+  // a phone on its side: the panels above the 3D fold away so the model gets the screen
+  const [opts, setOpts] = useState(false);
   // exterior tiles of the rendered look, kept in this browser: auto, a scheme number, or none
   const [facade, setFacade] = useState<string>(() => { try { return localStorage.getItem('zb-facade') || 'auto'; } catch { return 'auto'; } });
   // sun study: date (day of the year), solar hour, plan north turned clockwise (degrees), playing through the day
@@ -251,11 +255,12 @@ export function Editor({ projectId, importNow, trial = false, onExit }: { projec
 
   return (
     <div className="app">
-      <div className="bars">
+      <div className={`bars ${opts ? 'open' : ''}`}>
         <div className="row">
           <button className="chip ghost" onClick={async () => { if (save !== 'saved') await persist(true); onExit(); }}>← 專案</button>
           <span className="brand title" title={name}>{name}</span>
           <span className="save" role="status">{saveLabel}</span>
+          <button className="chip optT" aria-expanded={opts} onClick={() => setOpts(!opts)}>{opts ? '收合 ▴' : '選項 ▾'}</button>
           {!readOnly && <button className="chip key" onClick={async () => { await persist(true); showToast(store.cloud ? '已存到雲端' : '已存在這個瀏覽器'); }}>儲存</button>}
           <button className="chip hideSm" onClick={() => { const v = viewer.current; if (!v) return; download(`${name || '專案'}${PROJECT_EXT}`, projectFile(name || '未命名專案', { objects: v.objects, cad: v.cad, sketch: v.sketch, ...meta.current }), 'application/json'); showToast('已存成檔案，可在「我的專案」用「開啟專案檔」讀回'); }}>存成檔案</button>
           <button className="chip ghost hideSm" onClick={toggleTheme}>{darkNow ? '白底' : '黑底'}</button>
@@ -337,7 +342,7 @@ export function Editor({ projectId, importNow, trial = false, onExit }: { projec
             showToast(on ? '剖面開啟：可選水平或垂直剖面，拖曳滑桿移動切面' : '剖面關閉');
           }}
           onHome={() => { chooseTool('orbit'); v().goScene('bird'); setScene('bird'); }} />}
-        {module === '3d' && (tool === 'draw' || tool === 'paint' || tool === 'measure' || tool === 'fix' || section.on || sun.on) && (
+        {module === '3d' && (tool === 'draw' || tool === 'paint' || tool === 'finish' || tool === 'measure' || tool === 'fix' || section.on || sun.on) && (
           <div className="sub"><div className="subInner">
             {tool === 'draw' && <><span className="t">畫什麼</span>{(Object.keys(DRAW_KINDS) as DrawKind[]).map(k =>
               <button key={k} className={`chip ${drawKind === k ? 'on' : ''}`} onClick={() => { v().drawKind = k; v().drawThick = 0; v().drawH = 0; setDrawKind(k); setDrawThick(''); setDrawH(''); }}>{DRAW_KINDS[k].label}</button>)}
@@ -347,6 +352,15 @@ export function Editor({ projectId, importNow, trial = false, onExit }: { projec
                 onChange={e => { setDrawH(e.target.value); v().drawH = +e.target.value > 0 ? +e.target.value : 0; }} /> cm</label>}</>}
             {tool === 'paint' && <><span className="t">顏色</span>{PALETTE.map(c =>
               <button key={c} className={`sw ${paint === c ? 'on' : ''}`} style={{ background: hex(c) }} aria-label={`顏色 ${hex(c)}`} onClick={() => { v().paintColor = c; setPaint(c); }} />)}</>}
+            {tool === 'finish' && <><span className="t">材質</span>
+              <select id="finish-mat" aria-label="材質" value={finishMat} onChange={e => { v().finishMat = e.target.value; setFinishMat(e.target.value); }}>
+                {FACE_FINISHES.map(x => <option key={x} value={x}>{x.replace(/^外牆1:3水泥砂漿打底\+/, '外牆 ')}</option>)}
+                <option value="">清除指定（回到預設）</option>
+              </select>
+              <span className="t">套用到</span>
+              {([['one', '單一構件'], ['plane', '同一平面（本層）'], ['all', '同一平面（全部樓層）']] as const).map(([k, l]) =>
+                <button key={k} className={`chip ${finishScope === k ? 'on' : ''}`} onClick={() => { v().finishScope = k; setFinishScope(k); }}>{l}</button>)}
+              <span className="t">點牆的一個面</span></>}
             {tool === 'fix' && <><span className="t">補什麼</span>
               {([['wall', '柱間補牆'], ['slab', '點房間補樓板']] as const).map(([k, l]) =>
                 <button key={k} className={`chip ${fixKind === k ? 'on' : ''}`} onClick={() => { v().fixKind = k; v().setTool('fix'); setFixKind(k); }}>{l}</button>)}

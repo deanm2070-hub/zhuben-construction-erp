@@ -35,6 +35,8 @@ export interface BoxObject {
   rc?: RcTag;
   /** member kind chosen by hand in the 構件屬性 panel (柱, 梁, 樓板, 牆 …); wins over what the name and layer suggest */
   member?: string;
+  /** finish picked by hand for single faces (BoxGeometry face order: 0 +x, 1 −x, 2 top, 3 bottom, 4 +z, 5 −z), a FACE_FINISHES name */
+  faces?: Record<number, string>;
 }
 
 export interface RcTag { kind: 'beam' | 'column'; mark: string; fl: string; b?: number; h?: number }
@@ -157,6 +159,17 @@ export interface TakeoffSettings {
   rebar: number;
   /** excavation depth for the foundation estimate, cm (default 150) */
   dig?: number;
+  /** interior plaster and paint (W1A/W1B) take in the beam soffits and sides (default on) */
+  beamDry?: boolean;
+  /** wet-room plaster (W2A) takes in the beam soffits and sides (default on) */
+  beamWet?: boolean;
+  /** wall tiles reach the beam soffit, the slab soffit, or a set height tileH (default beam) */
+  tileTo?: 'beam' | 'slab' | 'h';
+  tileH?: number;
+  /** wet-room wall waterproofing height, cm (default 200) */
+  wetH?: number;
+  /** exterior waterproofing: frame lengths of the openings + floor joints (M, default), or the wall area (㎡) */
+  extWater?: 'joint' | 'area';
 }
 
 export interface ProjectModel {

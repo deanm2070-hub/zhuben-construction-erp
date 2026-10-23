@@ -27,6 +27,22 @@ describe('takeoff on the sample flat', () => {
     expect(t.rooms.find(r => r.name === '雙衛浴區')!.fin).toEqual({ f: 'F5', c: 'C2', w: 'W2' });
     expect(t.groups.some(g => g.title.startsWith('(牆面)廁所'))).toBe(true);
   });
+  it('counts faces given a finish by hand instead of the default exterior finish', () => {
+    const objs = sampleObjects();
+    const g0 = t.groups.find(g => g.title === '(牆面)外牆1:3水泥砂漿打底+抿石子')!.total;
+    const w = objs.find(o => 'w' in o && o.layer === 'wall' && o.name.startsWith('外牆') && o.w > o.d) as import('../src').BoxObject;
+    w.faces = { [w.z >= SAMPLE_D / 2 ? 4 : 5]: '外牆1:3水泥砂漿打底+二丁掛' };
+    const t3 = computeTakeoff({ objects: objs, bounds: { W: SAMPLE_W, D: SAMPLE_D }, labels: [], rects: SAMPLE_ROOMS, finishes: {}, settings: DEFAULT_SETTINGS });
+    const a = w.w * w.h / 1e4;
+    expect(t3.groups.find(g => g.title === '(牆面)外牆1:3水泥砂漿打底+二丁掛')!.total).toBeCloseTo(a, 1);
+    expect(t3.groups.find(g => g.title === '(牆面)外牆1:3水泥砂漿打底+抿石子')!.total).toBeCloseTo(g0 - a, 1);
+  });
+  it('runs exterior waterproofing along frames and floor joints, or over the wall area when asked', () => {
+    expect(t.groups.find(g => g.title === '(牆面)外牆防水處理')!.unit).toBe('M');
+    const t4 = computeTakeoff({ objects: sampleObjects(), bounds: { W: SAMPLE_W, D: SAMPLE_D }, labels: [], rects: SAMPLE_ROOMS, finishes: {}, settings: { ...DEFAULT_SETTINGS, extWater: 'area', wetH: 120 } });
+    expect(t4.groups.find(g => g.title === '(牆面)外牆防水處理')!.unit).toBe('M2');
+    expect(t4.groups.some(g => g.title.includes('防水處理(H=1.2M)'))).toBe(true);
+  });
   it('honours finish overrides', () => {
     const t2 = computeTakeoff({
       objects: sampleObjects(), bounds: { W: SAMPLE_W, D: SAMPLE_D }, labels: [], rects: SAMPLE_ROOMS,

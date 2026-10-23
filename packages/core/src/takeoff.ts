@@ -11,7 +11,9 @@ export const FINISHES = {
   w: { W1A: '內牆1:3水泥粉光+水泥漆(綠建材)', W1B: '內牆矽酸鈣板批土整平+水泥漆(綠建材)', W2: '內牆防水打底+貼30*60cm磁磚', '-': '不施作' },
 } as const;
 export const FINISH_SHORT: Record<string, string> = { F1: '粉光金鋼砂', F2A: '拋光石英磚', F2B: '樓梯石英磚', F4: '地磚', F5: '止滑地磚', C1: '石膏板天花', C2: 'PVC天花', W1A: '水泥粉光＋漆', W1B: '矽酸鈣板＋漆', W2: '防水＋磁磚' };
-export const EXT_FINISHES = ['外牆1:3水泥砂漿打底+抿石子', '外牆1:3水泥砂漿打底+水泥漆', '外牆複合式鍍鋁鋅彩色鋼板', '外牆企口型金屬飾板'];
+export const EXT_FINISHES = ['外牆1:3水泥砂漿打底+抿石子', '外牆1:3水泥砂漿打底+水泥漆', '外牆複合式鍍鋁鋅彩色鋼板', '外牆企口型金屬飾板', '外牆1:3水泥砂漿打底+二丁掛'];
+/** finishes that can be put on single faces in the 3D model (材質 tool) */
+export const FACE_FINISHES = [...EXT_FINISHES, '內牆1:3水泥粉光+水泥漆(綠建材)', '內牆貼30*60cm磁磚', '內牆矽酸鈣板批土整平+水泥漆(綠建材)'];
 export const DEFAULT_SETTINGS: TakeoffSettings = { ext: 0, floor: '1F', slab: 15, rebar: 120 };
 
 /** Finish codes picked from the room name. */
@@ -137,6 +139,35 @@ export function computeTakeoff(inp: TakeoffInput): Takeoff {
     row(sec, strip(title), unit === 'M2' ? '㎡' : 'M', name, expr, q);
   };
   const clear = Math.max(100, H - S.slab);
+  /* ceiling beams: the soffit and both sides of the part not sitting on a wall belong to the room under it;
+     the deepest beam along a room's edge sets where its wall tiles stop */
+  const ceilBeams = boxes.filter(o => /梁/.test(o.name) && !/^地梁/.test(o.name) && o.y > 0 && o.y + o.h >= H - 30);
+  const beamOf = new Map<string, { a: number; L: number; parts: Set<string> }>(), deepOf = new Map<string, number>();
+  const inBox = (o: BoxObject, x: number, z: number, e = 1) => Math.abs(x - o.x) <= o.w / 2 + e && Math.abs(z - o.z) <= o.d / 2 + e;
+  for (const o of ceilBeams) {
+    const along = o.w >= o.d, L = Math.max(o.w, o.d), b = Math.min(o.w, o.d), hs = Math.max(0, o.h - S.slab), n = Math.max(1, Math.ceil(L / 25));
+    const under = walls.filter(w => w.y < o.y && w.y + w.h >= o.y - 5 && !w.rot);
+    for (let i = 0; i < n; i++) {
+      const t = -L / 2 + (i + 0.5) * L / n, x = o.rot ? o.x : o.x + (along ? t : 0), z = o.rot ? o.z : o.z + (along ? 0 : t);
+      for (const s of [-1, 0, 1]) {
+        const off = s * (b / 2 + 20), name = map.at(x + (along ? 0 : off), z + (along ? off : 0));
+        if (name) deepOf.set(name, Math.max(deepOf.get(name) || 0, o.h));
+      }
+      if (under.some(w => inBox(w, x, z))) continue;
+      const name = map.at(x, z);
+      if (!name) continue;
+      const cur = beamOf.get(name) || { a: 0, L: 0, parts: new Set<string>() };
+      cur.a += L / n * (b + 2 * hs) / 1e4; cur.L += L / n / 100; cur.parts.add(`${m(b)}+2×${m(hs)}`);
+      beamOf.set(name, cur);
+    }
+  }
+  const beamRow = (r: RoomWithFinish) => {
+    // rooms that share a label share one map entry: count its beams once
+    const bm = beamOf.get(r.name);
+    beamOf.delete(r.name);
+    return bm && bm.a > 0 ? { a: bm.a, expr: `梁底＋梁側：梁長 ${r2(bm.L)} m × (底寬 + 2 側 × 梁深扣板厚) ${[...bm.parts].join('、')} m` } : null;
+  };
+  const wetH = S.wetH ?? 200;
   for (const r of rooms) {
     const { f, c, w } = r.fin;
     const win = winsOf.get(r.name), wa = win?.a || 0;
@@ -144,23 +175,46 @@ export function computeTakeoff(inp: TakeoffInput): Takeoff {
     const wallExpr = `周長 ${r2(r.perim)} m × 淨高 ${m(clear)} m${wa ? ` − 窗 ${win!.n} 樘 ${r2(wa)} ㎡` : ''}`;
     const area = `面積 ${r2(r.area)} ㎡`;
     const F = FINISHES.f as Record<string, string>, Cc = FINISHES.c as Record<string, string>, Wd = FINISHES.w as Record<string, string>;
+    const bm = beamRow(r);
     if (f !== '-' && F[f]) add(`(地坪)${f}-${F[f]}`, 'M2', r.name, r.area, area);
     if (c !== '-' && Cc[c]) add(`(平頂)${c}-${Cc[c]}`, 'M2', r.name, r.area, area);
     if (w === 'W1A' || w === 'W1B') {
       add(`(牆面)${w}-${Wd[w]}`, 'M2', r.name, wallA, wallExpr);
+      // the beams are concrete whatever the walls are: plaster and paint
+      if (bm && S.beamDry !== false) add(`(牆面)W1A-${Wd.W1A}`, 'M2', `${r.name}（梁）`, bm.a, bm.expr);
       add('(踢腳)綠建材水泥漆踢腳 H=15cm', 'M', r.name, r.perim, `周長 ${r2(r.perim)} m（門洞已扣）`);
     }
     if (w === 'W2') {
       add('(牆面)W2A-內牆1:2防水水泥砂漿打底', 'M2', r.name, wallA, wallExpr);
-      add('(牆面)W2C-內牆貼30*60cm磁磚', 'M2', r.name, wallA, wallExpr);
+      if (bm && S.beamWet !== false) add('(牆面)W2A-內牆1:2防水水泥砂漿打底', 'M2', `${r.name}（梁）`, bm.a, bm.expr);
+      // wall tiles stop under the deepest beam along the room (or the slab, or a set height)
+      const deep = deepOf.get(r.name) || 0, to = S.tileTo || 'beam';
+      const th = to === 'h' ? Math.min(clear, S.tileH || 240) : to === 'beam' && deep > 0 ? Math.max(100, H - deep) : clear;
+      const how = to === 'h' ? '貼磚高' : to === 'beam' && deep > 0 ? `貼到梁底（樓高 ${m(H)} − 梁深 ${m(deep)}）` : '貼到板底';
+      add('(牆面)W2C-內牆貼30*60cm磁磚', 'M2', r.name, Math.max(0, r.perim * th / 100 - wa), `周長 ${r2(r.perim)} m × ${how} ${m(th)} m${wa ? ` − 窗 ${win!.n} 樘 ${r2(wa)} ㎡` : ''}`);
     }
-    if (f === 'F5') add('(牆面)廁所.茶水間地坪.牆面防水處理(H=1.2M)', 'M2', r.name, r.area + r.perim * 1.2, `面積 ${r2(r.area)} ㎡ + 周長 ${r2(r.perim)} m × 1.2 m`);
+    if (f === 'F5') add(`(牆面)廁所.茶水間地坪.牆面防水處理(H=${m(wetH)}M)`, 'M2', r.name, r.area + r.perim * wetH / 100, `面積 ${r2(r.area)} ㎡ + 周長 ${r2(r.perim)} m × ${m(wetH)} m`);
     if (f === 'F4' && !/露台|平台|屋頂/.test(r.name)) add('(地坪)陽台地坪防水處理', 'M2', r.name, r.area, area);
     if (/露台|平台|屋頂/.test(r.name)) add('(屋頂)屋頂.露台防水處理（含保護層）', 'M2', r.name, r.area, area);
   }
   // exterior walls: the pieces next to openings are already cut, so area is length × height
   const facade: Partial<Record<Facade, { a: number; L: number }>> = {};
-  for (const o of ext) { const k = facadeOf(o, cx, cz); const cur = facade[k] || { a: 0, L: 0 }; cur.a += len(o) * o.h / 100; cur.L += len(o); facade[k] = cur; }
+  /* faces given a finish by hand in the 3D model: the outward face of an exterior wall leaves the project's default
+     exterior finish; every picked face is counted under its own finish */
+  const outFace = (o: BoxObject) => o.rot ? -1 : o.w >= o.d ? (o.z >= cz ? 4 : 5) : (o.x >= cx ? 0 : 1);
+  const faceA = (o: BoxObject, f: number) => (f < 2 ? o.d * o.h : f < 4 ? o.w * o.d : o.w * o.h) / 1e4;
+  const picked = new Map<string, Map<string, { a: number; n: number }>>();
+  for (const o of boxes) for (const [f, mat] of Object.entries(o.faces || {})) {
+    if (!mat) continue;
+    const k = ext.includes(o) && +f === outFace(o) ? `${facadeOf(o, cx, cz)}外牆（指定）` : '指定面';
+    const byMat = picked.get(mat) || picked.set(mat, new Map()).get(mat)!, cur = byMat.get(k) || { a: 0, n: 0 };
+    cur.a += faceA(o, +f); cur.n++; byMat.set(k, cur);
+  }
+  for (const o of ext) {
+    if (o.faces?.[outFace(o)]) continue;
+    const k = facadeOf(o, cx, cz); const cur = facade[k] || { a: 0, L: 0 }; cur.a += len(o) * o.h / 100; cur.L += len(o); facade[k] = cur;
+  }
+  for (const [mat, byWhere] of picked) for (const [where, v] of byWhere) add(`(牆面)${mat}`, 'M2', where, v.a, `3D 模型指定材質 ${v.n} 面 Σ 長×高`);
   // imported single drawings have solid walls behind their windows, so take the glass off
   const winOff: Partial<Record<Facade, number>> = {};
   if (inp.cadDoors) for (const w of wins) { const k = facadeOf(w.o, cx, cz); winOff[k] = (winOff[k] || 0) + w.w * w.h / 1e4; }
@@ -169,7 +223,53 @@ export function computeTakeoff(inp: TakeoffInput): Takeoff {
     if (!v) continue;
     const q = v.a - (winOff[k] || 0), expr = `Σ 牆段 長×高（${r2(v.L)} m 牆段，開口已扣）${winOff[k] ? ` − 窗 ${r2(winOff[k]!)} ㎡` : ''}`;
     add(`(牆面)${EXT_FINISHES[S.ext] || EXT_FINISHES[0]}`, 'M2', `${k}外牆`, q, expr);
-    add('(牆面)外牆防水處理', 'M2', `${k}外牆`, q, expr);
+    if (S.extWater === 'area') add('(牆面)外牆防水處理', 'M2', `${k}外牆`, q, expr);
+  }
+  if (S.extWater !== 'area') {
+    /* exterior waterproofing is run along lines: round every opening frame in an outside wall, and along the joint
+       at the foot of the storey's outside walls */
+    const outSide = (x: number, z: number) => { const n = map.at(x, z); return !n || rooms.find(r => r.name === n)?.fin.w === '-'; };
+    const inExt = (x: number, z: number, along: boolean, t: number) => ext.some(o => !o.rot && Math.abs(x - o.x) <= o.w / 2 + 3 && Math.abs(z - o.z) <= o.d / 2 + 3)
+      || [-1, 1].some(s => outSide(x + (along ? 0 : s * (t / 2 + 20)), z + (along ? s * (t / 2 + 20) : 0)));
+    const line: Partial<Record<Facade, { win: number; nw: number; door: number; nd: number; joint: number }>> = {};
+    const at = (k: Facade) => (line[k] ||= { win: 0, nw: 0, door: 0, nd: 0, joint: 0 });
+    // the joint runs the whole outside wall line, openings included: union of the wall pieces and openings per line
+    const runs = new Map<string, { k: Facade; iv: [number, number][] }>();
+    const run = (k: Facade, alongX: boolean, x: number, z: number, L: number) => {
+      const key = `${alongX ? 'x' : 'z'}${Math.round((alongX ? z : x) / 40)}`, c = alongX ? x : z;
+      if (!runs.has(key)) runs.set(key, { k, iv: [] });
+      runs.get(key)!.iv.push([c - L / 2, c + L / 2]);
+    };
+    for (const w of wins) {
+      const along = w.o.w >= w.o.d;
+      if (!inExt(w.o.x, w.o.z, along, Math.min(w.o.w, w.o.d))) continue;
+      const k = facadeOf(w.o, cx, cz), v = at(k); v.win += 2 * (w.w + w.h) / 100; v.nw++;
+      if (!w.o.rot) run(k, along, w.o.x, w.o.z, w.w);
+    }
+    for (const d of doors) {
+      let k: Facade;
+      if (d.o) {
+        const along = d.o.axis === 'x', x = along ? (d.o.a + d.o.b) / 2 : d.o.at, z = along ? d.o.at : (d.o.a + d.o.b) / 2;
+        if (!d.ext && !inExt(x, z, along, 20)) continue;
+        k = facadeOf({ x, z, w: along ? d.w : 20, d: along ? 20 : d.w } as BoxObject, cx, cz);
+      } else if (d.ext) k = '南向'; else continue;
+      const v = at(k); v.door += (d.w + 2 * d.h) / 100; v.nd++;
+      if (d.o) { const along = d.o.axis === 'x'; run(k, along, along ? (d.o.a + d.o.b) / 2 : d.o.at, along ? d.o.at : (d.o.a + d.o.b) / 2, d.w); } else v.joint += d.w / 100;
+    }
+    for (const o of ext) if (o.rot) { if (o.y <= 1) at(facadeOf(o, cx, cz)).joint += len(o); } else run(facadeOf(o, cx, cz), o.w >= o.d, o.x, o.z, Math.max(o.w, o.d));
+    for (const { k, iv } of runs.values()) {
+      iv.sort((a, b) => a[0] - b[0]);
+      let L = 0, [a0, a1] = iv[0];
+      for (const [a, b] of iv.slice(1)) { if (a > a1 + 2) { L += a1 - a0; a0 = a; a1 = b; } else a1 = Math.max(a1, b); }
+      L += Math.max(0, a1 - a0);
+      at(k).joint += L / 100;
+    }
+    for (const k of FACADES) {
+      const v = line[k];
+      if (!v) continue;
+      const parts = [v.nw ? `窗框 ${v.nw} 樘周長 ${r2(v.win)} m` : '', v.nd ? `門框 ${v.nd} 樘（寬＋2 高）${r2(v.door)} m` : '', v.joint ? `樓層接縫（外牆全長）${r2(v.joint)} m` : ''].filter(Boolean);
+      add('(牆面)外牆防水處理', 'M', `${k}外牆`, v.win + v.door + v.joint, parts.join(' + '));
+    }
   }
   const G = [...groups.values()].map(g => ({ ...g, total: r2(sum(g.rows, r => r.q)) }));
 

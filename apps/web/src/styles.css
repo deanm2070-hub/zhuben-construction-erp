@@ -334,3 +334,11 @@ textarea{font:13px var(--font);padding:6px 8px;border-radius:8px;border:1px soli
 html{touch-action:manipulation;-webkit-text-size-adjust:100%;text-size-adjust:100%;overscroll-behavior:none}
 body{overflow-x:hidden}
 @media (pointer:coarse){input,select,textarea,.numin{font-size:16px!important}}
+
+/* a phone on its side: the module tabs and 3D options fold behind 「選項」 so the model gets the height */
+.optT{display:none}
+@media (max-height:500px){.optT{display:inline-flex}.bars:not(.open) .modules,.bars:not(.open) .ctl{display:none}}
+
+.conds{margin:0 0 12px;padding:8px 12px;border:1px solid var(--line,#ddd);border-radius:8px;background:var(--panel,#fafafa)}
+.conds summary{cursor:pointer;font-weight:600}
+.conds .kv{margin-top:8px;flex-wrap:wrap}

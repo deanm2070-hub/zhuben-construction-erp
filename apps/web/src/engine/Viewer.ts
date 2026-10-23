@@ -12,7 +12,7 @@ import { OutputPass } from 'three/examples/jsm/postprocessing/OutputPass.js';
 
 /** mat: automatic rendering (lit materials, sky, soft shadows); persp: the same look from eye level */
 export type RenderMode = 'mat' | 'persp' | 'layer' | 'white' | 'wire';
-export type Tool = 'orbit' | 'pan' | 'select' | 'measure' | 'line' | 'push' | 'move' | 'draw' | 'paint' | 'flip' | 'del' | 'walk' | 'fix';
+export type Tool = 'orbit' | 'pan' | 'select' | 'measure' | 'line' | 'push' | 'move' | 'draw' | 'paint' | 'finish' | 'flip' | 'del' | 'walk' | 'fix';
 /** front: 正立面 (from the south), bird: 鳥瞰圖, side: 側向立面 (from the east), eye: the eye-level perspective */
 export type SceneKey = 'front' | 'bird' | 'side' | 'eye';
 export type DrawKind = 'wall' | 'rc' | 'rail' | 'column' | 'slab' | 'tall' | 'low';
@@ -62,6 +62,7 @@ export const TOOL_HINT: Record<Tool, string> = {
   move: '移動：按住構件拖曳。',
   draw: '繪圖：選工具列的種類（牆、RC牆、欄杆、柱、樓板、櫃），在地面拖曳。牆與欄杆依拖曳方向決定走向，可改厚度與高度。',
   paint: '油漆桶：選一個顏色，再點構件上色。',
+  finish: '材質：選一種材質（抿石子、二丁掛、水泥漆…），再點牆的一個面；數量會依指定的面統計在「工程數量」。',
   flip: '改門向：點門片，依序切換四種開門方向。',
   del: '刪除：點構件刪除，可用復原找回。',
   walk: '漫遊：拖曳畫面轉頭，用左下搖桿或 WASD／方向鍵走動；切換樓層會走到那一層。',
@@ -105,6 +106,9 @@ export class Viewer {
   drawThick = 0;
   drawH = 0;
   paintColor = 0x2f6fd6;
+  /** 材質 tool: the finish put on a clicked face ('' clears it), and how far it spreads */
+  finishMat = '外牆1:3水泥砂漿打底+抿石子';
+  finishScope: 'one' | 'plane' | 'all' = 'all';
   selectedId: number | null = null;
   /** member kinds (柱, 梁, 樓板 …) hidden from the view */
   hidden = new Set<string>();
@@ -646,7 +650,46 @@ export class Viewer {
     m.rotation.y = o.rot || 0;
     m.userData.id = o.id;
     this.tileFaces(m, o);
+    this.finishFaces(m, o);
     return m;
+  }
+  /** faces given a finish by hand show that finish in every look but the x-ray */
+  private finishFaces(m: THREE.Mesh, o: ModelObject) {
+    if (this.xray || isDoor(o) || !(o as BoxObject).faces) return;
+    const b = o as BoxObject, fs = Object.entries(b.faces!).filter(([, v]) => v).map(([f, v]) => [+f, v] as const);
+    if (!fs.length) return;
+    const g = m.geometry as THREE.BoxGeometry, uv = g.getAttribute('uv') as THREE.BufferAttribute, cur = m.material;
+    const mats = Array.isArray(cur) ? [...cur] : [0, 1, 2, 3, 4, 5].map(() => cur as THREE.Material);
+    for (const [f, name] of fs) {
+      const look = finishLook(name, this.scheme()?.main);
+      mats[f] = look.mat;
+      // texture repeats in cm: across the face, and up (top and bottom faces: across the depth)
+      const wid = f < 2 ? b.d : b.w, hgt = f === 2 || f === 3 ? b.d : b.h;
+      const off = (f < 2 ? b.z - b.d / 2 : b.x - b.w / 2) / look.u, up = f === 2 || f === 3 ? 0 : b.y;
+      for (let k = 4 * f; k < 4 * f + 4; k++) uv.setXY(k, off + (uv.getX(k) * wid) / look.u, (up + uv.getY(k) * hgt) / look.v);
+    }
+    m.material = mats;
+    uv.needsUpdate = true;
+  }
+  /** 材質 tool: put the chosen finish on the clicked face, and on the faces in the same plane when asked */
+  private finishClick(e: PointerEvent) {
+    const h = this.hitObject(e);
+    if (!h || isDoor(h.o) || h.o.stair || h.o.soffit || !h.normal) { this.ev.toast('請點牆或構件的一個面'); return; }
+    const n = h.normal, f = Math.abs(n.x) > 0.5 ? (n.x > 0 ? 0 : 1) : Math.abs(n.y) > 0.5 ? (n.y > 0 ? 2 : 3) : (n.z > 0 ? 4 : 5);
+    const o = h.o as BoxObject, plane = (q: BoxObject) => f < 2 ? q.x + (f === 0 ? 1 : -1) * q.w / 2 : f < 4 ? q.y + (f === 2 ? q.h : 0) : q.z + (f === 4 ? 1 : -1) * q.d / 2;
+    const p0 = plane(o);
+    const same = this.finishScope === 'one' || o.rot ? [o] : this.objects.filter((q): q is BoxObject => isBox(q) && !q.rot && !q.stair && q.layer === o.layer
+      && (this.finishScope === 'all' || q.floor === o.floor) && Math.abs(plane(q) - p0) < 3);
+    this.snapshot();
+    for (const q of same) {
+      const fs = { ...(q.faces || {}) };
+      if (this.finishMat) fs[f] = this.finishMat; else delete fs[f];
+      q.faces = Object.keys(fs).length ? fs : undefined;
+      if (!q.faces) delete q.faces;
+    }
+    this.rebuild();
+    this.commit();
+    this.ev.info(this.finishMat ? `已指定材質：${this.finishMat.replace(/^外牆1:3水泥砂漿打底\+/, '')}（${same.length} 個面）` : `已清除材質（${same.length} 個面）`);
   }
   /** the colour scheme in force: [main wall tile, accent tile for the ground storey and parapets] */
   private scheme(): FacadeScheme | null {
@@ -974,13 +1017,17 @@ export class Viewer {
     }
     return { pos: [c.x - 1050 * s, 1250 * s, c.z + 1250 * s], fov: 40 };
   }
+  private lastScene: SceneKey = 'bird';
+  private lastAspect = 0;
   goScene(k: SceneKey, instant = false) {
     this.exitWalk();
+    this.lastScene = k;
     const s = this.sceneDef(k);
     const target = s.target ? new THREE.Vector3(...s.target) : this.center.clone();
     const aspect = this.view.clientWidth / Math.max(1, this.view.clientHeight);
     const fit = s.target ? 1 : Math.max(1, 0.92 / aspect);
     const to = { pos: new THREE.Vector3(...s.pos).sub(target).multiplyScalar(fit).add(target), target, fov: s.fov };
+    if (k !== 'eye') this.fitView(to);
     if (instant) {
       this.camera.position.copy(to.pos);
       this.controls.target.copy(to.target);
@@ -990,6 +1037,38 @@ export class Viewer {
     }
     this.fly = { from: { pos: this.camera.position.clone(), target: this.controls.target.clone(), fov: this.camera.fov }, to, t0: performance.now() };
   }
+  /**
+   * Centre what is shown in the view and fill it: the camera keeps its direction, the target moves to the middle of
+   * the model as seen on screen (a model seen from a corner is lopsided around its plan centre), and the distance
+   * is set so the model takes up most of the width or height, whichever it meets first.
+   */
+  private fitView(to: { pos: THREE.Vector3; target: THREE.Vector3; fov: number }) {
+    const box = new THREE.Box3();
+    for (const g of [this.objGroup, this.meshGroup, ...(this.cad ? [] : [this.floorGroup])]) if (g.visible && g.children.length) box.expandByObject(g);
+    if (box.isEmpty()) return;
+    const corners: THREE.Vector3[] = [];
+    for (const x of [box.min.x, box.max.x]) for (const y of [box.min.y, box.max.y]) for (const z of [box.min.z, box.max.z]) corners.push(new THREE.Vector3(x, y, z));
+    const cam = new THREE.PerspectiveCamera(to.fov, this.view.clientWidth / Math.max(1, this.view.clientHeight), 1, 1e7);
+    const dir = to.pos.clone().sub(to.target), target = to.target.clone();
+    let dist = dir.length();
+    dir.normalize();
+    const v = new THREE.Vector3();
+    for (let it = 0; it < 6; it++) {
+      cam.position.copy(target).addScaledVector(dir, dist);
+      cam.lookAt(target);
+      cam.updateMatrixWorld();
+      let x0 = Infinity, x1 = -Infinity, y0 = Infinity, y1 = -Infinity;
+      for (const c of corners) { v.copy(c).project(cam); x0 = Math.min(x0, v.x); x1 = Math.max(x1, v.x); y0 = Math.min(y0, v.y); y1 = Math.max(y1, v.y); }
+      // move the target so the model's screen box is centred (on the plane through the target, across the view)
+      const h = Math.tan(to.fov / 2 * Math.PI / 180) * dist, w = h * cam.aspect;
+      const right = new THREE.Vector3().setFromMatrixColumn(cam.matrixWorld, 0), up = new THREE.Vector3().setFromMatrixColumn(cam.matrixWorld, 1);
+      target.addScaledVector(right, (x0 + x1) / 2 * w).addScaledVector(up, (y0 + y1) / 2 * h);
+      const fill = Math.max((x1 - x0) / 2, (y1 - y0) / 2) / 0.86;
+      dist *= Math.min(3, Math.max(0.33, fill));
+    }
+    to.target.copy(target);
+    to.pos.copy(target).addScaledVector(dir, dist);
+  }
   private resize() {
     this.active = performance.now();
     const w = this.view.clientWidth, h = this.view.clientHeight;
@@ -997,6 +1076,10 @@ export class Viewer {
     this.composer?.setSize(w, h);
     this.camera.aspect = w / Math.max(1, h);
     this.camera.updateProjectionMatrix();
+    // the phone turned (or the panels above folded): frame the model again for the new shape of the view
+    const a = this.camera.aspect;
+    if (this.lastAspect && Math.abs(Math.log(a / this.lastAspect)) > 0.25 && !this.walk.on) this.goScene(this.lastScene, true);
+    this.lastAspect = a;
   }
 
   /* ---------- walk ---------- */
@@ -1354,6 +1437,7 @@ export class Viewer {
       return;
     }
     if (tool === 'fix') return this.fixKind === 'wall' ? this.fixWall(e) : this.fixSlab(e);
+    if (tool === 'finish') return this.finishClick(e);
     const h = this.hitObject(e);
     if (!h) return;
     if (tool === 'paint') {
@@ -1800,6 +1884,54 @@ export const FACADE_SCHEMES: FacadeScheme[] = [
   { name: '深灰＋米白', main: '#6d6d70', accent: '#dad2c4' },
 ];
 const tileCache = new Map<string, THREE.Texture>();
+const lookCache = new Map<string, { mat: THREE.MeshStandardMaterial; u: number; v: number }>();
+/** what a finish looks like on a face: a texture and the size in cm one repeat of it covers */
+export function finishLook(name: string, tileHex = '#d9ceb8') {
+  const key = `${name}|${tileHex}`, hit = lookCache.get(key);
+  if (hit) return hit;
+  let out: { mat: THREE.MeshStandardMaterial; u: number; v: number };
+  if (/二丁掛/.test(name)) out = { mat: new THREE.MeshStandardMaterial({ map: tileTexture(tileHex), roughness: 0.72 }), u: TILE_U, v: TILE_V };
+  else if (/磁磚/.test(name)) out = { mat: new THREE.MeshStandardMaterial({ map: patternTexture('tile'), roughness: 0.4 }), u: 60, v: 60 };
+  else if (/抿石子/.test(name)) out = { mat: new THREE.MeshStandardMaterial({ map: patternTexture('stone'), roughness: 0.95 }), u: 50, v: 50 };
+  else if (/鋼板/.test(name)) out = { mat: new THREE.MeshStandardMaterial({ map: patternTexture('rib'), roughness: 0.45, metalness: 0.35 }), u: 100, v: 100 };
+  else if (/金屬飾板/.test(name)) out = { mat: new THREE.MeshStandardMaterial({ map: patternTexture('panel'), roughness: 0.4, metalness: 0.4 }), u: 120, v: 60 };
+  else out = { mat: new THREE.MeshStandardMaterial({ color: /外牆/.test(name) ? 0xe9e3d6 : 0xf3f1ec, roughness: 0.9 }), u: 100, v: 100 };
+  lookCache.set(key, out);
+  return out;
+}
+/** small repeating patterns drawn on a canvas: washed pebbles, ribbed sheet, panels with joints, wall tiles */
+function patternTexture(kind: 'stone' | 'rib' | 'panel' | 'tile') {
+  const hit = tileCache.get(kind);
+  if (hit) return hit;
+  const c = document.createElement('canvas');
+  c.width = c.height = 256;
+  const g = c.getContext('2d')!;
+  let seed = 11;
+  const rnd = () => (seed = (seed * 16807) % 2147483647) / 2147483647;
+  if (kind === 'stone') {
+    g.fillStyle = '#b9b1a3'; g.fillRect(0, 0, 256, 256);
+    for (let i = 0; i < 2600; i++) {
+      const v = 120 + rnd() * 110, t = rnd();
+      g.fillStyle = t < 0.15 ? `rgb(${v * 0.55},${v * 0.5},${v * 0.45})` : t < 0.3 ? `rgb(${v},${v * 0.92},${v * 0.82})` : `rgb(${v * 0.9},${v * 0.88},${v * 0.84})`;
+      g.beginPath(); g.arc(rnd() * 256, rnd() * 256, 1 + rnd() * 2.6, 0, Math.PI * 2); g.fill();
+    }
+  } else if (kind === 'rib') {
+    g.fillStyle = '#8796a3'; g.fillRect(0, 0, 256, 256);
+    for (let x = 0; x < 256; x += 32) { g.fillStyle = '#a9b6c1'; g.fillRect(x, 0, 8, 256); g.fillStyle = '#6d7b87'; g.fillRect(x + 8, 0, 3, 256); }
+  } else if (kind === 'panel') {
+    g.fillStyle = '#9c9fa3'; g.fillRect(0, 0, 256, 256);
+    g.fillStyle = '#5d6064'; g.fillRect(0, 0, 256, 4); g.fillRect(0, 0, 3, 256);
+  } else {
+    g.fillStyle = '#c9c6bf'; g.fillRect(0, 0, 256, 256);
+    g.fillStyle = '#f2f0eb'; g.fillRect(2, 2, 252, 252);
+  }
+  const t = new THREE.CanvasTexture(c);
+  t.wrapS = t.wrapT = THREE.RepeatWrapping;
+  t.colorSpace = THREE.SRGBColorSpace;
+  t.anisotropy = 4;
+  tileCache.set(kind, t);
+  return t;
+}
 /** two tiles wide and eight rows high, each row shifted half a tile, every tile a shade off the next */
 function tileTexture(hex: string) {
   const hit = tileCache.get(hex);
