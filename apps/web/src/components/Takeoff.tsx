@@ -1,4 +1,4 @@
-import { EXT_FINISHES, FINISH_SHORT, masonCells, masonReport, FINISHES, groupQuantities, materialsOf, PING, REBAR_KINDS, REBAR_STD, rebarSummary, type FinishChoice, type GroupBy, type PricedBudget, type Pricing, type Takeoff as T, type PriceRate, type TakeoffSettings } from '@cloud-modeler/core';
+import { EXT_FINISHES, FINISH_SHORT, formworkMembers, masonCells, masonReport, FINISHES, groupQuantities, materialsOf, PING, REBAR_KINDS, REBAR_STD, rebarSummary, type FinishChoice, type GroupBy, type PricedBudget, type Pricing, type Takeoff as T, type PriceRate, type TakeoffSettings } from '@cloud-modeler/core';
 import { Deleted } from './BudgetPane';
 import { Materials } from './Materials';
 import { saveMaterials } from '../lib/materials';
@@ -191,7 +191,17 @@ export function Takeoff({ takeoff: t, pb, pricing, project, subtitle, settings, 
           <tbody>{formworkCells(t.formwork).map((r, i) => <tr key={i} className={r[2] === '樓層小計' || r[0] === '合計' ? 'total' : ''}>{r.map((v, j) => <td key={j} className={j >= 4 && ![5, 7, 9, 11].includes(j) ? 'num' : ''}>{v}</td>)}</tr>)}</tbody>
         </table></div>
         <p className="note">{t.formwork.note.join(' ')}</p>
-        {!!t.plans?.formwork.length && <div dangerouslySetInnerHTML={{ __html: plansHtml(t.plans.formwork) }} />}
+        {!!t.plans?.formwork.length && <details><summary><b>版平面圖</b></summary><div dangerouslySetInnerHTML={{ __html: plansHtml(t.plans.formwork) }} /></details>}
+        {formworkMembers(t.calc, t.plans?.member).map(it => (
+          <div key={it.key}>
+            <h3 style={{ margin: '14px 0 4px' }}>{it.title}</h3>
+            <div className="tbl"><table>
+              <thead><tr><th>樓層</th><th>位置</th><th>計算式</th><th className="num">數量</th><th>單位</th></tr></thead>
+              <tbody>{masonCells(it).map((r, i) => <tr key={i} className={r[1] === '樓層小計' || /合計$/.test(String(r[1])) ? 'total' : ''}>{r.map((v, j) => <td key={j} className={j === 3 ? 'num' : ''}>{v}</td>)}</tr>)}</tbody>
+            </table></div>
+          </div>
+        ))}
+        {!!t.plans?.member.length && <details open><summary><b>柱、牆、梁平面圖（編號對應上表「位置」）</b></summary><div dangerouslySetInnerHTML={{ __html: plansHtml(t.plans.member) }} /></details>}
       </>}
       {tab === 'rebarSum' && <>
         <div className="tbl"><table>

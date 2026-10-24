@@ -92,3 +92,33 @@ export function masonPlans(objects: ModelObject[], runs: { fl: string; name: str
   }
   return out;
 }
+
+/** member plans: the columns, walls and beams of every formwork row of a storey drawn and labelled 柱1、牆1、梁1 like the table */
+export function memberPlans(objects: ModelObject[], groups: { fl: string; kind: string; where: string; boxes: number[][] }[], order: string[]): PlanSheet[] {
+  const out: PlanSheet[] = [];
+  const COLOR: Record<string, string> = { 柱: '#c92a2a', 牆: '#1c7ed6', 梁: '#2f9e44' };
+  for (const fl of [...order].reverse()) {
+    const mine = groups.filter(g => g.fl === fl && g.boxes.length);
+    if (!mine.length) continue;
+    const b = base(objects, fl), nos: Record<string, number> = {}, count: Record<string, number> = {};
+    const ext = { x0: Infinity, x1: -Infinity, z0: Infinity, z1: -Infinity };
+    for (const g of mine) for (const [x, z, w, d] of g.boxes) { ext.x0 = Math.min(ext.x0, x); ext.x1 = Math.max(ext.x1, x + w); ext.z0 = Math.min(ext.z0, z); ext.z1 = Math.max(ext.z1, z + d); }
+    const fs = Math.max(26, (Math.max(ext.x1, b.x1) - Math.min(ext.x0, b.x0)) / 55);
+    const shapes: string[] = [], labels: string[] = [];
+    for (const g of mine) {
+      const n = (count[g.kind] = (count[g.kind] || 0) + 1), tag = `${g.kind}${n}`, col = COLOR[g.kind] || '#555';
+      nos[g.where] = n;
+      const biggest = new Set([...g.boxes].sort((a, c) => Math.max(c[2], c[3]) - Math.max(a[2], a[3])).slice(0, 2));
+      for (const bx of g.boxes) {
+        const [x, z, w, d] = bx;
+        shapes.push(`<rect x="${r(x)}" y="${r(z)}" width="${r(w)}" height="${r(d)}" fill="${col}" fill-opacity="${g.kind === '柱' ? 0.9 : 0.55}" stroke="${col}" stroke-width="2"/>`);
+        // a long beam or wall is tagged once near its middle, a column beside it
+        const tall = d > w, cx = x + w / 2, cz = z + d / 2, big = Math.max(w, d) > fs * 4 && biggest.has(bx);
+        labels.push(`<text x="${r(g.kind === '柱' ? x + w + fs * 0.2 : cx)}" y="${r(g.kind === '柱' ? z - fs * 0.15 : cz + (tall ? 0 : -fs * 0.35))}" font-size="${r(g.kind === '柱' ? fs * 0.8 : fs)}" font-weight="bold" fill="${col}" ${big || g.kind === '柱' ? '' : 'display="none"'} ${tall && g.kind !== '柱' ? `text-anchor="start" transform="translate(${r(fs * 0.4)} 0)"` : g.kind === '柱' ? '' : 'text-anchor="middle"'} stroke="#fff" stroke-width="${r(fs / 8)}" paint-order="stroke">${tag}</text>`);
+      }
+    }
+    const svg = wrap(b, [...b.out.filter(s => !s.includes('fill="#333"')), ...shapes, ...labels], ext);
+    if (svg) out.push({ fl, title: `${fl} 柱（紅）、牆（藍）、梁（綠）平面（編號＝模板表「位置」欄的柱1、牆1、梁1）`, svg, nos });
+  }
+  return out;
+}

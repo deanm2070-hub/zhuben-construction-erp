@@ -1,4 +1,6 @@
 import { isBox, type BoxObject, type CadData, type ModelObject } from './types';
+import type { CalcRow } from './takeoff';
+import type { MasonItem } from './mason';
 
 /**
  * 模板報表: one line per slab panel (the layout of a formwork report).
@@ -133,4 +135,29 @@ export function computeFormwork(objects: ModelObject[], cad: CadData, slabT: num
   }
   const all = (k: 'area' | 'edge' | 'wall' | 'col' | 'cut' | 'real') => r2(floors.reduce((s, f) => s + f[k], 0));
   return { floors, total: { area: all('area'), edge: all('edge'), wall: all('wall'), col: all('col'), cut: all('cut'), real: all('real') }, slab: r2(floors.filter(f => f.fl !== 'F').reduce((s, f) => s + f.area, 0)), note };
+}
+
+/** the formwork of columns, beams, walls and stairs from the calculation sheet, one table each, tagged 柱1、牆1、梁1 like the member plans */
+export function formworkMembers(calc: CalcRow[], plans?: { fl: string; nos?: Record<string, number> }[], floorOrder?: string[]): MasonItem[] {
+  const KINDS: { key: string; title: string; tag: string; test: RegExp }[] = [
+    { key: 'fwCol', title: '柱模板', tag: '柱', test: /^柱 / },
+    { key: 'fwBeam', title: '梁模板（梁底＋兩側，扣板厚）', tag: '梁', test: /^梁 / },
+    { key: 'fwWall', title: '牆模板（RC 牆兩面，已扣柱、梁、板重疊與門窗開口）', tag: '牆', test: /^RC牆/ },
+    { key: 'fwStair', title: '樓梯及其他模板', tag: '', test: /^樓梯|^屋簷底模/ },
+  ];
+  const order = floorOrder || [...new Set(calc.map(c => c.fl))];
+  const rank = (fl: string) => { const i = order.indexOf(fl); return i < 0 ? 999 : i; };
+  const out: MasonItem[] = [];
+  for (const K of KINDS) {
+    const rows = calc.filter(c => c.item === '一般模板組立及損耗' && c.unit === '㎡' && K.test.test(c.where));
+    if (!rows.length) continue;
+    const lines = rows.map(c => {
+      const n = plans?.find(p => p.fl === c.fl)?.nos?.[c.where];
+      return { fl: c.fl, where: n && K.tag ? `${K.tag}${n} ${c.where}` : c.where, expr: c.expr, q: c.q };
+    }).sort((a, b) => rank(a.fl) - rank(b.fl));
+    const floors: { fl: string; q: number }[] = [];
+    for (const l of lines) { const f = floors.find(x => x.fl === l.fl); if (f) f.q = r2(f.q + l.q); else floors.push({ fl: l.fl, q: l.q }); }
+    out.push({ key: K.key, title: K.title, unit: '㎡', lines, floors, total: r2(lines.reduce((s, l) => s + l.q, 0)) });
+  }
+  return out;
 }

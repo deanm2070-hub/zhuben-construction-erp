@@ -2,7 +2,7 @@ import { computeFormwork, type FormworkReport } from './formwork';
 import { BUDGET_TEMPLATE, covers, type TemplateItem } from './budgetTemplate';
 import { materialFor, materialItems, materialsOf, sectionOf } from './materials';
 import { computeRebar, type RebarKind, type RebarRow } from './rebar';
-import { formworkPlans, masonPlans, type PlanSheet } from './reportPlan';
+import { formworkPlans, masonPlans, memberPlans, type PlanSheet } from './reportPlan';
 import { roomMap, type RoomLabel, type RoomStat } from './rooms';
 import { WALL_H } from './sample';
 import { isBox, isDoor, type BoxObject, type Bounds, type CadData, type CadDoor, type DoorObject, type FinishChoice, type ModelObject, type RoomRect, type TakeoffSettings } from './types';
@@ -58,9 +58,11 @@ export interface Takeoff {
   /** area of the floor slabs (ground slab and floors, not the roof), ㎡ */
   slabArea?: number;
   /** the rooms of each storey as rows of 20 cm cells [z, x0, x1], for the plan drawings of the reports */
+  /** the pieces behind each 柱／牆／梁 formwork row (cm: x, z, w, d) */
+  memGroups?: { fl: string; kind: string; where: string; boxes: number[][] }[];
   roomRuns?: { fl: string; name: string; runs: number[][] }[];
   /** plan drawings that show where each line of the formwork and mason reports sits */
-  plans?: { formwork: PlanSheet[]; mason: PlanSheet[] };
+  plans?: { formwork: PlanSheet[]; member: PlanSheet[]; mason: PlanSheet[] };
   /** bar list from the reinforcement drawings, and the members whose schedule was not found */
   rebar?: { rows: RebarRow[]; missing: string[]; standard?: string[] };
   /** 模板報表 by slab panel (whole-building imports) */
@@ -327,6 +329,9 @@ export function computeTakeoff(inp: TakeoffInput): Takeoff {
   const beamsHere = boxes.filter(o => o.rc?.kind === 'beam' || (o.layer === 'slab' && /梁/.test(o.name)));
   const slabT = slabs[0]?.h || S.slab;
   const storeyTop = Math.max(H, ...walls.map(o => o.y + o.h));
+  /* which pieces each 柱／牆／梁 formwork row stands for, to draw them on the formwork report's plans */
+  const memGroups: { kind: string; where: string; boxes: number[][] }[] = [];
+  const noteGroup = (kind: string, where: string, list: BoxObject[]) => memGroups.push({ kind, where, boxes: list.filter(o => !o.rot).map(o => [o.x - o.w / 2, o.z - o.d / 2, o.w, o.d]) });
   const colOf = new Map<BoxObject, number>();  // column → wall-covered face area, cm²
   const wallNet = (o: BoxObject) => {
     const r = rect(o), alongX = o.w >= o.d, L = Math.max(o.w, o.d), t = Math.min(o.w, o.d), top = o.y + o.h;
@@ -359,6 +364,7 @@ export function computeTakeoff(inp: TakeoffInput): Takeoff {
     const o = list[0], [a, b] = colDims(o), covered = sum(list, c => colOf.get(c) || 0);
     row(SEC.rc, CONCRETE, 'M3', `柱 ${k}`, `${m(a)} × ${m(b)} × ${m(o.h)} m × ${list.length} 支`, a * b * o.h / 1e6 * list.length);
     row(SEC.rc, FORMWORK, '㎡', `柱 ${k}`, `周長 2×(${m(a)}+${m(b)}) m × 高 ${m(o.h)} m × ${list.length} 支${covered ? ` − 貼牆面 ${r2(covered / 1e4)} ㎡` : ''}`, Math.max(0, 2 * (a + b) * o.h * list.length - covered) / 1e4);
+    noteGroup('柱', `柱 ${k}`, list);
   }
   for (const [, list] of byDims(rcWalls, o => `${Math.round(Math.min(o.w, o.d))}|${Math.round(o.h)}`)) {
     const t = Math.min(list[0].w, list[0].d), h = list[0].h, L = sum(list, o => wallParts.get(o)!.L), A = sum(list, o => wallParts.get(o)!.A), cut = sum(list, o => wallParts.get(o)!.cut);
@@ -366,6 +372,7 @@ export function computeTakeoff(inp: TakeoffInput): Takeoff {
     const less = cut > 0 ? ` − 梁、板重疊 ${r2(cut / 1e4)} ㎡` : '';
     row(SEC.rc, CONCRETE, 'M3', where, `(長 ${m(L)} m × 高 ${m(h)} m${less}) × 厚 ${m(t)} m（${list.length} 段，柱內已扣）`, A * t / 1e6);
     row(SEC.rc, FORMWORK, '㎡', where, `(長 ${m(L)} m × 高 ${m(h)} m${less}) × 2 面（門窗開口兩面已扣、柱內已扣）`, A * 2 / 1e4);
+    noteGroup('牆', where, list);
   }
   const ground = /^1F$|^B/.test(fl) || slabs.some(o => /地坪/.test(o.name));
   const slabA = sum(slabs, o => o.w * o.d / 1e4);
@@ -411,6 +418,7 @@ export function computeTakeoff(inp: TakeoffInput): Takeoff {
     }
     row(SEC.rc, CONCRETE, 'M3', `梁 ${k}`, `長 ${m(L)} m × 寬 ${m(b)} m × (梁深 ${m(h)} − 板厚 ${m(S.slab)}) m`, L * b * Math.max(0, h - S.slab) / 1e6);
     row(SEC.rc, FORMWORK, '㎡', `梁 ${k}`, `長 ${m(L)} m × (底 ${m(b)} + 2 側 × ${m(h - S.slab)}) m`, L * (b + 2 * Math.max(0, h - S.slab)) / 1e4);
+    noteGroup('梁', `梁 ${k}`, list);
   }
   // stairs: riser count as written on the plan (上16); each flight is wedge steps on a waist slab
   for (const st of boxes.filter(o => o.stair).map(o => o.stair!)) {
@@ -488,7 +496,7 @@ export function computeTakeoff(inp: TakeoffInput): Takeoff {
     }
     roomRuns = [...byName].map(([name, runs]) => ({ fl: S.floor!, name, runs }));
   }
-  return { budget: budgetOf(calc, fl, materialItems(mats)), groups: G, rooms, calc, floorArea, wallH: H, slabArea: r2(slabArea), ...(roomRuns ? { roomRuns } : {}), ...(rebar ? { rebar } : {}) };
+  return { budget: budgetOf(calc, fl, materialItems(mats)), groups: G, rooms, calc, floorArea, wallH: H, slabArea: r2(slabArea), ...(roomRuns ? { roomRuns } : {}), ...(S.floor ? { memGroups: memGroups.map(g => ({ ...g, fl: S.floor! })) } : {}), ...(rebar ? { rebar } : {}) };
 }
 
 /** Budget lines from calculation rows, in the template's section order; door and window types lead their section. */
@@ -573,7 +581,7 @@ export function computeBuildingTakeoff(objects: ModelObject[], cad: CadData, fin
   return {
     ...(rebar ? { rebar } : {}),
     ...(formwork ? { formwork } : {}),
-    plans: { formwork: formwork ? formworkPlans(objects, formwork) : [], mason: masonPlans(objects, parts.flatMap(p => p.roomRuns || []), floors.map(f => f.key)) },
+    plans: { formwork: formwork ? formworkPlans(objects, formwork) : [], member: memberPlans(objects, parts.flatMap(p => p.memGroups || []), floors.map(f => f.key)), mason: masonPlans(objects, parts.flatMap(p => p.roomRuns || []), floors.map(f => f.key)) },
     budget: budgetOf(calc, undefined, materialItems(materialsOf(settings.materials))),
     groups: [...groups.values()],
     rooms: parts.flatMap(p => p.rooms),

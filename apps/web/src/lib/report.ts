@@ -1,4 +1,4 @@
-import { groupQuantities, masonCells, masonReport, type FormworkReport, PING, REBAR_KINDS, REBAR_STD, rebarSummary, type GroupBy, type PricedBudget, type Pricing, type Takeoff } from '@cloud-modeler/core';
+import { groupQuantities, formworkMembers, masonCells, masonReport, type FormworkReport, PING, REBAR_KINDS, REBAR_STD, rebarSummary, type GroupBy, type PricedBudget, type Pricing, type Takeoff } from '@cloud-modeler/core';
 import * as XLSX from 'xlsx';
 
 /** The reports a project can print or download, in the order they appear. */
@@ -40,6 +40,8 @@ const td = (v: unknown, num = false) => `<td${num ? ' class="num"' : ''}>${typeo
 /** plan drawings as report figures */
 export const plansHtml = (sheets: { title: string; svg: string }[] | undefined) =>
   (sheets || []).map(p => `<figure style="margin:12px 0;page-break-inside:avoid"><figcaption><b>${esc(p.title)}</b></figcaption>${p.svg}</figure>`).join('');
+
+const members = (t: Takeoff) => formworkMembers(t.calc, t.plans?.member).map(it => `<h3>${esc(it.title)}</h3><table><thead><tr><th>樓層</th><th>位置</th><th>計算式</th><th class="num">數量</th><th>單位</th></tr></thead><tbody>${masonCells(it).map(r => `<tr${r[1] === '樓層小計' || /合計$/.test(String(r[1])) ? ' class="sec"' : ''}>${r.map((v, i) => `<td${i === 3 ? ' class="num"' : ''}>${esc(v)}</td>`).join('')}</tr>`).join('')}</tbody></table>`).join('') + (t.plans?.member.length ? `<h3>柱、牆、梁平面圖（編號對應上表「位置」）</h3>${plansHtml(t.plans.member)}` : '');
 
 export function formworkCells(f: FormworkReport): (string | number)[][] {
   const out: (string | number)[][] = [];
@@ -121,7 +123,7 @@ function section(key: ReportKey, c: ReportCtx): string {
       const sub = r[2] === '樓層小計' || r[0] === '合計';
       return `<tr${sub ? ' class="sec"' : ''}>${r.map((v, i) => `<td${i >= 4 && ![5, 7, 9, 11].includes(i) ? ' class="num"' : ''}>${esc(v)}</td>`).join('')}</tr>`;
     });
-    return `<table><thead><tr><th rowspan="2">棟別</th><th rowspan="2">樓層</th><th rowspan="2">版編號</th><th rowspan="2">版內編</th><th colspan="10">版　明　細</th></tr><tr>${FORMWORK_HEAD.slice(4).map(h => `<th>${h}</th>`).join('')}</tr></thead><tbody>${rows.join('')}</tbody></table><p class="muted">${esc(f.note.join(' '))}</p>${plansHtml(t.plans?.formwork)}`;
+    return `<table><thead><tr><th rowspan="2">棟別</th><th rowspan="2">樓層</th><th rowspan="2">版編號</th><th rowspan="2">版內編</th><th colspan="10">版　明　細</th></tr><tr>${FORMWORK_HEAD.slice(4).map(h => `<th>${h}</th>`).join('')}</tr></thead><tbody>${rows.join('')}</tbody></table><p class="muted">${esc(f.note.join(' '))}</p><h3>版平面圖</h3>${plansHtml(t.plans?.formwork)}${members(t)}`;
   }
   if (key === 'rebarSum') {
     const rb = t.rebar?.rows || [];
@@ -247,7 +249,7 @@ export function reportWorkbook(keys: ReportKey[], c: ReportCtx) {
       ws = sheet(rows, [8, 34, 70, 11, 6]);
     } else if (k === 'formwork') {
       const f = t.formwork!;
-      const rows: Cell[][] = [[`${c.project}  模板報表`], [], ['棟別', '樓層', '版編號', '版內編', '版　明　細'], FORMWORK_HEAD, ...formworkCells(f).map(r => r.map((v, i) => i >= 4 && ![5, 7, 9, 11].includes(i) && v !== '' ? +v : v)), [], [f.note.join(' ')]];
+      const rows: Cell[][] = [[`${c.project}  模板報表`], [], ['棟別', '樓層', '版編號', '版內編', '版　明　細'], FORMWORK_HEAD, ...formworkCells(f).map(r => r.map((v, i) => i >= 4 && ![5, 7, 9, 11].includes(i) && v !== '' ? +v : v)), [], [f.note.join(' ')], ...formworkMembers(t.calc, t.plans?.member).flatMap((it): Cell[][] => [[], [it.title], ['', '樓層', '', '', '數量', '位置', '', '計算式'], ...masonCells(it).map((r): Cell[] => ['', r[0], '', '', r[3] === '' ? '' : +r[3], r[1], '', r[2]])]), [], ['柱、牆、梁、版的平面圖請看網頁或 PDF 報表（Excel 不含圖）。']];
       ws = sheet(rows, [6, 6, 9, 7, 10, 28, 8, 34, 11, 30, 9, 26, 11, 10]);
       ws['!merges'] = [{ s: { r: 2, c: 4 }, e: { r: 2, c: 13 } }];
     } else if (k === 'rebarSum') {
