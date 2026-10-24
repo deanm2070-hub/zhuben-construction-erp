@@ -78,8 +78,17 @@ export function masonPlans(objects: ModelObject[], runs: { fl: string; name: str
       const label = plain.length > 8 ? `${plain.slice(0, 8)}…` : plain;
       labels.push(`<text x="${r(sx / n)}" y="${r(sz / n)}" font-size="${r(fs * 1.2)}" font-weight="bold" text-anchor="middle" fill="#7a1c1c">${i + 1}</text><text x="${r(sx / n)}" y="${r(sz / n + fs * 1.1)}" font-size="${r(fs)}" text-anchor="middle" fill="#222">${esc(label)}</text>`);
     });
+    // the four facades of the exterior-wall items (外牆粉刷、抿石子…), named like their 位置 in the tables
+    if (isFinite(b.x0)) {
+      const fs = Math.max(30, (b.x1 - b.x0) / 40), cx = (b.x0 + b.x1) / 2, cz = (b.z0 + b.z1) / 2, g = fs * 0.9;
+      const side = (x1: number, z1: number, x2: number, z2: number) => `<line x1="${r(x1)}" y1="${r(z1)}" x2="${r(x2)}" y2="${r(z2)}" stroke="#d9480f" stroke-width="${r(fs / 5)}"/>`;
+      labels.push(side(b.x0, b.z0 - g * 0.6, b.x1, b.z0 - g * 0.6), side(b.x0, b.z1 + g * 0.6, b.x1, b.z1 + g * 0.6), side(b.x0 - g * 0.6, b.z0, b.x0 - g * 0.6, b.z1), side(b.x1 + g * 0.6, b.z0, b.x1 + g * 0.6, b.z1));
+      const tx = (t: string, x: number, z: number, rot = 0) => `<text x="${r(x)}" y="${r(z)}" font-size="${r(fs)}" font-weight="bold" text-anchor="middle" fill="#d9480f"${rot ? ` transform="rotate(${rot} ${r(x)} ${r(z)})"` : ''}>${t}</text>`;
+      labels.push(tx('北向外牆', cx, b.z0 - g * 1.3), tx('南向外牆', cx, b.z1 + g * 2.2), tx('西向外牆', b.x0 - g * 1.4, cz, -90), tx('東向外牆', b.x1 + g * 2.2, cz, 90));
+      ext.x0 = Math.min(ext.x0, b.x0 - g * 3); ext.x1 = Math.max(ext.x1, b.x1 + g * 3); ext.z0 = Math.min(ext.z0, b.z0 - g * 3); ext.z1 = Math.max(ext.z1, b.z1 + g * 3);
+    }
     const svg = wrap(b, [...shapes, ...b.out, ...labels], ext);
-    if (svg) out.push({ fl, title: `${fl} 平面（紅色數字＝泥作表「位置」欄的空間編號）`, svg, nos });
+    if (svg) out.push({ fl, title: `${fl} 平面（紅色數字＝泥作表「位置」欄的空間編號；橘色＝外牆項目的東南西北向外牆）`, svg, nos });
   }
   return out;
 }
