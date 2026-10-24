@@ -5,7 +5,7 @@ import { WALL_H } from './sample';
 import { findFlights, planStairs, type StairFlight, type StairPlan } from './stairs';
 import { HEIGHT_NOTE, isDoorType, openingName, openingType, PLAN_NOTES, type OpeningType } from './legend';
 import { readRebarSpec } from './rebar';
-import { checkModel, openSlabEdges, type Issue } from './sanity';
+import { checkModel, openSlabEdges, wallsOnTwoSides, type Issue } from './sanity';
 import { rationalizeFrame } from './structure';
 import { memberOf } from './pricing';
 import { isBox, isDoor, type BoxObject, type CadData, type CadFloor, type DoorObject, type ModelObject, type SlabPanel } from './types';
@@ -1950,25 +1950,37 @@ function readBeams(d: DxfDrawing, v: SheetView, X: (x: number) => number, Z: (y:
 
 /** column outlines; numbered variants (COL1) are the columns of the storey below, drawn hidden */
 const COL_LAYER = /^(?:0?S-)?(?:COL|COLUMN|COLS|柱)$/i, COL_MARK = /^C\d+[a-z]?$/;
+/** a column drawn dashed (hidden) on a structural plan: it stops under this slab and does not go on up */
+const COL_HID = /^(?:0?S-)?(?:COL|COLUMN|柱)[-_ ]?(?:H|HID|HIDDEN|HIDE|虛)$/i;
 /** Columns of one structural plan: closed outlines on the column layer, each named by the nearest column mark (C1, C2 …). */
 function readColumns(d: DxfDrawing, v: SheetView, X: (x: number) => number, Z: (y: number) => number, S: number) {
   const marks = d.texts.filter(t => COL_MARK.test(t.s.trim()) && inBox(v.box, t.x, t.y)).map(t => ({ mark: t.s.trim(), x: X(t.x), z: Z(t.y) }));
   const out: { mark: string; x: number; z: number; w: number; d: number }[] = [];
+  const stopped: { mark: string; x: number; z: number; w: number; d: number }[] = [];
+  const boxes: { x: number; z: number; w: number; dd: number; hid: boolean }[] = [];
   for (const p of d.polys) {
-    if (!COL_LAYER.test(p.layer) || p.pts.length < 4 || !p.pts.every(q => inBox(v.box, q[0], q[1]))) continue;
+    const hid = COL_HID.test(p.layer);
+    if ((!COL_LAYER.test(p.layer) && !hid) || p.pts.length < 4 || !p.pts.every(q => inBox(v.box, q[0], q[1]))) continue;
     const xs = p.pts.map(q => X(q[0])), zs = p.pts.map(q => Z(q[1]));
     const x0 = minOf(xs), x1 = maxOf(xs), z0 = minOf(zs), z1 = maxOf(zs), w = x1 - x0, dd = z1 - z0;
     if (w < 20 || dd < 20 || w > 200 || dd > 200) continue;
     const x = (x0 + x1) / 2, z = (z0 + z1) / 2;
-    if (out.some(c => Math.abs(c.x - x) < 5 && Math.abs(c.z - z) < 5)) continue;
-    const m = marks.map(m => ({ m, dist: Math.hypot(m.x - x, m.z - z) })).sort((a, b) => a.dist - b.dist)[0];
-    if (!m || m.dist > Math.max(w, dd) + 120 * S) continue;
-    out.push({ mark: m.m.mark, x, z, w: Math.round(w), d: Math.round(dd) });
+    if (boxes.some(c => Math.abs(c.x - x) < 5 && Math.abs(c.z - z) < 5)) continue;
+    boxes.push({ x, z, w, dd, hid });
+  }
+  // each mark names the outline nearest it; an outline no mark is nearest to (a fence pier on the foundation plan,
+  // a pedestal beside a real column) is not one of the building's columns
+  const cand = boxes.flatMap(b => marks.map(m => ({ b, m, dist: Math.hypot(m.x - b.x, m.z - b.z) })).filter(q => q.dist <= Math.max(b.w, b.dd) + 120 * S)).sort((p, q) => p.dist - q.dist);
+  const usedM = new Set<typeof marks[number]>(), usedB = new Set<typeof boxes[number]>();
+  for (const q of cand) {
+    if (usedM.has(q.m) || usedB.has(q.b)) continue;
+    usedM.add(q.m); usedB.add(q.b);
+    (q.b.hid ? stopped : out).push({ mark: q.m.mark, x: q.b.x, z: q.b.z, w: Math.round(q.b.w), d: Math.round(q.b.dd) });
   }
   // marks on the plan that no column outline sits by (an outline on another layer, or drawn as lines)
   const x0 = minOf(out.map(c => c.x)) - 150 * S, x1 = maxOf(out.map(c => c.x)) + 150 * S, z0 = minOf(out.map(c => c.z)) - 150 * S, z1 = maxOf(out.map(c => c.z)) + 150 * S;
-  const missing = out.length ? marks.filter(m => m.x > x0 && m.x < x1 && m.z > z0 && m.z < z1 && !out.some(c => Math.hypot(c.x - m.x, c.z - m.z) <= Math.max(c.w, c.d) + 120 * S)) : [];
-  return Object.assign(out, { missing });
+  const missing = out.length ? marks.filter(m => !usedM.has(m) && m.x > x0 && m.x < x1 && m.z > z0 && m.z < z1 && ![...out, ...stopped].some(c => Math.hypot(c.x - m.x, c.z - m.z) <= Math.max(c.w, c.d) + 120 * S)) : [];
+  return Object.assign(out, { missing, stopped });
 }
 
 const SLAB_MARK = /^(?:F?C?S\d{1,2}|BS\d{1,2}|Sw)$/;
@@ -2132,6 +2144,29 @@ export function buildBuilding(d: DxfDrawing, a: BuildingAnalysis, name: string, 
   const drawnOf = new Map<string, { x1: number; z1: number; x2: number; z2: number }[]>();
   /** the plan's short texts in model coordinates, per storey */
   const notesOf = new Map<string, { x: number; z: number; s: string }[]>();
+  // the railing written beside an edge: 「H=R.C.5cm+玻璃欄杆115cm」「H=金屬格柵85cm」「R.C. H=120cm」「H=1.2M」. The
+  // heights add up (the kerb and the railing on it); the material names the kind
+  const railNote = (floor: string, x1: number, z1: number, x2: number, z2: number) => {
+    let best: { h: number; kind: 'glass' | 'metal' | 'grille' | 'rc'; s: string } | undefined, bd = 160;
+    for (const n of notesOf.get(floor) || []) {
+      if (!/H\s*[=＝]/.test(n.s) || /樓高|天花|FL|GL|樑|梁/.test(n.s)) continue;
+      const named = /欄杆|格柵|R\.?C|扶手|女兒牆|玻璃|金屬/i.test(n.s);
+      // distance to the edge
+      const L = Math.hypot(x2 - x1, z2 - z1) || 1, t = Math.max(0, Math.min(1, ((n.x - x1) * (x2 - x1) + (n.z - z1) * (z2 - z1)) / (L * L)));
+      const dd = Math.hypot(n.x - (x1 + t * (x2 - x1)), n.z - (z1 + t * (z2 - z1))) + (named ? 0 : 40);
+      if (dd > bd) continue;
+      let h = 0; const re = /(\d+(?:\.\d+)?)\s*(cm|CM|㎝|m|M)?/g; let m: RegExpExecArray | null;
+      while ((m = re.exec(n.s))) { const v = +m[1] * (/^m$/i.test(m[2] || '') || (!m[2] && +m[1] < 5) ? 100 : 1); if (v >= 3 && v <= 300) h += v; }
+      if (h < 30 || h > 300) continue;
+      best = { h, kind: /玻璃/.test(n.s) ? 'glass' : /格柵/.test(n.s) ? 'grille' : /金屬|鐵|鋁|不鏽鋼|不銹鋼|扶手/.test(n.s) ? 'metal' : 'rc', s: n.s.trim() }; bd = dd;
+    }
+    return best;
+  };
+  const railBox = (spec: NonNullable<ReturnType<typeof railNote>>): Pick<BoxObject, 'layer' | 'name' | 'color' | 'h'> =>
+    spec.kind === 'glass' ? { layer: 'glass', name: '玻璃欄杆（CAD）', color: 0xa9c9dc, h: spec.h }
+      : spec.kind === 'grille' ? { layer: 'rail', name: '金屬格柵欄杆（CAD）', color: 0x8a8f96, h: spec.h }
+      : spec.kind === 'metal' ? { layer: 'rail', name: '金屬欄杆（CAD）', color: 0x8a8f96, h: spec.h }
+      : { layer: 'wall', name: 'RC欄杆（CAD）', color: 0xeeebe5, h: spec.h };
   // a piece of floor is carried up only inside a space closed off on the plan above (walls, parapets, grilles,
   // any line): a piece off the outer corner of the walls, or the outdoor steps beside the building, lies in the open
   const closedOn = (lines: { x1: number; z1: number; x2: number; z2: number }[] | undefined, ws: { x: number; z: number; w: number; d: number; rot?: number }[]) => {
@@ -2578,6 +2613,7 @@ export function buildBuilding(d: DxfDrawing, a: BuildingAnalysis, name: string, 
         const kind = /露台/.test(t.s) ? 'terrace' as const : /陽台/.test(t.s) ? 'balcony' as const : /裝飾板/.test(t.s) ? 'panel' as const : 'ac' as const;
         return rects ? [{ kind, rects, h: kind === 'ac' ? heightNear(t.x, t.z, /格柵|欄杆|百葉/) : kind === 'panel' ? heightNear(t.x, t.z) : undefined }] : [];
       }));
+      if (typeof process !== 'undefined' && process.env?.DBGO) console.log('[out]', st.key, JSON.stringify(outSpaces.get(st.key)!.map(s => [s.kind, s.h, s.rects.map(r => [r.x0, r.x1, r.z0, r.z1].map(Math.round))])));
     }
     // (the roof only within the decks outlined on the roof plan: the flood also fills between a parapet and the sheet's edge)
     const onRoof = parapet && drawnOf.get(st.key)?.length ? closedOn(drawnOf.get(st.key), walls) : () => true;
@@ -2766,6 +2802,7 @@ export function buildBuilding(d: DxfDrawing, a: BuildingAnalysis, name: string, 
           text: `${v.title}：梁 ${code}（${size}）${ms.length > 1 ? `有 ${ms.length} 處` : ''}標示的位置沒有建出梁${wallBeam ? '；W 開頭是牆梁，藏在牆裡，牆已經建出的話可以不理' : '，圖上找不到這根梁的兩條梁線（可用「補牆板」或畫線補上）'}` });
       }
       for (const m of cols.missing) issues.push({ kind: 'MARK-COL', sev: 'warn', floor: key, at: [m.x, m.z], text: `${v.title}：柱編號 ${m.mark} 旁邊沒有柱的外框（柱框可能畫在別的圖層）` });
+      for (const c of cols.stopped) issues.push({ kind: 'COL-STOP', sev: 'info', floor: key, at: [c.x, c.z], text: `${v.title}：柱 ${c.mark}（${c.w}×${c.d}）畫成虛線（隱柱），這層不建這根柱` });
       // columns of this storey: the architectural column there takes the mark and the structural size, else one is added
       const st = a.storeys[i];
       for (const c of cols) {
@@ -2779,6 +2816,7 @@ export function buildBuilding(d: DxfDrawing, a: BuildingAnalysis, name: string, 
         if (!arch) madeBy.set(objects[objects.length - 1], v);
       }
       for (const p of panels) rcPanels.push({ ...p, fl: key });
+      if (typeof process !== 'undefined' && process.env?.DBGS) console.log('[panels]', v.title, key, JSON.stringify(panels.map(p => [p.x0, p.x1, p.z0, p.z1].map(Math.round))), 'cols', cols.map(c => `${c.mark}@${Math.round(c.x)},${Math.round(c.z)} ${c.w}x${c.d}`).join(' '), 'missing', cols.missing.map(m => `${m.mark}@${Math.round(m.x)},${Math.round(m.z)}`).join(' '));
     }
   }
   // a wall that runs into a column ends at the column face (plans often draw walls to the column's centre line); a
@@ -3009,9 +3047,19 @@ export function buildBuilding(d: DxfDrawing, a: BuildingAnalysis, name: string, 
       }
     }
   }
+  // a 露台 is open to the sky: the storey above has no floor over it (its rectangles, and its part of the floor plate
+  // closed off by the walls, doorways bridged, and the plate's edge)
+  for (const st of a.storeys) {
+    for (const sp of outSpaces.get(st.key) || []) if (sp.kind === 'terrace') (voidsUp.get(st.key) || voidsUp.set(st.key, []).get(st.key)!).push(...sp.rects);
+    const at = openAt.get(st.key) || [];
+    if (!at.length) continue;
+    const ws = objects.filter((o): o is BoxObject => isBox(o) && o.floor === st.key && (o.layer === 'wall' || o.layer === 'glass') && o.h >= 60);
+    (voidsUp.get(st.key) || voidsUp.set(st.key, []).get(st.key)!).push(...at.flatMap(t => roomSlabAt(ws, t.x, t.z, W, D, [], 0, slabsOf.get(st.key) || [])));
+  }
   // a storey's floor slab is the ceiling of the storey under it: where the walls on this level do not close off all
   // of the indoor floor below (a roof terrace, a shop front, walls lost in the drawing), carry the slab up from there.
   // A mezzanine covers only part of the storey under it, and a roof storey's terrace is not roofed over.
+  // (not over a 露台 of the storey below: a terrace slab carried up would then go on up through every storey)
   for (let i = 1; i < a.storeys.length; i++) {
     const st = a.storeys[i];
     if (/MF$/.test(st.key)) continue;
@@ -3069,7 +3117,7 @@ export function buildBuilding(d: DxfDrawing, a: BuildingAnalysis, name: string, 
       const inRoof = closedOn(drawnOf.get('RF'), objects.filter((o): o is BoxObject => isBox(o) && o.floor === lower.key && o.layer === 'wall'));
       from = from.filter(r => Math.min(r.x1 - r.x0, r.z1 - r.z0) >= 20 && inRoof(r));
     }
-    let add = subtractRects(from, [...slabsOf.get(st.key) || [], ...holesOf.get(st.key) || [], ...voidsOf.get(st.key) || []], W, D);
+    let add = subtractRects(from, [...slabsOf.get(st.key) || [], ...holesOf.get(st.key) || [], ...voidsOf.get(st.key) || [], ...voidsUp.get(lower.key) || []], W, D);
     if (!slabsOf.has(st.key)) slabsOf.set(st.key, []);
     // a carried piece has to hang together with the floor: joined to a slab this storey already has (or to a piece
     // that is), or standing on walls of the storey below along two of its sides. A piece on its own in the open (a
@@ -3138,14 +3186,6 @@ export function buildBuilding(d: DxfDrawing, a: BuildingAnalysis, name: string, 
   }
   for (const st of a.storeys) for (const sp of outSpaces.get(st.key) || []) {
     slabAt(st, sp.rects, sp.kind === 'balcony' ? '陽台樓板（CAD）' : sp.kind === 'ac' ? '冷氣平台板（CAD）' : sp.kind === 'panel' ? '外挑板（CAD）' : '露台樓板（CAD）', sp.kind === 'ac' || sp.kind === 'panel' ? 1 : 3);
-    if (sp.kind === 'terrace') (voidsUp.get(st.key) || voidsUp.set(st.key, []).get(st.key)!).push(...sp.rects);
-  }
-  // each 露台: its part of the floor plate, closed off by the walls (doorways bridged) and the plate's edge
-  for (const st of a.storeys) {
-    const at = openAt.get(st.key) || [];
-    if (!at.length) continue;
-    const ws = objects.filter((o): o is BoxObject => isBox(o) && o.floor === st.key && (o.layer === 'wall' || o.layer === 'glass') && o.h >= 60);
-    voidsUp.get(st.key)!.push(...at.flatMap(t => roomSlabAt(ws, t.x, t.z, W, D, [], 0, slabsOf.get(st.key) || [])));
   }
   a.storeys.forEach((st, i) => {
     const cuts = [...(voidsOf.get(st.key) || []), ...(i ? voidsUp.get(a.storeys[i - 1].key) || [] : [])];
@@ -3213,9 +3253,12 @@ export function buildBuilding(d: DxfDrawing, a: BuildingAnalysis, name: string, 
         while (j + 1 < free.length && free[j + 1] - free[j] < 15) j++;
         const a0 = free[i] - 5, a1 = free[j] + 5;
         if (a1 - a0 >= 60) {
-          const c = (a0 + a1) / 2, t = sp.kind === 'panel' ? 15 : sp.kind === 'ac' ? 5 : 15, pos = at - out * t / 2;
+          const c = (a0 + a1) / 2, pos0 = at;
+          const note = sp.kind === 'balcony' || sp.kind === 'terrace' ? railNote(st.key, alongX ? a0 : at, alongX ? at : a0, alongX ? a1 : at, alongX ? at : a1) : undefined;
           const [layer, name, h, color] = sp.kind === 'ac' ? ['rail' as const, '冷氣平台格柵（CAD）', sp.h ?? 90, 0x8a8f96]
-            : sp.kind === 'panel' ? ['wall' as const, 'RC裝飾板（CAD）', sp.h ?? 120, 0xeeebe5] : ['rail' as const, '陽台欄杆（CAD）', 110, 0xd9d6cf];
+            : sp.kind === 'panel' ? ['wall' as const, 'RC裝飾板（CAD）', sp.h ?? 120, 0xeeebe5]
+            : note ? (({ layer, name, h, color }) => [layer, name, h, color] as const)(railBox(note)) : ['rail' as const, '陽台欄杆（CAD）', 110, 0xd9d6cf];
+          const t = layer === 'wall' ? 15 : sp.kind === 'ac' ? 5 : layer === 'glass' ? 6 : 15, pos = pos0 - out * t / 2;
           objects.push({ id: id++, layer, name, floor: st.key, x: alongX ? c : pos, z: alongX ? pos : c, w: alongX ? a1 - a0 : t, d: alongX ? t : a1 - a0, h, y: st.base, color });
         }
         i = j + 1;
@@ -3430,6 +3473,7 @@ export function buildBuilding(d: DxfDrawing, a: BuildingAnalysis, name: string, 
           for (const t of f.texts) { t.x -= sx; t.z -= sz; }
         }
         for (const p of rcPanels) { p.x0 -= sx; p.x1 -= sx; p.z0 -= sz; p.z1 -= sz; }
+        for (const ns of notesOf.values()) for (const n of ns) { n.x -= sx; n.z -= sz; }
         W = x1 - sx; D = z1 - sz;
       }
     }
@@ -3439,23 +3483,60 @@ export function buildBuilding(d: DxfDrawing, a: BuildingAnalysis, name: string, 
     const r = rationalizeFrame(objects, a.storeys.map(s => ({ key: s.key, base: s.base, h: s.h })), id);
     id = r.id; issues.push(...r.issues);
   }
-  // every floor plate above ground has something along its open edges: a 女兒牆 on a roof or terrace, a railing on
-  // a floor; the very top of a rooftop structure (not walked on) only a 30 cm curb (墩座)
+  // a narrow slab piece labelled 雨遮 / 遮陽板 / 屋簷 on the plan is a canopy over the windows below, not a floor
+  // anyone walks on: named so, it gets no railing and is not a floor plate
+  for (const f of floors) {
+    const thin = objects.filter((o): o is BoxObject => isBox(o) && o.floor === f.key && o.layer === 'slab' && /^樓板|^屋頂板/.test(o.name) && !o.rot && Math.min(o.w, o.d) <= 150);
+    const canopy = new Set<BoxObject>();
+    for (const t of f.texts) {
+      if (!/^(雨遮|遮陽板|屋簷|雨庇)/.test(t.s.trim())) continue;
+      for (const o of thin) if (Math.abs(t.x - o.x) <= o.w / 2 + 20 && Math.abs(t.z - o.z) <= o.d / 2 + 20) canopy.add(o);
+    }
+    // the strips a canopy is drawn in (its drip edge, its upstand) go with it
+    const labelled = [...canopy];
+    for (let grew = canopy.size > 0; grew;) {
+      grew = false;
+      for (const o of thin) {
+        if (canopy.has(o)) continue;
+        if ([...canopy].some(c => Math.abs(c.x - o.x) <= (c.w + o.w) / 2 + 5 && Math.abs(c.z - o.z) <= (c.d + o.d) / 2 + 5) && labelled.some(c => Math.hypot(Math.max(0, Math.abs(c.x - o.x) - c.w / 2), Math.max(0, Math.abs(c.z - o.z) - c.d / 2)) <= 100)) { canopy.add(o); grew = true; }
+      }
+    }
+    for (const o of canopy) o.name = o.name.replace(/^(樓板|屋頂板)/, '雨遮');
+  }
+  // every floor plate above ground has something along its open edges: the railing the plan writes beside the edge
+  // (H=R.C.5cm+玻璃欄杆115cm), else a 女兒牆 on a roof or terrace and an RC railing on a floor. The roof slab over the
+  // stair / lift 屋突 (the very top, not walked on) only gets a 30 cm curb (墩座); a slab piece up there on its own
+  // (a canopy, a tank stand) gets nothing
   {
-    const plates = objects.filter((o): o is BoxObject => isBox(o) && o.layer === 'slab' && /板|地坪/.test(o.name) && !/梁|墊層/.test(o.name));
-    const highest = Math.max(...plates.map(o => o.y + o.h), 0);
     const hasRoofStruct = a.storeys.some(s => /^R\d+F$/.test(s.key));
+    const topKey = a.storeys[a.storeys.length - 1]?.key;
     for (const st of a.storeys) {
       const edges = openSlabEdges(objects, st.key);
-      const made = new Map<string, { ids: number[]; len: number; h: number }>();
+      if (!edges.length) continue;
+      const i = a.storeys.indexOf(st);
+      let j = i - 1;
+      while (j > 0 && /MF$/.test(a.storeys[j].key)) j--;
+      const lower = a.storeys[j];
+      const lowWalls = lower ? objects.filter((o): o is BoxObject => isBox(o) && o.floor === lower.key && o.layer === 'wall' && !o.rot && o.h >= lower.h * 0.6) : [];
+      // walls of the storey below along two sides of the plate: the roof over a room (the 屋突), not a slab on its own
+      const roomRoof = (p: BoxObject) => wallsOnTwoSides(p, lowWalls);
+      const made = new Map<string, { ids: number[]; len: number; h: number; note?: string }>();
       for (const e of edges) {
-        const curb = hasRoofStruct && Math.abs(e.top - highest) < 30;
-        const h = curb ? 30 : 120, name = curb ? '屋突墩座（自動補）' : /^R/.test(st.key) ? '女兒牆（自動補）' : 'RC欄杆（自動補）', t = 15, pos = e.at - e.out * t / 2;
-        const b: BoxObject = { id: id++, layer: 'wall', name, floor: st.key, x: e.alongX ? (e.lo + e.hi) / 2 : pos, z: e.alongX ? pos : (e.lo + e.hi) / 2, w: e.alongX ? e.hi - e.lo : t, d: e.alongX ? t : e.hi - e.lo, h, y: e.top, color: 0xeeebe5, wall: 'rc', src: 'auto' };
+        const x1 = e.alongX ? e.lo : e.at, z1 = e.alongX ? e.at : e.lo, x2 = e.alongX ? e.hi : e.at, z2 = e.alongX ? e.at : e.hi;
+        const note = railNote(st.key, x1, z1, x2, z2);
+        const roofTop = hasRoofStruct && st.key === topKey;
+        let box: Pick<BoxObject, 'layer' | 'name' | 'color' | 'h'>;
+        if (note) box = railBox(note);
+        else if (roofTop) {
+          if (!roomRoof(e.plate)) continue;
+          box = { layer: 'wall', name: '屋突墩座（自動補）', color: 0xeeebe5, h: 30 };
+        } else box = { layer: 'wall', name: /^R/.test(st.key) ? '女兒牆（自動補）' : 'RC欄杆（自動補）', color: 0xeeebe5, h: 120 };
+        const t = box.layer === 'glass' ? 6 : 15, pos = e.at - e.out * t / 2;
+        const b: BoxObject = { id: id++, ...box, name: note ? box.name.replace('（CAD）', '（自動補）') : box.name, floor: st.key, x: e.alongX ? (e.lo + e.hi) / 2 : pos, z: e.alongX ? pos : (e.lo + e.hi) / 2, w: e.alongX ? e.hi - e.lo : t, d: e.alongX ? t : e.hi - e.lo, y: e.top, src: 'auto', ...(box.layer === 'wall' ? { wall: 'rc' as const } : {}) };
         objects.push(b);
-        const m = made.get(name) || { ids: [], len: 0, h }; m.ids.push(b.id); m.len += e.hi - e.lo; made.set(name, m);
+        const k = `${b.name}|${b.h}`, m = made.get(k) || { ids: [], len: 0, h: b.h, note: note?.s }; m.ids.push(b.id); m.len += e.hi - e.lo; made.set(k, m);
       }
-      for (const [name, m] of made) issues.push({ kind: 'SLAB-EDGE', sev: 'fixed', floor: st.key, ids: m.ids, text: `${m.ids.length} 段板邊沒有牆、女兒牆或欄杆（人會掉下去），已補 ${m.h} cm ${name.replace(/（.*$/, '')}，共 ${(m.len / 100).toFixed(1)} m` });
+      for (const [k, m] of made) issues.push({ kind: 'SLAB-EDGE', sev: 'fixed', floor: st.key, ids: m.ids, text: `${m.ids.length} 段板邊沒有牆、女兒牆或欄杆（人會掉下去），已補 ${m.h} cm ${k.split('|')[0].replace(/（.*$/, '')}${m.note ? `（依圖上註記「${m.note}」）` : ''}，共 ${(m.len / 100).toFixed(1)} m` });
     }
   }
   const spec = readRebarSpec(d, a.storeys.map(s => s.key));

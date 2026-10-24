@@ -45,15 +45,33 @@ function beamEnds(o: BoxObject, len = 15): [Rect, Rect] {
 
 
 /** an open run along the edge of a floor plate: nothing stands on it and there is open air beyond */
-export interface OpenEdge { floor: string; alongX: boolean; at: number; lo: number; hi: number; out: 1 | -1; top: number }
+export interface OpenEdge { floor: string; alongX: boolean; at: number; lo: number; hi: number; out: 1 | -1; top: number; /** the plate the edge belongs to */ plate: BoxObject }
 
 const PLATE = (o: BoxObject) => o.layer === 'slab' && !o.rot && /板|地坪/.test(o.name) && !/梁|屋簷|雨遮|冷氣|外挑|裝飾|墊層|PC/.test(o.name);
 
 /**
+ * Walls run along at least two sides of the plate (30% of each side's length, within 40 cm): the plate is the roof
+ * over a room, not a slab standing on its own (a canopy, a tank stand).
+ */
+export function wallsOnTwoSides(p: BoxObject, walls: BoxObject[]): boolean {
+  const r = rect(p);
+  const along = (x0: number, x1: number, z: number, ax: boolean) => {
+    let cov = 0;
+    for (const o of walls) {
+      if (o.rot) continue;
+      const ox0 = ax ? o.x - o.w / 2 : o.z - o.d / 2, ox1 = ax ? o.x + o.w / 2 : o.z + o.d / 2, oz = ax ? o.z : o.x, t = (ax ? o.d : o.w) / 2;
+      if (Math.abs(oz - z) <= t + 40) cov += Math.max(0, Math.min(x1, ox1) - Math.max(x0, ox0));
+    }
+    return cov >= (x1 - x0) * 0.3;
+  };
+  return [along(r.x0, r.x1, r.z0, true), along(r.x0, r.x1, r.z1, true), along(r.z0, r.z1, r.x0, false), along(r.z0, r.z1, r.x1, false)].filter(Boolean).length >= 2;
+}
+
+/**
  * Edges of the floor plates above ground that nothing closes: no wall, railing, parapet, window or column stands on
- * them, no floor of the storey above covers them (then they face a room or a balcony under a balcony), no plate of
- * the same level continues past them, and no stair runs through the opening beyond. A person could walk off such an
- * edge, so a building has a parapet or railing there.
+ * them, no plate of the same level continues past them, and no stair runs through the opening beyond. A floor above
+ * makes no difference: a balcony under a balcony needs its railing as much. A person could walk off such an edge, so
+ * a building has a parapet or railing there.
  */
 export function openSlabEdges(objects: ModelObject[], floor: string): OpenEdge[] {
   const boxes = objects.filter(isBox);
@@ -68,15 +86,13 @@ export function openSlabEdges(objects: ModelObject[], floor: string): OpenEdge[]
     // what stands on this level: rises at least 25 cm above the plate (a 30 cm curb counts)
     const standing = boxes.filter(o => o.layer !== 'slab' && o.y < top + 30 && o.y + o.h > top + 25 && !o.stair && o.layer !== 'stair').map(o => ({ r: rect(o), o }));
     const level = allPlates.filter(q => q !== p && Math.abs(q.y + q.h - top) <= 30).map(rect);
-    const over = allPlates.filter(q => q.y > top + 50).map(rect);
     const inR = (x: number, z: number, q: Rect, m = 0) => x > q.x0 - m && x < q.x1 + m && z > q.z0 - m && z < q.z1 + m;
     for (const side of ['x0', 'x1', 'z0', 'z1'] as const) {
       const alongX = side[0] === 'z', at = r[side], dir: 1 | -1 = side.endsWith('0') ? -1 : 1, lo = alongX ? r.x0 : r.z0, hi = alongX ? r.x1 : r.z1;
       const free: number[] = [];
       for (let u = lo + 5; u < hi; u += 10) {
         const ex = alongX ? u : at, ez = alongX ? at : u, ox = alongX ? u : at + dir * 15, oz = alongX ? at + dir * 15 : u;
-        if (level.some(q => inR(ox, oz, q) || inR(alongX ? u : at + dir * 40, alongX ? at + dir * 40 : u, q) || inR(alongX ? u : at + dir * 65, alongX ? at + dir * 65 : u, q))) continue; // the plate goes on (or a slit between two pieces)
-        if (over.some(q => inR(ex, ez, q, 5))) continue;                   // a floor above: a room or a covered balcony edge
+        if (level.some(q => [5, 15, 40, 65].some(g => inR(alongX ? u : at + dir * g, alongX ? at + dir * g : u, q)))) continue; // the plate goes on (a thin strip, or a slit between two pieces)
         if (stairs.some(q => inR(ox, oz, q, 30))) continue;                // the stair opening
         if (standing.some(s => inR(ex, ez, s.r, 25))) continue;            // a wall, railing, parapet or column on the edge
         if (doors.some(d => (d.axis === 'x') === alongX && Math.abs(d.at - at) <= 25 && u >= d.a - 5 && u <= d.b + 5)) continue;
@@ -85,7 +101,7 @@ export function openSlabEdges(objects: ModelObject[], floor: string): OpenEdge[]
       for (let i = 0; i < free.length;) {
         let j = i;
         while (j + 1 < free.length && free[j + 1] - free[j] < 15) j++;
-        if (free[j] - free[i] + 10 >= 60) out.push({ floor, alongX, at, lo: free[i] - 5, hi: free[j] + 5, out: dir, top });
+        if (free[j] - free[i] + 10 >= 60) out.push({ floor, alongX, at, lo: free[i] - 5, hi: free[j] + 5, out: dir, top, plate: p });
         i = j + 1;
       }
     }
@@ -194,9 +210,17 @@ export function checkModel(objects: ModelObject[], floors: CadFloor[] | undefine
     const cover = slabs.find(o => o.floor === nx && overlap(rc(o), rc(s), -5) > 0 && Math.abs(o.y - fn.y) <= 30);
     if (cover) out.push({ kind: 'STAIR-COVER', sev: 'warn', floor: s.floor, ids: [s.id, cover.id], text: `樓梯最上面的踏階被上一層樓板蓋住（沒有樓梯開口）：${where(s)}` });
   }
-  // 9. an open plate edge above ground with nothing to stop a person walking off it
+  // 9. an open plate edge above ground with nothing to stop a person walking off it (the very top of a rooftop
+  // structure only has its 30 cm curb where it roofs a room; a slab piece up there on its own needs nothing)
+  const hasRoofStruct = F.some(f => /^R\d+F$/.test(f.key));
   for (const f of F) {
+    const topF = hasRoofStruct && f === F[F.length - 1];
+    let j = F.indexOf(f) - 1;
+    while (j > 0 && /MF$/.test(F[j].key)) j--;
+    const lower = j >= 0 ? F[j] : undefined;
+    const lowWalls = lower ? boxes.filter(o => o.floor === lower.key && o.layer === 'wall' && o.h >= lower.h * 0.6) : [];
     for (const e of openSlabEdges(objects, f.key)) {
+      if (topF && !wallsOnTwoSides(e.plate, lowWalls)) continue;
       const len = Math.round(e.hi - e.lo), cx = e.alongX ? (e.lo + e.hi) / 2 : e.at, cz = e.alongX ? e.at : (e.lo + e.hi) / 2;
       out.push({ kind: 'SLAB-EDGE', sev: 'warn', floor: f.key, at: [cx, cz], text: `樓板邊緣沒有牆、女兒牆或欄杆（${len} cm 開放的板邊，可能掉下去）：${Math.round(cx)},${Math.round(cz)}` });
     }
