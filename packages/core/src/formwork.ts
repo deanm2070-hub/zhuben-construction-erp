@@ -11,6 +11,8 @@ import { isBox, type BoxObject, type CadData, type ModelObject } from './types';
  */
 export interface FormworkRow {
   fl: string; mark: string; no: number;
+  /** the panel on the plan, cm */
+  x0: number; x1: number; z0: number; z1: number;
   area: number; areaExpr: string;
   edge: number; edgeExpr: string;
   wall: number; wallExpr: string;
@@ -115,7 +117,7 @@ export function computeFormwork(objects: ModelObject[], cad: CadData, slabT: num
       // a column sits on the panel corner: only the part inside counts, so a sliver is nothing
       const cut = -(r2(wall) + r2(col));
       const row: FormworkRow = {
-        fl, mark: p.mark, no: 0,
+        fl, mark: p.mark, no: 0, x0: p.x0, x1: p.x1, z0: p.z0, z1: p.z1,
         area: r2(area), areaExpr: isF ? '' : `${m(w)}*${m(d)}`,
         edge: r2(edge), edgeExpr: edgeTerms.join(' + '),
         wall: -r2(wall), wallExpr: wallTerms.join(' + '),

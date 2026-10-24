@@ -87,6 +87,10 @@ describe('analyzeBuilding', () => {
     expect(conc.some(c => c.where === '樓板' && /面積 [\d.]+ ㎡ × 厚 0.15 m/.test(c.expr))).toBe(true);
     expect(t.budget.find(b => b.name === CONCRETE)?.q).toBeCloseTo(conc.reduce((s, c) => s + c.q, 0), 1);
     expect(t.calc.find(c => c.item === '欄杆 H=110cm')?.q).toBeCloseTo(5.6, 1);
+    // each storey gets a plan for the mason report, rooms numbered like the 位置 column
+    expect(t.plans!.mason.map(p => p.fl)).toEqual(['2F', '1F']);
+    expect(t.plans!.mason[0].svg).toContain('<rect');
+    expect(t.plans!.mason[0].nos).toEqual({ 陽台: 1, 客廳: 2 });
   });
 
   it('turns the thin edge of a balcony into a railing', () => {

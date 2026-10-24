@@ -4,7 +4,7 @@ import { Materials } from './Materials';
 import { saveMaterials } from '../lib/materials';
 import { useState } from 'react';
 import { download } from '../lib/files';
-import { formworkCells, reportWorkbook } from '../lib/report';
+import { formworkCells, plansHtml, reportWorkbook } from '../lib/report';
 
 const f2 = (v: number | string | undefined) => typeof v === 'number' ? v.toLocaleString(undefined, { maximumFractionDigits: 2 }) : v ?? '';
 const r2 = (v: number) => Math.round(v * 100) / 100;
@@ -21,7 +21,7 @@ function toTsv(t: T, tab: string) {
     return [['樓層', ...REBAR_KINDS, '合計'].join('\t'), ...[...byFloor].map(([f, v]) => [f, ...REBAR_KINDS.map(k => r2(v[k])), r2(v.合計)].join('\t')), '', '號數\t總長(m)\t單位重(kg/m)\t重量(kg)', ...bySize.map(([z, v]) => `#${z}\t${r2(v.len)}\t${REBAR_STD.kg[z]}\t${r2(v.kg)}`)].join('\n');
   }
   if (tab === 'formwork' && t.formwork) return ['棟別\t樓層\t版編號\t版內編\t原始模板\t計算式\t封模\t計算式\t扣版牆接頭\t計算式\t扣柱頭\t計算式\t扣接頭合計\t真實模板', ...formworkCells(t.formwork).map(r => r.join('\t'))].join('\n');
-  if (tab === 'mason') return masonReport(t.calc).flatMap(it => [it.title, '樓層\t位置\t計算式\t數量\t單位', ...masonCells(it).map(r => r.join('\t')), '']).join('\n');
+  if (tab === 'mason') return masonReport(t.calc, undefined, t.plans?.mason).flatMap(it => [it.title, '樓層\t位置\t計算式\t數量\t單位', ...masonCells(it).map(r => r.join('\t')), '']).join('\n');
   if (tab === 'calc') return ['工程項目\t樓層\t位置\t計算式\t數量\t單位', ...t.calc.map(c => `${c.item}\t${c.fl}\t${c.where}\t${c.expr}\t${c.q}\t${c.unit}`)].join('\n');
   return ['空間\t面積㎡\t坪\t地坪\t天花\t牆面', ...t.rooms.map(r => `${r.name}\t${r2(r.area)}\t${r2(r.area / PING)}\t${r.fin.f}\t${r.fin.c}\t${r.fin.w}`)].join('\n');
 }
@@ -173,7 +173,8 @@ export function Takeoff({ takeoff: t, pb, pricing, project, subtitle, settings, 
         </table></div>
         {(t.rebar!.standard?.length ?? 0) > 0 && <p className="note">沒有配筋圖的構件：{t.rebar!.standard!.join('、')}；依標準圖（樓梯、樓板、S0-07 牆）與規範最少配筋（梁 As,min、柱 1%）逐支計算，含搭接、彎鉤、錨定。匯入結構配筋圖後會自動改用圖上配筋。</p>}
       </>}
-      {tab === 'mason' && (masonReport(t.calc).map(it => (
+      {tab === 'mason' && !!t.plans?.mason.length && <details><summary><b>各層平面圖（空間編號對應下表「位置」）</b></summary><div dangerouslySetInnerHTML={{ __html: plansHtml(t.plans.mason) }} /></details>}
+      {tab === 'mason' && (masonReport(t.calc, undefined, t.plans?.mason).map(it => (
         <div key={it.key}>
           <h3 style={{ margin: '14px 0 4px' }}>{it.title}</h3>
           {it.note && <p className="note">{it.note}</p>}
@@ -190,6 +191,7 @@ export function Takeoff({ takeoff: t, pb, pricing, project, subtitle, settings, 
           <tbody>{formworkCells(t.formwork).map((r, i) => <tr key={i} className={r[2] === '樓層小計' || r[0] === '合計' ? 'total' : ''}>{r.map((v, j) => <td key={j} className={j >= 4 && ![5, 7, 9, 11].includes(j) ? 'num' : ''}>{v}</td>)}</tr>)}</tbody>
         </table></div>
         <p className="note">{t.formwork.note.join(' ')}</p>
+        {!!t.plans?.formwork.length && <div dangerouslySetInnerHTML={{ __html: plansHtml(t.plans.formwork) }} />}
       </>}
       {tab === 'rebarSum' && <>
         <div className="tbl"><table>

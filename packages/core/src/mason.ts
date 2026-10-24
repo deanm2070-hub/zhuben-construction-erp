@@ -38,7 +38,8 @@ const RULES: Rule[] = [
   { key: 'floorScreed', title: '地坪整體粉光（金鋼砂）', test: c => isFloor(c) && !tile(c) },
 ];
 
-export function masonReport(calc: CalcRow[], floorOrder?: string[]): MasonItem[] {
+export function masonReport(calc: CalcRow[], floorOrder?: string[], plans?: { fl: string; nos?: Record<string, number> }[]): MasonItem[] {
+  const noOf = (fl: string, room: string) => plans?.find(p => p.fl === fl)?.nos?.[room.replace(/（梁）$/, '')];
   const order = floorOrder || [...new Set(calc.map(c => c.fl))];
   const rank = (fl: string) => { const i = order.indexOf(fl); return i < 0 ? 999 : i; };
   const out: MasonItem[] = [];
@@ -46,7 +47,7 @@ export function masonReport(calc: CalcRow[], floorOrder?: string[]): MasonItem[]
   for (const rule of RULES) {
     const rows = calc.filter(rule.test);
     if (!rows.length) continue;
-    const lines = rows.map(c => ({ fl: c.fl, where: roomOf(c.where, c.fl), expr: c.expr, q: c.q })).sort((a, b) => rank(a.fl) - rank(b.fl));
+    const lines = rows.map(c => ({ fl: c.fl, where: (n => n ? `${n}. ${roomOf(c.where, c.fl)}` : roomOf(c.where, c.fl))(noOf(c.fl, roomOf(c.where, c.fl))), expr: c.expr, q: c.q })).sort((a, b) => rank(a.fl) - rank(b.fl));
     const floors: { fl: string; q: number }[] = [];
     for (const l of lines) { const f = floors.find(x => x.fl === l.fl); if (f) f.q = r2(f.q + l.q); else floors.push({ fl: l.fl, q: l.q }); }
     out.push({ key: rule.key, title: rule.title, unit: '㎡', ...(rule.note ? { note: rule.note } : {}), lines, floors, total: r2(lines.reduce((s, l) => s + l.q, 0)) });

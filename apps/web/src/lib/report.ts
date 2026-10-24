@@ -37,6 +37,10 @@ function table(head: string[], rows: string[], cls = '') {
 const td = (v: unknown, num = false) => `<td${num ? ' class="num"' : ''}>${typeof v === 'number' ? n2(v) : esc(v)}</td>`;
 
 /** 模板報表 as rows of cells in the report's layout: 棟別 樓層 版編號 版內編 | 原始模板 計算式 封模 計算式 扣版牆接頭 計算式 扣柱頭 計算式 扣接頭合計 真實模板 */
+/** plan drawings as report figures */
+export const plansHtml = (sheets: { title: string; svg: string }[] | undefined) =>
+  (sheets || []).map(p => `<figure style="margin:12px 0;page-break-inside:avoid"><figcaption><b>${esc(p.title)}</b></figcaption>${p.svg}</figure>`).join('');
+
 export function formworkCells(f: FormworkReport): (string | number)[][] {
   const out: (string | number)[][] = [];
   const z = (v: number) => v.toFixed(2);
@@ -106,9 +110,9 @@ function section(key: ReportKey, c: ReportCtx): string {
     return table(['樓層', '構件', '編號', '位置', '號數', '單支長 m', '支數', '總長 m', '重量 kg'], rb.map(r => `<tr>${td(r.fl)}${td(r.kind)}${td(r.mark)}${td(r.part)}${td(`#${r.s}`)}${td(r.len / 100, true)}${td(r.n, true)}${td(r2(r.len * r.n / 100), true)}${td(r.kg, true)}</tr>`));
   }
   if (key === 'mason') {
-    const its = masonReport(t.calc);
+    const its = masonReport(t.calc, undefined, t.plans?.mason);
     if (!its.length) return '<p class="muted">沒有泥作項目。</p>';
-    return its.map(it => `<h3>${esc(it.title)}</h3>${it.note ? `<p class="muted">${esc(it.note)}</p>` : ''}<table><thead><tr><th>樓層</th><th>位置</th><th>計算式</th><th class="num">數量</th><th>單位</th></tr></thead><tbody>${masonCells(it).map(r => `<tr${r[1] === '樓層小計' || /合計$/.test(String(r[1])) ? ' class="sec"' : ''}>${r.map((v, i) => `<td${i === 3 ? ' class="num"' : ''}>${esc(v)}</td>`).join('')}</tr>`).join('')}</tbody></table>`).join('');
+    return `<h3>各層平面圖（空間編號對應表中「位置」）</h3>${plansHtml(t.plans?.mason)}` + its.map(it => `<h3>${esc(it.title)}</h3>${it.note ? `<p class="muted">${esc(it.note)}</p>` : ''}<table><thead><tr><th>樓層</th><th>位置</th><th>計算式</th><th class="num">數量</th><th>單位</th></tr></thead><tbody>${masonCells(it).map(r => `<tr${r[1] === '樓層小計' || /合計$/.test(String(r[1])) ? ' class="sec"' : ''}>${r.map((v, i) => `<td${i === 3 ? ' class="num"' : ''}>${esc(v)}</td>`).join('')}</tr>`).join('')}</tbody></table>`).join('');
   }
   if (key === 'formwork') {
     const f = t.formwork;
@@ -117,7 +121,7 @@ function section(key: ReportKey, c: ReportCtx): string {
       const sub = r[2] === '樓層小計' || r[0] === '合計';
       return `<tr${sub ? ' class="sec"' : ''}>${r.map((v, i) => `<td${i >= 4 && ![5, 7, 9, 11].includes(i) ? ' class="num"' : ''}>${esc(v)}</td>`).join('')}</tr>`;
     });
-    return `<table><thead><tr><th rowspan="2">棟別</th><th rowspan="2">樓層</th><th rowspan="2">版編號</th><th rowspan="2">版內編</th><th colspan="10">版　明　細</th></tr><tr>${FORMWORK_HEAD.slice(4).map(h => `<th>${h}</th>`).join('')}</tr></thead><tbody>${rows.join('')}</tbody></table><p class="muted">${esc(f.note.join(' '))}</p>`;
+    return `<table><thead><tr><th rowspan="2">棟別</th><th rowspan="2">樓層</th><th rowspan="2">版編號</th><th rowspan="2">版內編</th><th colspan="10">版　明　細</th></tr><tr>${FORMWORK_HEAD.slice(4).map(h => `<th>${h}</th>`).join('')}</tr></thead><tbody>${rows.join('')}</tbody></table><p class="muted">${esc(f.note.join(' '))}</p>${plansHtml(t.plans?.formwork)}`;
   }
   if (key === 'rebarSum') {
     const rb = t.rebar?.rows || [];
@@ -237,7 +241,7 @@ export function reportWorkbook(keys: ReportKey[], c: ReportCtx) {
       ws = sheet(rows, [6, 7, 12, 18, 5, 9, 6, 9, 9, 10, 90]);
     } else if (k === 'mason') {
       const rows: Cell[][] = [[`${c.project}  泥作報表`]];
-      for (const it of masonReport(t.calc)) {
+      for (const it of masonReport(t.calc, undefined, t.plans?.mason)) {
         rows.push([], [it.title], ...(it.note ? [[it.note]] : []), ['樓層', '位置', '計算式', '數量', '單位'], ...masonCells(it).map(r => r.map((v, i) => i === 3 ? +v : v)));
       }
       ws = sheet(rows, [8, 34, 70, 11, 6]);

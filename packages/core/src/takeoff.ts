@@ -2,6 +2,7 @@ import { computeFormwork, type FormworkReport } from './formwork';
 import { BUDGET_TEMPLATE, covers, type TemplateItem } from './budgetTemplate';
 import { materialFor, materialItems, materialsOf, sectionOf } from './materials';
 import { computeRebar, type RebarKind, type RebarRow } from './rebar';
+import { formworkPlans, masonPlans, type PlanSheet } from './reportPlan';
 import { roomMap, type RoomLabel, type RoomStat } from './rooms';
 import { WALL_H } from './sample';
 import { isBox, isDoor, type BoxObject, type Bounds, type CadData, type CadDoor, type DoorObject, type FinishChoice, type ModelObject, type RoomRect, type TakeoffSettings } from './types';
@@ -56,6 +57,10 @@ export interface Takeoff {
   budget: BudgetLine[]; groups: FinishGroup[]; rooms: RoomWithFinish[]; calc: CalcRow[]; floorArea: number; wallH: number;
   /** area of the floor slabs (ground slab and floors, not the roof), ㎡ */
   slabArea?: number;
+  /** the rooms of each storey as rows of 20 cm cells [z, x0, x1], for the plan drawings of the reports */
+  roomRuns?: { fl: string; name: string; runs: number[][] }[];
+  /** plan drawings that show where each line of the formwork and mason reports sits */
+  plans?: { formwork: PlanSheet[]; mason: PlanSheet[] };
   /** bar list from the reinforcement drawings, and the members whose schedule was not found */
   rebar?: { rows: RebarRow[]; missing: string[]; standard?: string[] };
   /** 模板報表 by slab panel (whole-building imports) */
@@ -469,7 +474,21 @@ export function computeTakeoff(inp: TakeoffInput): Takeoff {
   row(SEC.bath, '明鏡', '面', '浴廁', bathNote, basins);
   row(SEC.bath, '馬桶(座式)', '組', '浴廁', bathNote, wc);
   for (const t of ['水電工程', '弱電工程', '消防工程']) row(SEC.mep, t, '坪', '室內', `樓地板面積 ${r2(floorArea)} ㎡ ÷ 3.3058（依設備圖確認）`, floorArea / PING);
-  return { budget: budgetOf(calc, fl, materialItems(mats)), groups: G, rooms, calc, floorArea, wallH: H, slabArea: r2(slabArea), ...(rebar ? { rebar } : {}) };
+  // the rooms as rows of cells, only when a storey of a whole building is measured
+  let roomRuns: Takeoff['roomRuns'];
+  if (S.floor) {
+    const STEP = 20, byName = new Map<string, number[][]>();
+    for (let z = STEP / 2; z < bounds.D; z += STEP) {
+      let cur: number[] | null = null, curName: string | null = null;
+      for (let x = STEP / 2; x <= bounds.W + STEP / 2; x += STEP) {
+        const n = x < bounds.W ? map.at(x, z) : null;
+        if (cur && n !== curName) { cur[2] = x - STEP / 2; (byName.get(curName!) || byName.set(curName!, []).get(curName!)!).push(cur); cur = null; }
+        if (!cur && n) { cur = [z - STEP / 2, x - STEP / 2, 0]; curName = n; }
+      }
+    }
+    roomRuns = [...byName].map(([name, runs]) => ({ fl: S.floor!, name, runs }));
+  }
+  return { budget: budgetOf(calc, fl, materialItems(mats)), groups: G, rooms, calc, floorArea, wallH: H, slabArea: r2(slabArea), ...(roomRuns ? { roomRuns } : {}), ...(rebar ? { rebar } : {}) };
 }
 
 /** Budget lines from calculation rows, in the template's section order; door and window types lead their section. */
@@ -554,6 +573,7 @@ export function computeBuildingTakeoff(objects: ModelObject[], cad: CadData, fin
   return {
     ...(rebar ? { rebar } : {}),
     ...(formwork ? { formwork } : {}),
+    plans: { formwork: formwork ? formworkPlans(objects, formwork) : [], mason: masonPlans(objects, parts.flatMap(p => p.roomRuns || []), floors.map(f => f.key)) },
     budget: budgetOf(calc, undefined, materialItems(materialsOf(settings.materials))),
     groups: [...groups.values()],
     rooms: parts.flatMap(p => p.rooms),

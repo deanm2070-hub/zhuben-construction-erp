@@ -21,3 +21,4 @@ export * from './sanity';
 export * from './structure';
 export * from './formwork';
 export * from './mason';
+export * from './reportPlan';

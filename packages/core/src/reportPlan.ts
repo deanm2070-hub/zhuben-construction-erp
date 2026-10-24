@@ -1,0 +1,85 @@
+import type { FormworkReport } from './formwork';
+import { isBox, type BoxObject, type ModelObject } from './types';
+
+/** a storey drawn as an SVG, with its labels matching the lines of a report; nos = the numbers given to rooms (mason) */
+export interface PlanSheet { fl: string; title: string; svg: string; nos?: Record<string, number> }
+
+const esc = (s: string) => s.replace(/[&<>"]/g, c => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;' }[c]!));
+const PALETTE = ['#cfe3ff', '#ffe3c2', '#d6f0d2', '#f5d0e6', '#e3dcff', '#fff2b3', '#c9f0f0', '#f3d6c9'];
+
+/** the structure drawn under the labels: columns dark, RC walls grey, beams outlined, light partitions thin */
+function base(objects: ModelObject[], fl: string) {
+  const out: string[] = [];
+  let x0 = Infinity, x1 = -Infinity, z0 = Infinity, z1 = -Infinity;
+  const grow = (a: number, b: number, c: number, d: number) => { x0 = Math.min(x0, a); x1 = Math.max(x1, b); z0 = Math.min(z0, c); z1 = Math.max(z1, d); };
+  const boxes = objects.filter(isBox).filter((o): o is BoxObject => o.floor === fl && !o.rot);
+  for (const o of boxes) {
+    const rc = o.rc?.kind, wall = o.layer === 'wall' && o.y < 150 && o.h >= 100 && !/欄杆|門楣|窗/.test(o.name);
+    if (!rc && !wall) continue;
+    const rx = o.x - o.w / 2, rz = o.z - o.d / 2;
+    grow(rx, rx + o.w, rz, rz + o.d);
+    const light = /輕隔間/.test(o.name) || (o.layer === 'wall' && !rc && Math.min(o.w, o.d) < 12);
+    const style = rc === 'column' ? 'fill="#333"' : rc === 'beam' ? 'fill="none" stroke="#999" stroke-width="3" stroke-dasharray="14 8"' : light ? 'fill="#c8c8c8"' : 'fill="#6a6a6a"';
+    out.push(`<rect x="${r(rx)}" y="${r(rz)}" width="${r(o.w)}" height="${r(o.d)}" ${style}/>`);
+  }
+  return { out, x0, x1, z0, z1 };
+}
+const r = (v: number) => Math.round(v * 10) / 10;
+
+function wrap(b: ReturnType<typeof base>, layers: string[], extra: { x0: number; x1: number; z0: number; z1: number }) {
+  const x0 = Math.min(b.x0, extra.x0), x1 = Math.max(b.x1, extra.x1), z0 = Math.min(b.z0, extra.z0), z1 = Math.max(b.z1, extra.z1);
+  if (!isFinite(x0) || !isFinite(z0)) return '';
+  const pad = Math.max(x1 - x0, z1 - z0) * 0.03 + 20;
+  return `<svg xmlns="http://www.w3.org/2000/svg" viewBox="${r(x0 - pad)} ${r(z0 - pad)} ${r(x1 - x0 + 2 * pad)} ${r(z1 - z0 + 2 * pad)}" width="100%" style="max-width:900px;background:#fff;border:1px solid #bbb" font-family="sans-serif">${layers.join('')}</svg>`;
+}
+
+/** formwork plans: every slab panel shaded with its 版內編 number and 版編號, the numbers of the formwork table */
+export function formworkPlans(objects: ModelObject[], fw: FormworkReport): PlanSheet[] {
+  const out: PlanSheet[] = [];
+  for (const f of fw.floors) {
+    if (!f.rows.length) continue;
+    const b = base(objects, f.fl);
+    const ext = { x0: Infinity, x1: -Infinity, z0: Infinity, z1: -Infinity };
+    for (const p of f.rows) { ext.x0 = Math.min(ext.x0, p.x0); ext.x1 = Math.max(ext.x1, p.x1); ext.z0 = Math.min(ext.z0, p.z0); ext.z1 = Math.max(ext.z1, p.z1); }
+    const fs = Math.max(30, Math.min(110, (ext.x1 - ext.x0) / 45));
+    const panels = f.rows.map((p, i) => {
+      const cx = (p.x0 + p.x1) / 2, cz = (p.z0 + p.z1) / 2, small = Math.min(p.x1 - p.x0, p.z1 - p.z0) < fs * 3;
+      const f1 = small ? fs * 0.7 : fs;
+      return `<rect x="${r(p.x0)}" y="${r(p.z0)}" width="${r(p.x1 - p.x0)}" height="${r(p.z1 - p.z0)}" fill="${PALETTE[i % PALETTE.length]}" fill-opacity=".75" stroke="#2b6cb0" stroke-width="3"/>`
+        + `<text x="${r(cx)}" y="${r(cz)}" font-size="${r(f1)}" font-weight="bold" text-anchor="middle" fill="#7a1c1c">${p.no}</text>`
+        + `<text x="${r(cx)}" y="${r(cz + f1 * 1.1)}" font-size="${r(f1 * 0.7)}" text-anchor="middle" fill="#222">${esc(p.mark)}</text>`;
+    });
+    const svg = wrap(b, [...panels, ...b.out], ext);
+    if (svg) out.push({ fl: f.fl, title: f.fl === 'F' ? '基礎層 版平面（紅色數字＝表中的版內編）' : `${f.label}F 版平面（紅色數字＝表中的版內編，下方小字＝版編號）`, svg });
+  }
+  return out;
+}
+
+/** mason plans: every room of a storey shaded, numbered and named like the 位置 column of the mason tables */
+export function masonPlans(objects: ModelObject[], runs: { fl: string; name: string; runs: number[][] }[], order: string[]): PlanSheet[] {
+  const out: PlanSheet[] = [];
+  for (const fl of [...order].reverse()) {
+    const mine = runs.filter(x => x.fl === fl && x.runs.length);
+    if (!mine.length) continue;
+    const b = base(objects, fl), nos: Record<string, number> = {};
+    const ext = { x0: Infinity, x1: -Infinity, z0: Infinity, z1: -Infinity };
+    const shapes: string[] = [], labels: string[] = [];
+    mine.forEach((room, i) => {
+      const plain = room.name.split(`${fl} `).join('');
+      nos[plain] = i + 1;
+      let sx = 0, sz = 0, n = 0;
+      for (const [z, a, c] of room.runs) {
+        shapes.push(`<rect x="${r(a)}" y="${r(z)}" width="${r(c - a)}" height="20.6" fill="${PALETTE[i % PALETTE.length]}"/>`);
+        ext.x0 = Math.min(ext.x0, a); ext.x1 = Math.max(ext.x1, c); ext.z0 = Math.min(ext.z0, z); ext.z1 = Math.max(ext.z1, z + 20);
+        sx += (a + c) / 2 * (c - a); sz += (z + 10) * (c - a); n += c - a;
+      }
+      if (!n) return;
+      const w = room.runs.reduce((m, [, a, c]) => Math.max(m, c - a), 0), fs = Math.max(26, Math.min(70, w / 9));
+      const label = plain.length > 8 ? `${plain.slice(0, 8)}…` : plain;
+      labels.push(`<text x="${r(sx / n)}" y="${r(sz / n)}" font-size="${r(fs * 1.2)}" font-weight="bold" text-anchor="middle" fill="#7a1c1c">${i + 1}</text><text x="${r(sx / n)}" y="${r(sz / n + fs * 1.1)}" font-size="${r(fs)}" text-anchor="middle" fill="#222">${esc(label)}</text>`);
+    });
+    const svg = wrap(b, [...shapes, ...b.out, ...labels], ext);
+    if (svg) out.push({ fl, title: `${fl} 平面（紅色數字＝泥作表「位置」欄的空間編號）`, svg, nos });
+  }
+  return out;
+}
