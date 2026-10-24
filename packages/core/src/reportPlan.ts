@@ -74,9 +74,9 @@ export function masonPlans(objects: ModelObject[], runs: { fl: string; name: str
         sx += (a + c) / 2 * (c - a); sz += (z + 10) * (c - a); n += c - a;
       }
       if (!n) return;
-      const w = room.runs.reduce((m, [, a, c]) => Math.max(m, c - a), 0), fs = Math.max(26, Math.min(70, w / 9));
+      const w = room.runs.reduce((m, [, a, c]) => Math.max(m, c - a), 0), fs = Math.max(20, Math.min(isFinite(b.x0) ? (b.x1 - b.x0) / 26 : 70, w / 9));
       const label = plain.length > 8 ? `${plain.slice(0, 8)}…` : plain;
-      labels.push(`<text x="${r(sx / n)}" y="${r(sz / n)}" font-size="${r(fs * 1.2)}" font-weight="bold" text-anchor="middle" fill="#7a1c1c">${i + 1}</text><text x="${r(sx / n)}" y="${r(sz / n + fs * 1.1)}" font-size="${r(fs)}" text-anchor="middle" fill="#222">${esc(label)}</text>`);
+      labels.push(`<text x="${r(sx / n)}" y="${r(sz / n)}" font-size="${r(fs * 1.2)}" font-weight="bold" text-anchor="middle" fill="#7a1c1c" stroke="#fff" stroke-width="${r(fs / 6)}" paint-order="stroke">${i + 1}</text><text x="${r(sx / n)}" y="${r(sz / n + fs * 1.1)}" font-size="${r(fs)}" text-anchor="middle" fill="#222" stroke="#fff" stroke-width="${r(fs / 6)}" paint-order="stroke">${esc(label)}</text>`);
     });
     // the four facades of the exterior-wall items (外牆粉刷、抿石子…), named like their 位置 in the tables
     if (isFinite(b.x0)) {
