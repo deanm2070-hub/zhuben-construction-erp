@@ -1,7 +1,7 @@
 import { loadMaterials } from '../lib/materials';
 import { checkModel, computeBuildingTakeoff, computeTakeoff, DEFAULT_SETTINGS, learnRoles, materialRates, materialsOf, memberOf, MEMBERS, priceBudget, ROLE_NAME, trackFixes, withPricing, type CalcVersion, type DrawingStyle, type Fix, type FinishChoice, type Issue, type ModelObject, type Pricing, type ProjectInfo, type TakeoffSettings } from '@cloud-modeler/core';
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
-import { DRAW_KINDS, FACADE_SCHEMES, TOOL_HINT, Viewer, type DrawKind, type FixKind, type RenderMode, type SceneKey, type Tool } from '../engine/Viewer';
+import { DRAW_KINDS, FACADE_SCHEMES, SHOWCASE_SCHEME, TOOL_HINT, Viewer, type DrawKind, type FixKind, type LightKey, type RenderMode, type SceneKey, type Tool } from '../engine/Viewer';
 import { download, PROJECT_EXT, projectFile } from '../lib/files';
 import { store, type Role } from '../lib/store';
 import { isStaleChunk } from '../lib/update';
@@ -74,6 +74,10 @@ export function Editor({ projectId, importNow, trial = false, onExit }: { projec
   const [opts, setOpts] = useState(false);
   // exterior tiles of the rendered look, kept in this browser: auto, a scheme number, or none
   const [facade, setFacade] = useState<string>(() => { try { return localStorage.getItem('zb-facade') || 'auto'; } catch { return 'auto'; } });
+  // rendered look: time of day and glass railings (remembered on this device)
+  const [light, setLight] = useState<LightKey>(() => { try { return (localStorage.getItem('zb-light') as LightKey) || 'day'; } catch { return 'day'; } });
+  const [glassRails, setGlassRails] = useState(() => { try { return localStorage.getItem('zb-glassrails') === '1'; } catch { return false; } });
+  const [saving, setSaving] = useState(false);
   // sun study: date (day of the year), solar hour, plan north turned clockwise (degrees), playing through the day
   const [sun, setSun] = useState({ on: false, day: 172, hour: 10, north: 0, play: false, alt: 0, az: 0 });
   const sunTo = (next: Partial<typeof sun>) => setSun(s => {
@@ -196,6 +200,8 @@ export function Editor({ projectId, importNow, trial = false, onExit }: { projec
     });
     viewer.current = v;
     v.facade = facade === 'auto' || facade === 'none' ? facade : +facade;
+    v.light = light;
+    v.glassRails = glassRails;
     let alive = true;
     store.load(projectId).then(p => {
       if (!alive) return;
@@ -266,6 +272,29 @@ export function Editor({ projectId, importNow, trial = false, onExit }: { projec
   const darkNow = typeof window !== 'undefined' && getComputedStyle(document.documentElement).colorScheme.includes('dark');
   const saveLabel = readOnly ? '只能檢視（不會存檔）' : { saved: store.cloud ? '已存到雲端' : '已存在本機', dirty: '尚未儲存', saving: '儲存中…', error: '儲存失敗，稍後重試' }[save];
 
+  const pickFacade = (f: string) => { setFacade(f); try { localStorage.setItem('zb-facade', f); } catch { /* private window */ } v().setFacade(f === 'auto' || f === 'none' ? f : +f); };
+  const pickLight = (l: LightKey) => { setLight(l); try { localStorage.setItem('zb-light', l); } catch { /* private window */ } v().setLight(l); };
+  const pickRails = (on: boolean) => { setGlassRails(on); try { localStorage.setItem('zb-glassrails', on ? '1' : '0'); } catch { /* private window */ } v().setGlassRails(on); };
+  /** 效果圖: the rendered look at blue hour, stone frame and tiles, glass railings, seen from the front */
+  const showcase = () => {
+    if (mode !== 'mat') { v().setMode('mat'); setMode('mat'); }
+    if (facade === 'auto' || facade === 'none') pickFacade(String(SHOWCASE_SCHEME));
+    pickRails(true);
+    pickLight(light === 'day' ? 'dusk' : light);
+    if (labels) { v().setShowLabels(false); setLabels(false); }
+    v().showcaseView();
+    showToast('效果圖：可旋轉、換「黃昏／夜景」，按「儲存效果圖」存成圖片');
+  };
+  const saveImage = async () => {
+    setSaving(true);
+    try {
+      const blob = await v().image(2560);
+      if (!blob) { showToast('這台裝置無法輸出圖片'); return; }
+      const stamp = new Date().toLocaleDateString('sv-SE');
+      await download(`${name || '專案'}-效果圖-${stamp}.png`, blob, 'image/png');
+    } finally { setSaving(false); }
+  };
+
   return (
     <div className="app">
       <div className={`bars ${opts ? 'open' : ''}`}>
@@ -291,13 +320,27 @@ export function Editor({ projectId, importNow, trial = false, onExit }: { projec
             <div className="seg" role="group" aria-label="顯示方式">
               {MODES.map(([k, l]) => <button key={k} className={mode === k ? 'on' : ''} aria-pressed={mode === k} onClick={() => { v().setMode(k); setMode(k); }}>{l}</button>)}
             </div>
-            {mode === 'mat' && <select className="chip sm" aria-label="外牆二丁掛配色" title="自動渲染時外牆貼二丁掛的顏色" value={facade}
-              onChange={e => { const f = e.target.value; setFacade(f); try { localStorage.setItem('zb-facade', f); } catch { /* private window */ } v().setFacade(f === 'auto' || f === 'none' ? f : +f); }}>
-              <option value="auto">外牆二丁掛：自動配色</option>
-              {FACADE_SCHEMES.map((x, i) => <option key={i} value={i}>外牆二丁掛：{x.name}</option>)}
-              <option value="none">外牆不貼磚</option>
-            </select>}
+            <button className={`chip sm showcase ${mode === 'mat' && light !== 'day' ? 'on' : ''}`} title="一鍵切到效果圖：石材框＋磁磚外牆、玻璃欄杆、黃昏天空、室內燈光與崁燈洗牆燈" onClick={showcase}>✨ 效果圖</button>
+
           </div>
+          {mode === 'mat' && <div className="ctlRow wrap">
+            <span className="lbl">效果</span>
+              <select className="chip sm" aria-label="光線" title="效果圖的時段：黃昏、夜景會點亮室內、崁燈與洗牆燈" value={light} onChange={e => pickLight(e.target.value as LightKey)}>
+                <option value="day">日景</option>
+                <option value="dusk">黃昏</option>
+                <option value="night">夜景</option>
+              </select>
+              <select className="chip sm" aria-label="外牆配色" title="自動渲染時外牆的材質與顏色" value={facade} onChange={e => pickFacade(e.target.value)}>
+                <option value="auto">外牆二丁掛：自動配色</option>
+                {FACADE_SCHEMES.map((x, i) => <option key={i} value={i}>{x.frame ? `外牆${x.name}` : `外牆二丁掛：${x.name}`}</option>)}
+                <option value="none">外牆不貼磚</option>
+              </select>
+              <select className="chip sm" aria-label="欄杆" title="陽台欄杆的樣子" value={glassRails ? 'glass' : 'drawn'} onChange={e => pickRails(e.target.value === 'glass')}>
+                <option value="drawn">欄杆：依圖面</option>
+                <option value="glass">欄杆：玻璃</option>
+              </select>
+              <button className="chip sm" disabled={saving} title="把目前畫面存成高解析度圖片（約 2560 像素寬），可以給業主或業者看" onClick={saveImage}>{saving ? '輸出中…' : '儲存效果圖'}</button>
+          </div>}
           <div className="ctlRow">
             <span className="lbl">視角</span>
             <div className="seg" role="group" aria-label="視角">

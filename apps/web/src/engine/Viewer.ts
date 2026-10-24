@@ -9,6 +9,7 @@ import { EffectComposer } from 'three/examples/jsm/postprocessing/EffectComposer
 import { RenderPass } from 'three/examples/jsm/postprocessing/RenderPass.js';
 import { GTAOPass } from 'three/examples/jsm/postprocessing/GTAOPass.js';
 import { OutputPass } from 'three/examples/jsm/postprocessing/OutputPass.js';
+import { UnrealBloomPass } from 'three/examples/jsm/postprocessing/UnrealBloomPass.js';
 
 /** mat: automatic rendering (lit materials, sky, soft shadows); persp: the same look from eye level */
 export type RenderMode = 'mat' | 'persp' | 'layer' | 'white' | 'wire';
@@ -131,6 +132,13 @@ export class Viewer {
   private facadeFaces = new Map<number, number[]>();
   /** sun study: day of the year and solar hour (null: the fixed late-morning sun), plan north rotated by northDeg */
   sunStudy: { day: number; hour: number; northDeg: number } | null = null;
+  /** rendered look's time of day: day, dusk (blue hour) or night; dusk and night light the windows, downlights and wall washers */
+  light: LightKey = 'day';
+  /** rendered look: metal railings shown as glass railings */
+  glassRails = false;
+  private lightGroup = new THREE.Group();
+  private bloom: UnrealBloomPass | null = null;
+  private paving: THREE.Mesh | null = null;
 
   private renderer: THREE.WebGLRenderer;
   private scene = new THREE.Scene();
@@ -139,7 +147,7 @@ export class Viewer {
   private sun = new THREE.DirectionalLight(0xfff4e0, 0.75);
   private hemi = new THREE.HemisphereLight(0xffffff, 0x9aa6b8, 2.2);
   private env: THREE.Texture | null = null;
-  private sky: THREE.Texture | null = null;
+  private skies = new Map<LightKey, THREE.Texture>();
   private groundMesh: THREE.Mesh | null = null;
   /** rendered modes: ambient occlusion and anti-aliasing, drawn whenever the view comes to rest */
   private composer: EffectComposer | null = null;
@@ -199,7 +207,7 @@ export class Viewer {
     this.sun.shadow.mapSize.set(phone ? 1024 : 4096, phone ? 1024 : 4096);
     this.sun.shadow.bias = -0.0004;
     this.sun.shadow.normalBias = 1.5;
-    this.scene.add(this.sun, this.sun.target, this.floorGroup, this.objGroup, this.measGroup, this.helperGroup, this.cadGroup, this.meshGroup);
+    this.scene.add(this.sun, this.sun.target, this.floorGroup, this.objGroup, this.lightGroup, this.measGroup, this.helperGroup, this.cadGroup, this.meshGroup);
     this.buildSampleFloors(SAMPLE_ROOMS);
     this.bindEvents();
     const ro = new ResizeObserver(() => this.resize());
@@ -343,34 +351,26 @@ export class Viewer {
   private get real() { return this.mode === 'mat' || this.mode === 'persp'; }
   /** Lighting, sky and ground for the rendered look; the plain modes keep the flat canvas and grid. */
   private applyLook() {
-    const r = this.real;
+    const r = this.real, L = LIGHTS[r ? this.light : 'day'];
     this.renderer.toneMapping = r ? THREE.ACESFilmicToneMapping : THREE.NoToneMapping;
-    this.renderer.toneMappingExposure = 0.95;
+    this.renderer.toneMappingExposure = L.exposure;
     if (r && !this.env) {
       const pm = new THREE.PMREMGenerator(this.renderer);
       this.env = pm.fromScene(new RoomEnvironment(), 0.04).texture;
       pm.dispose();
     }
-    if (r && !this.sky) {
-      const c = document.createElement('canvas');
-      c.width = 2; c.height = 256;
-      const g = c.getContext('2d')!, grad = g.createLinearGradient(0, 0, 0, 256);
-      grad.addColorStop(0, '#8fb7e3'); grad.addColorStop(0.55, '#d7e6f3'); grad.addColorStop(1, '#eef2f2');
-      g.fillStyle = grad; g.fillRect(0, 0, 2, 256);
-      this.sky = new THREE.CanvasTexture(c);
-      this.sky.colorSpace = THREE.SRGBColorSpace;
-    }
+    let sky = this.skies.get(this.light);
+    if (r && !sky) this.skies.set(this.light, sky = skyTexture(this.light));
     this.scene.environment = r ? this.env : null;
-    this.scene.environmentIntensity = 0.4;
-    this.scene.background = r ? this.sky : cssColor('--canvas');
-    this.hemi.intensity = r ? 0.55 : 2.2;
-    this.hemi.color.setHex(r ? 0xdcebff : 0xffffff);
-    this.hemi.groundColor.setHex(r ? 0x8c8270 : 0x9aa6b8);
-    this.sun.intensity = r ? 2.6 : 2.2;
-    this.sun.color.setHex(r ? 0xfff0d8 : 0xfff4e0);
+    this.scene.environmentIntensity = L.env;
+    this.scene.background = r ? sky! : cssColor('--canvas');
+    this.hemi.intensity = r ? L.hemi : 2.2;
+    this.hemi.color.setHex(r ? L.hemiSky : 0xffffff);
+    this.hemi.groundColor.setHex(r ? L.hemiGround : 0x9aa6b8);
+    this.sun.color.setHex(r ? L.sunColor : 0xfff4e0);
     // the ground fades into the sky at the horizon, like an architectural rendering
     const size = Math.max(this.bounds.W, this.bounds.D, this.height * 1.4);
-    this.scene.fog = r ? new THREE.Fog(0xe4ecf1, size * 4, size * 14) : null;
+    this.scene.fog = r ? new THREE.Fog(L.fog, size * 4, size * 14) : null;
     if (this.grid) this.grid.visible = !r;
     if (r && !this.groundMesh) {
       this.groundMesh = new THREE.Mesh(new THREE.PlaneGeometry(1, 1), new THREE.MeshStandardMaterial({ color: 0xffffff, map: grassTexture(), roughness: 1 }));
@@ -380,19 +380,45 @@ export class Viewer {
       this.scene.add(this.groundMesh);
     }
     if (this.groundMesh) {
-      const gs = Math.max(6000, Math.max(this.bounds.W, this.bounds.D) * 6);
+      const gs = Math.max(6000, Math.max(this.bounds.W, this.bounds.D) * 6), gm = this.groundMesh.material as THREE.MeshStandardMaterial;
       this.groundMesh.scale.set(gs, gs, 1);
-      (this.groundMesh.material as THREE.MeshStandardMaterial).map!.repeat.set(gs / 500, gs / 500);
+      gm.map!.repeat.set(gs / 500, gs / 500);
+      gm.color.setHex(L.lawn);
       this.groundMesh.position.set(this.center.x, -2, this.center.z);
       this.groundMesh.visible = r;
     }
+    // a paved forecourt around the building (stone pavers), the lawn beyond it
+    if (r && !this.paving) {
+      const t = paverTexture();
+      this.paving = new THREE.Mesh(new THREE.PlaneGeometry(1, 1), new THREE.MeshStandardMaterial({ map: t, bumpMap: t, bumpScale: 0.6, roughness: 0.8 }));
+      this.paving.rotation.x = -Math.PI / 2;
+      this.paving.receiveShadow = true;
+      this.paving.raycast = () => {};
+      this.scene.add(this.paving);
+    }
+    if (this.paving) {
+      const pw = this.bounds.W + 800, pd = this.bounds.D + 800, pm = this.paving.material as THREE.MeshStandardMaterial;
+      this.paving.scale.set(pw, pd, 1);
+      pm.map!.repeat.set(pw / 240, pd / 240);
+      pm.color.setHex(L.paving);
+      this.paving.position.set(this.center.x, -1, this.center.z);
+      this.paving.visible = r && !!this.cad;
+    }
+    this.fitSun();
+    this.buildLights();
     this.invalidate();
   }
+  /** rendered look: time of day (日景 / 黃昏 / 夜景) */
+  setLight(l: LightKey) { this.light = l; this.applyLook(); this.rebuild(); }
+  /** rendered look: metal railings as glass railings */
+  setGlassRails(on: boolean) { this.glassRails = on; this.rebuild(); }
   /** physically based look of a part in the rendered modes, by what it is */
   private realMat(o: ModelObject) {
     const L = o.layer, n = o.name || '';
     if (L === 'glass' && !/欄杆/.test(n)) return new THREE.MeshPhysicalMaterial({ color: 0xcfe6f2, roughness: 0.04, metalness: 0.1, transparent: true, opacity: 0.32, depthWrite: false, envMapIntensity: 1.6 });
-    if (L === 'rail' || L === 'glass') return new THREE.MeshStandardMaterial({ color: o.color, roughness: 0.35, metalness: 0.6 });
+    // a glass railing: clear tempered glass with a faint green edge tint
+    if (L === 'glass') return new THREE.MeshPhysicalMaterial({ color: 0xdcefe9, roughness: 0.05, metalness: 0, transparent: true, opacity: 0.26, depthWrite: false, envMapIntensity: 1.8 });
+    if (L === 'rail') return new THREE.MeshStandardMaterial({ color: o.color, roughness: 0.35, metalness: 0.6 });
     if (L === 'door') return new THREE.MeshStandardMaterial({ color: o.color, roughness: 0.55, metalness: 0.05 });
     if (L === 'cabinet' || L === 'furniture') return new THREE.MeshStandardMaterial({ color: o.color, roughness: 0.6 });
     if (L === 'bath') return new THREE.MeshStandardMaterial({ color: o.color, roughness: 0.25, metalness: 0.05 });
@@ -416,7 +442,7 @@ export class Viewer {
   /** the cut applies to the building only: ground, grid and measurements stay whole */
   private applyClip() {
     const planes = this.sectionPlane ? [this.sectionPlane] : null;
-    for (const g of [this.floorGroup, this.objGroup, this.cadGroup, this.meshGroup]) g.traverse(n => {
+    for (const g of [this.floorGroup, this.objGroup, this.cadGroup, this.meshGroup, this.lightGroup]) g.traverse(n => {
       const m = (n as THREE.Mesh).material as THREE.Material | THREE.Material[] | undefined;
       for (const x of m ? (Array.isArray(m) ? m : [m]) : []) if (x.clippingPlanes !== planes) { x.clippingPlanes = planes; x.clipShadows = true; x.needsUpdate = true; }
     });
@@ -575,6 +601,8 @@ export class Viewer {
   }
   /** Windows get an aluminium frame and mullions; glass railings a handrail; railings posts and a top rail. */
   private buildFramed(o: BoxObject): THREE.Object3D | null {
+    // 玻璃欄杆 look: balcony railings (not stair handrails) drawn as glass panes
+    if (o.layer === 'rail' && this.real && this.glassRails && !/扶手/.test(o.name) && o.h >= 60) o = { ...o, layer: 'glass', name: /欄杆/.test(o.name) ? o.name : `${o.name}欄杆` };
     const railing = /欄杆|扶手/.test(o.name);
     if (o.layer !== 'rail' && !(o.layer === 'glass' && (railing || o.h >= 40))) return null;
     const along = o.w >= o.d, L = along ? o.w : o.d, T = along ? o.d : o.w;
@@ -599,8 +627,11 @@ export class Viewer {
     pane.userData.id = o.id;
     g.add(pane);
     if (railing) {
-      g.add(this.part(o, 'rail', metal, L, 5, 6, 0, o.h - 2.5, 0));
-      for (const x of [-L / 2 + 2, L / 2 - 2]) g.add(this.part(o, 'rail', metal, 4, o.h - 5, 4, x, (o.h - 5) / 2, 0));
+      // slim dark top rail, a base channel and end posts
+      const rc = this.real ? 0x2b2e33 : metal;
+      g.add(this.part(o, 'rail', rc, L, 4, 5, 0, o.h - 2, 0));
+      if (this.real) g.add(this.part(o, 'rail', rc, L, 5, 6, 0, 2.5, 0));
+      for (const x of [-L / 2 + 2, L / 2 - 2]) g.add(this.part(o, 'rail', rc, 3, o.h - 4, 3, x, (o.h - 4) / 2, 0));
       return g;
     }
     const f = 5, D = Math.max(6, Math.min(T, 10));
@@ -724,27 +755,107 @@ export class Viewer {
     if (typeof this.facade === 'number') return FACADE_SCHEMES[this.facade % FACADE_SCHEMES.length];
     // auto: chosen from the building's size, so one building keeps its look
     const n = Math.round(this.cad?.W || 0) * 7 + Math.round(this.cad?.D || 0) * 3 + this.objects.length;
-    return FACADE_SCHEMES[n % FACADE_SCHEMES.length];
+    return FACADE_SCHEMES[n % AUTO_SCHEMES];
   }
-  /** rendered look: the outward faces of exterior walls get 二丁掛 tiles (227×60 mm, running bond) */
+  /**
+   * rendered look: the outward faces of exterior walls get 二丁掛 tiles (227×60 mm, running bond); with a stone-frame
+   * scheme the columns, beams and slab edges get stone panels, so the structure reads as a frame around the tiles
+   */
   private tileFaces(m: THREE.Mesh, o: ModelObject) {
     if (!this.real || this.xray || isDoor(o)) return;
     const sc = this.scheme();
     if (!sc) return;
-    const faces = this.exterior().get(o.id);
+    const b = o as BoxObject, frame = !!sc.frame && (b.layer === 'slab' || ['柱', '梁'].includes(memberOf(b)));
+    const faces = b.layer === 'slab' ? (sc.frame ? (this.exterior(), this.slabFaces.get(o.id)) : undefined) : this.exterior().get(o.id);
     if (!faces?.length) return;
-    const b = o as BoxObject, g = m.geometry as THREE.BoxGeometry, uv = g.getAttribute('uv') as THREE.BufferAttribute;
+    const g = m.geometry as THREE.BoxGeometry, uv = g.getAttribute('uv') as THREE.BufferAttribute;
     const base = this.floors.length && b.floor === [...this.floors].sort((p, q) => p.y - q.y)[0].key;
     const accent = base || /女兒牆|欄杆|裝飾板|裝飾柱/.test(b.name);
-    const tile = new THREE.MeshStandardMaterial({ map: tileTexture(accent ? sc.accent : sc.main), roughness: 0.72, metalness: 0 });
+    const look = frame ? stoneLook(sc.frame!) : tileLook(accent ? sc.accent : sc.main);
     const plain = m.material as THREE.Material;
-    m.material = [0, 1, 2, 3, 4, 5].map(f => faces.includes(f) ? tile : plain);
+    m.material = [0, 1, 2, 3, 4, 5].map(f => faces.includes(f) ? look.mat : plain);
     for (const f of faces) {
-      const wid = f < 2 ? b.d : b.w, off = (f < 2 ? b.z - b.d / 2 : b.x - b.w / 2) / TILE_U;
-      for (let k = 4 * f; k < 4 * f + 4; k++) uv.setXY(k, off + uv.getX(k) * wid / TILE_U, (b.y + uv.getY(k) * b.h) / TILE_V);
+      const wid = f < 2 ? b.d : b.w, off = (f < 2 ? b.z - b.d / 2 : b.x - b.w / 2) / look.u;
+      for (let k = 4 * f; k < 4 * f + 4; k++) uv.setXY(k, off + uv.getX(k) * wid / look.u, (b.y + uv.getY(k) * b.h) / look.v);
     }
     uv.needsUpdate = true;
   }
+  /**
+   * dusk and night: warm rooms behind the windows, a downlight in the ceiling outside each window that has a slab
+   * over it (balconies, porches) with its pool of light on the floor, and wall washers at the foot of the ground
+   * storey's outside columns. All drawn as glowing surfaces: no extra lights for the GPU to compute.
+   */
+  private buildLights() {
+    for (const c of this.lightGroup.children.slice()) { this.lightGroup.remove(c); (c as THREE.Mesh).geometry?.dispose(); }
+    if (!this.real || this.light === 'day' || this.xray) return;
+    const outer = this.exterior(), night = this.light === 'night';
+    const shown = this.objects.filter((o): o is BoxObject => isBox(o) && this.shown(o));
+    const slabs = shown.filter(o => o.layer === 'slab' && !o.rot);
+    const inS = (q: BoxObject, x: number, z: number) => Math.abs(x - q.x) < q.w / 2 && Math.abs(z - q.z) < q.d / 2;
+    const add = (m: THREE.Mesh, o: BoxObject) => { m.position.y += this.lift(o.floor); m.raycast = () => {}; this.lightGroup.add(m); };
+    const M = lampMats();
+    let n = 0;
+    for (const o of shown) {
+      const f = this.winFaces.get(o.id);
+      if (f === undefined || ++n > 800) continue;
+      const along = f >= 4, sg = f === 0 || f === 4 ? 1 : -1, nx = along ? 0 : sg, nz = along ? sg : 0, L = along ? o.w : o.d;
+      const yaw = Math.atan2(nx, nz), hash = (Math.imul(o.id, 2654435761) >>> 0) % 100;
+      // the room behind the glass: lit (most of them) or dark
+      const room = new THREE.Mesh(new THREE.PlaneGeometry(Math.max(10, L - 6), Math.max(10, o.h - 6)), hash < (night ? 82 : 72) ? M.rooms[hash % M.rooms.length] : M.dark);
+      room.position.set(o.x - nx * 35, o.y + o.h / 2, o.z - nz * 35);
+      room.rotation.y = yaw;
+      add(room, o);
+      // a ceiling just outside: a downlight there
+      const px = o.x + nx * 70, pz = o.z + nz * 70, top = o.y + o.h;
+      let ceil = Infinity, floor = -Infinity;
+      for (const q of slabs) {
+        if (!inS(q, px, pz)) continue;
+        if (q.y >= top - 5 && q.y <= top + 150) ceil = Math.min(ceil, q.y);
+        if (q.y + q.h <= o.y + 5 && q.y + q.h >= o.y - 100) floor = Math.max(floor, q.y + q.h);
+      }
+      if (ceil === Infinity) continue;
+      const lamp = new THREE.Mesh(new THREE.CircleGeometry(5, 20), M.lamp);
+      lamp.position.set(px, ceil - 0.4, pz);
+      lamp.rotation.x = Math.PI / 2;
+      add(lamp, o);
+      const halo = new THREE.Mesh(new THREE.PlaneGeometry(70, 70), M.halo);
+      halo.position.set(px, ceil - 0.6, pz);
+      halo.rotation.x = Math.PI / 2;
+      add(halo, o);
+      // the beam: a soft cone of light down the face of the glass and a pool on the floor
+      const hgt = ceil - (floor > -Infinity ? floor : o.y);
+      const beam = new THREE.Mesh(new THREE.PlaneGeometry(150, hgt), M.beam);
+      beam.position.set(px - nx * 52, ceil - hgt / 2, pz - nz * 52);
+      beam.rotation.y = yaw;
+      add(beam, o);
+      if (floor > -Infinity) {
+        const pool = new THREE.Mesh(new THREE.PlaneGeometry(200, 200), M.pool);
+        pool.position.set(px, floor + 0.6, pz);
+        pool.rotation.x = -Math.PI / 2;
+        add(pool, o);
+      }
+    }
+    // wall washers: the outside faces of the ground storey's columns, lit from a small lamp at their foot
+    const lowest = [...this.floors].sort((p, q) => p.y - q.y)[0]?.key;
+    for (const o of shown) {
+      if (o.rot || memberOf(o) !== '柱' || (lowest ? o.floor !== lowest : o.y > 50)) continue;
+      for (const f of outer.get(o.id) || []) {
+        const along = f >= 4, sg = f === 0 || f === 4 ? 1 : -1, nx = along ? 0 : sg, nz = along ? sg : 0, W = along ? o.w : o.d;
+        if (W < 25) continue;
+        const fx = o.x + nx * (o.w / 2 + 0.8), fz = o.z + nz * (o.d / 2 + 0.8), h = Math.min(o.h, 420);
+        const wash = new THREE.Mesh(new THREE.PlaneGeometry(Math.min(W, 140), h), M.wash);
+        wash.position.set(fx, o.y + h / 2, fz);
+        wash.rotation.y = Math.atan2(nx, nz);
+        add(wash, o);
+        const fix = new THREE.Mesh(new THREE.BoxGeometry(10, 6, 10), M.fixture);
+        fix.position.set(fx + nx * 5, o.y + 3, fz + nz * 5);
+        add(fix, o);
+      }
+    }
+  }
+  /** outward edges of the slabs (+x −x +z −z faces), and the outward side of each window */
+  private slabFaces = new Map<number, number[]>();
+  private winFaces = new Map<number, number>();
   /**
    * The faces (BoxGeometry order: +x −x +y −y +z −z) of each wall that look outdoors: a little past the face there
    * is no floor of that storey or the one above, and no other wall. Light partitions are left out.
@@ -756,6 +867,8 @@ export class Viewer {
     this.facadeKey = sig;
     const out = new Map<number, number[]>();
     this.facadeFaces = out;
+    this.slabFaces = new Map();
+    this.winFaces = new Map();
     type R = { x0: number; x1: number; z0: number; z1: number };
     const slabs = new Map<string, R[]>(), walls = new Map<string, BoxObject[]>();
     const boxes = this.objects.filter((o): o is BoxObject => !isDoor(o));
@@ -795,6 +908,36 @@ export class Viewer {
       }
       if (faces.length) out.set(o.id, faces);
     }
+    // windows: the side with the more open air (no floor of this storey or the one above, no wall)
+    for (const o of boxes) {
+      if (o.layer !== 'glass' || /欄杆/.test(o.name) || o.h < 60 || o.rot) continue;
+      const k = o.floor || '', i = order.indexOf(k), up = i >= 0 ? order[i + 1] : undefined;
+      const own = slabs.get(k), above = up ? slabs.get(up) : undefined, along = o.w >= o.d;
+      const score = (sg: number) => {
+        let n = 0;
+        for (const d of [60, 150, 300]) {
+          const x = o.x + (along ? 0 : sg * d), z = o.z + (along ? sg * d : 0);
+          if (!inR(own, x, z) && !inR(above, x, z)) n += 2;
+          else if (!inR(above, x, z)) n += 1;
+          if (inBox(walls.get(k), o, x, z)) n -= 1;
+        }
+        return n;
+      };
+      const p = score(1), q = score(-1);
+      if (p !== q) this.winFaces.set(o.id, along ? (p > q ? 4 : 5) : (p > q ? 0 : 1));
+    }
+    // slab edges with no slab of the same floor just past them
+    for (const o of boxes) {
+      if (o.layer !== 'slab' || o.rot || o.h < 8) continue;
+      const own = slabs.get(o.floor || ''), faces: number[] = [];
+      for (const [f, nx, nz] of [[0, 1, 0], [1, -1, 0], [4, 0, 1], [5, 0, -1]] as const) {
+        const half = nx ? o.w / 2 : o.d / 2, len = nx ? o.d : o.w;
+        let hits = 0;
+        for (const t of [-0.3, 0, 0.3]) if (!inR(own, o.x + nx * (half + 8) + (nz ? t * len : 0), o.z + nz * (half + 8) + (nx ? t * len : 0))) hits++;
+        if (hits >= 2) faces.push(f);
+      }
+      if (faces.length) this.slabFaces.set(o.id, faces);
+    }
     return out;
   }
   setFacade(f: 'auto' | 'none' | number) { this.facade = f; this.rebuild(); this.invalidate(); }
@@ -810,6 +953,7 @@ export class Viewer {
       this.objGroup.add(n);
     }
     this.buildMeshes();
+    this.buildLights();
     this.applyClip();
     const floorTint = (f: THREE.Mesh, base: number) => {
       const mat = f.material as THREE.MeshStandardMaterial;
@@ -965,9 +1109,12 @@ export class Viewer {
       this.sun.position.set(c.x + st.dir.x * 1800 * s, Math.max(0.02, st.dir.y) * 1800 * s, c.z + st.dir.z * 1800 * s);
       this.sun.intensity = st.alt > 0 ? 0.6 + 2.2 * Math.min(1, Math.sin(st.alt) * 1.6) : 0;
     } else {
-      // late-morning sun from the south-east: the south faces lit, the west faces in soft shade, shadows falling back-left in the default view
-      this.sun.position.set(c.x + 1100 * s, 1250 * s, c.z + 900 * s);
-      this.sun.intensity = 2.2;
+      const L = LIGHTS[this.real ? this.light : 'day'];
+      // day: late-morning sun from the south-east: the south faces lit, the west faces in soft shade, shadows falling
+      // back-left in the default view; dusk: the last low light from the west; night: a faint moon high in the south-east
+      if (this.real && this.light === 'dusk') this.sun.position.set(c.x - 1500 * s, 420 * s, c.z + 700 * s);
+      else this.sun.position.set(c.x + 1100 * s, 1250 * s, c.z + 900 * s);
+      this.sun.intensity = this.real ? L.sun : 2.2;
     }
     this.sun.target.position.copy(c);
     Object.assign(this.sun.shadow.camera, { left: -1000 * s, right: 1000 * s, top: 1000 * s, bottom: -1000 * s, near: 100, far: 4000 * s });
@@ -1064,6 +1211,25 @@ export class Viewer {
   }
   private lastScene: SceneKey = 'bird';
   private lastAspect = 0;
+  /** 效果圖 camera: a three-quarter view, from a little above eye level, of the side with the most windows */
+  showcaseView() {
+    this.exitWalk();
+    this.exterior();
+    const area: Record<number, number> = { 0: 0, 1: 0, 4: 0, 5: 0 };
+    for (const o of this.objects) {
+      const f = isBox(o) && this.shown(o) ? this.winFaces.get(o.id) : undefined;
+      if (f !== undefined) area[f] += (f >= 4 ? (o as BoxObject).w : (o as BoxObject).d) * (o as BoxObject).h;
+    }
+    const best = [4, 0, 1, 5].reduce((b, f) => (area[f] > area[b] ? f : b), 4);
+    const nx = best === 0 ? 1 : best === 1 ? -1 : 0, nz = best === 4 ? 1 : best === 5 ? -1 : 0;
+    // 35° off the facade's normal, so the next side shows too
+    const a = 0.62, dx = nx * Math.cos(a) - nz * Math.sin(a), dz = nx * Math.sin(a) + nz * Math.cos(a);
+    const R = Math.max(this.bounds.W, this.bounds.D, this.height);
+    const target = new THREE.Vector3(this.center.x, this.height * 0.4, this.center.z);
+    const to = { pos: new THREE.Vector3(target.x + dx * R * 2, target.y + R * 0.12, target.z + dz * R * 2), target, fov: 35 };
+    this.fitView(to);
+    this.fly = { from: { pos: this.camera.position.clone(), target: this.controls.target.clone(), fov: this.camera.fov }, to, t0: performance.now() };
+  }
   goScene(k: SceneKey, instant = false) {
     this.exitWalk();
     this.lastScene = k;
@@ -1779,17 +1945,42 @@ export class Viewer {
         this.ao.updatePdMaterial({ lumaPhi: 10, depthPhi: 2, normalPhi: 3, radius: 6, rings: 2, samples: 16 });
         this.ao.blendIntensity = 0.85;
         this.composer.addPass(this.ao);
+        // dusk and night: lit windows and lamps glow softly
+        this.bloom = new UnrealBloomPass(new THREE.Vector2(w, h), 0.55, 0.5, 0.9);
+        this.composer.addPass(this.bloom);
         this.composer.addPass(new OutputPass());
         this.composer.setSize(w, h);
       }
       // a section cut is not seen by the occlusion pass: leave it out rather than shade what was cut away
       this.ao!.enabled = !this.sectionPlane && !this.xray;
+      this.bloom!.enabled = this.light !== 'day';
       this.composer.render();
       return true;
     } catch (e) {
       console.warn('finished frame unavailable', e);
       this.composer = null;
       return false;
+    }
+  }
+  /** The current view as a large PNG for presentations: the finished frame (shading, glow) at about `width` pixels across. */
+  async image(width = 2560): Promise<Blob | null> {
+    const w = this.view.clientWidth, h = this.view.clientHeight, pr = this.renderer.getPixelRatio();
+    const k = Math.min(4, Math.max(1, width / Math.max(1, w)));
+    const reset = () => { this.composer?.dispose(); this.ao?.dispose(); this.composer = null; this.ao = null; this.bloom = null; };
+    reset();
+    this.renderer.setPixelRatio(k);
+    this.renderer.setSize(w, h, false);
+    try {
+      this.selBox && (this.selBox.visible = false);
+      if (!this.real || !this.finish()) this.renderer.render(this.scene, this.camera);
+      return await new Promise<Blob | null>(r => this.renderer.domElement.toBlob(r, 'image/png'));
+    } finally {
+      if (this.selBox) this.selBox.visible = true;
+      reset();
+      this.renderer.setPixelRatio(pr);
+      this.renderer.setSize(w, h, false);
+      this.finished = false;
+      this.invalidate();
     }
   }
   /** Small JPEG of the current view for the project list. */
@@ -1919,7 +2110,7 @@ function grassTexture() {
 
 /** one 二丁掛 module: a 22.7 × 6 cm tile and its joint, in cm */
 const TILE_U = 47, TILE_V = 55.2;
-export interface FacadeScheme { name: string; main: string; accent: string }
+export interface FacadeScheme { name: string; main: string; accent: string; frame?: string }
 /** exterior tile schemes: main walls, and the darker (or lighter) accent of the ground storey and parapets */
 export const FACADE_SCHEMES: FacadeScheme[] = [
   { name: '米白＋咖啡', main: '#d9ceb8', accent: '#7c5b45' },
@@ -1927,7 +2118,15 @@ export const FACADE_SCHEMES: FacadeScheme[] = [
   { name: '磚紅＋米白', main: '#a85c45', accent: '#ddd3c1' },
   { name: '奶茶＋深咖', main: '#c8a98a', accent: '#6b4c3b' },
   { name: '深灰＋米白', main: '#6d6d70', accent: '#dad2c4' },
+  // stone frame: columns, beams and slab edges in stone panels, the walls between them in tiles
+  { name: '石材框＋米白磚', main: '#ebe7df', accent: '#ebe7df', frame: '#b9b0a2' },
+  { name: '深灰石框＋米白磚', main: '#e3dccd', accent: '#e3dccd', frame: '#7d7a75' },
+  { name: '米黃石框＋淺灰磚', main: '#cfcdc8', accent: '#cfcdc8', frame: '#d6c7a8' },
 ];
+/** 'auto' picks among the plain tile schemes */
+const AUTO_SCHEMES = 5;
+/** the stone-frame scheme of the 效果圖 preset */
+export const SHOWCASE_SCHEME = 5;
 const tileCache = new Map<string, THREE.Texture>();
 const lookCache = new Map<string, { mat: THREE.MeshStandardMaterial; u: number; v: number }>();
 /** what a finish looks like on a face: a texture and the size in cm one repeat of it covers */
@@ -2021,3 +2220,162 @@ function tileTexture(hex: string) {
   tileCache.set(hex, t);
   return t;
 }
+
+export type LightKey = 'day' | 'dusk' | 'night';
+/** lighting of the rendered look by time of day */
+const LIGHTS: Record<LightKey, { exposure: number; env: number; hemi: number; hemiSky: number; hemiGround: number; sun: number; sunColor: number; fog: number; lawn: number; paving: number }> = {
+  day: { exposure: 0.95, env: 0.4, hemi: 0.55, hemiSky: 0xdcebff, hemiGround: 0x8c8270, sun: 2.6, sunColor: 0xfff0d8, fog: 0xe4ecf1, lawn: 0xffffff, paving: 0xffffff },
+  dusk: { exposure: 1.0, env: 0.35, hemi: 0.75, hemiSky: 0xaab8ee, hemiGround: 0x8a6a50, sun: 0.9, sunColor: 0xffb27a, fog: 0x7d86b5, lawn: 0x8c9a80, paving: 0xd8d4cc },
+  night: { exposure: 1.0, env: 0.12, hemi: 0.38, hemiSky: 0x7084c4, hemiGround: 0x5a4636, sun: 0.25, sunColor: 0xa9bcff, fog: 0x18223f, lawn: 0x6d7864, paving: 0xb8b4ac },
+};
+const rng = (seed: number) => () => (seed = (seed * 16807) % 2147483647) / 2147483647;
+function canvasTex(c: HTMLCanvasElement, srgb = true) {
+  const t = new THREE.CanvasTexture(c);
+  t.wrapS = t.wrapT = THREE.RepeatWrapping;
+  if (srgb) t.colorSpace = THREE.SRGBColorSpace;
+  t.anisotropy = 8;
+  return t;
+}
+/** sky behind the rendered look: gradient, soft clouds; stars at night */
+function skyTexture(l: LightKey) {
+  const c = document.createElement('canvas');
+  c.width = 1024; c.height = 512;
+  const g = c.getContext('2d')!, grad = g.createLinearGradient(0, 0, 0, 512);
+  const stops: [number, string][] = l === 'day' ? [[0, '#7fabdf'], [0.55, '#d0e1f2'], [1, '#eef2f2']]
+    : l === 'dusk' ? [[0, '#16285e'], [0.32, '#2c4a95'], [0.62, '#6676b6'], [0.84, '#c49bb0'], [1, '#efb88f']]
+    : [[0, '#040a1c'], [0.6, '#0c1b42'], [1, '#1f3567']];
+  for (const [o, col] of stops) grad.addColorStop(o, col);
+  g.fillStyle = grad; g.fillRect(0, 0, 1024, 512);
+  const r = rng(l === 'day' ? 5 : l === 'dusk' ? 9 : 13);
+  if (l === 'night') for (let i = 0; i < 90; i++) { g.fillStyle = `rgba(255,255,255,${0.15 + r() * 0.5})`; g.fillRect(r() * 1024, r() * 280, 1.5, 1.5); }
+  const cloud = l === 'day' ? '255,255,255' : l === 'dusk' ? '236,186,200' : '70,90,140';
+  for (let i = 0; i < 34; i++) {
+    const x = r() * 1024, y = 30 + r() * 250, rw = 25 + r() * 60;
+    const cg = g.createRadialGradient(x, y, 0, x, y, rw);
+    cg.addColorStop(0, `rgba(${cloud},${l === 'night' ? 0.2 : 0.32})`); cg.addColorStop(1, `rgba(${cloud},0)`);
+    g.save(); g.translate(x, y); g.scale(1, 0.42); g.translate(-x, -y);
+    g.fillStyle = cg; g.fillRect(x - rw, y - rw, rw * 2, rw * 2);
+    g.restore();
+  }
+  const t = new THREE.CanvasTexture(c);
+  t.colorSpace = THREE.SRGBColorSpace;
+  return t;
+}
+/** light grey stone pavers, 60 cm square: one repeat is 4 × 4 of them (240 cm) */
+function paverTexture() {
+  const c = document.createElement('canvas');
+  c.width = c.height = 512;
+  const g = c.getContext('2d')!, r = rng(3), s = 128;
+  g.fillStyle = '#8f8b84'; g.fillRect(0, 0, 512, 512);
+  for (let i = 0; i < 4; i++) for (let j = 0; j < 4; j++) {
+    const v = 196 + r() * 22;
+    g.fillStyle = `rgb(${v},${v - 3},${v - 9})`;
+    g.fillRect(i * s + 1.5, j * s + 1.5, s - 3, s - 3);
+    for (let k = 0; k < 160; k++) { g.fillStyle = `rgba(${r() < 0.5 ? '255,255,255' : '60,55,50'},${0.05 + r() * 0.08})`; g.fillRect(i * s + r() * s, j * s + r() * s, 2, 2); }
+  }
+  return canvasTex(c);
+}
+/** stone panels (60 × 60 cm, one repeat 120 × 120 cm) with a soft marbled grain */
+function stoneTexture(hex: string) {
+  const c = document.createElement('canvas');
+  c.width = c.height = 512;
+  const g = c.getContext('2d')!, r = rng(17), base = new THREE.Color(hex), s = 256;
+  g.fillStyle = '#' + base.clone().multiplyScalar(0.72).getHexString(); g.fillRect(0, 0, 512, 512);
+  for (let i = 0; i < 2; i++) for (let j = 0; j < 2; j++) {
+    g.save();
+    g.beginPath(); g.rect(i * s + 1.5, j * s + 1.5, s - 3, s - 3); g.clip();
+    g.fillStyle = '#' + base.clone().multiplyScalar(0.94 + r() * 0.1).getHexString();
+    g.fillRect(i * s, j * s, s, s);
+    // swirling veins, light and dark
+    for (let k = 0; k < 70; k++) {
+      g.strokeStyle = `rgba(${r() < 0.55 ? '255,255,255' : '70,62,55'},${0.05 + r() * 0.09})`;
+      g.lineWidth = 0.6 + r() * 2.2;
+      g.beginPath();
+      let x = i * s + r() * s, y = j * s + r() * s;
+      g.moveTo(x, y);
+      for (let q = 0; q < 4; q++) { const nx = x + (r() - 0.5) * 120, ny = y + (r() - 0.5) * 120; g.quadraticCurveTo((x + nx) / 2 + (r() - 0.5) * 60, (y + ny) / 2 + (r() - 0.5) * 60, nx, ny); x = nx; y = ny; }
+      g.stroke();
+    }
+    for (let k = 0; k < 900; k++) { g.fillStyle = `rgba(${r() < 0.5 ? '255,255,255' : '40,36,32'},${0.04 + r() * 0.07})`; g.fillRect(i * s + r() * s, j * s + r() * s, 1.5, 1.5); }
+    g.restore();
+  }
+  return canvasTex(c);
+}
+const looks = new Map<string, { mat: THREE.MeshStandardMaterial; u: number; v: number }>();
+function stoneLook(hex: string) {
+  const k = 'stone' + hex;
+  if (!looks.has(k)) { const t = stoneTexture(hex); looks.set(k, { mat: new THREE.MeshStandardMaterial({ map: t, bumpMap: t, bumpScale: 0.8, roughness: 0.55, metalness: 0 }), u: 120, v: 120 }); }
+  return looks.get(k)!;
+}
+function tileLook(hex: string) {
+  const k = 'tile' + hex;
+  if (!looks.has(k)) { const t = tileTexture(hex); looks.set(k, { mat: new THREE.MeshStandardMaterial({ map: t, bumpMap: t, bumpScale: 0.6, roughness: 0.62, metalness: 0 }), u: TILE_U, v: TILE_V }); }
+  return looks.get(k)!;
+}
+/** a lit room seen through a window: warm ceiling light, curtains at the sides, furniture low down */
+function roomTexture(seed: number) {
+  const c = document.createElement('canvas');
+  c.width = 128; c.height = 256;
+  const g = c.getContext('2d')!, r = rng(seed), warm = 0.85 + r() * 0.3;
+  const grad = g.createLinearGradient(0, 0, 0, 256);
+  grad.addColorStop(0, `rgb(255,${Math.round(226 * warm)},${Math.round(170 * warm)})`);
+  grad.addColorStop(0.55, `rgb(240,${Math.round(170 * warm)},${Math.round(100 * warm)})`);
+  grad.addColorStop(1, '#5e3a20');
+  g.fillStyle = grad; g.fillRect(0, 0, 128, 256);
+  // ceiling downlights
+  for (const x of [32 + r() * 20, 76 + r() * 20]) {
+    const lg = g.createRadialGradient(x, 8, 0, x, 8, 40);
+    lg.addColorStop(0, 'rgba(255,250,235,0.95)'); lg.addColorStop(1, 'rgba(255,240,210,0)');
+    g.fillStyle = lg; g.fillRect(x - 40, 0, 80, 60);
+  }
+  // furniture silhouettes
+  g.fillStyle = 'rgba(70,45,30,0.55)';
+  g.fillRect(10 + r() * 30, 190, 40 + r() * 30, 66);
+  g.fillRect(70 + r() * 20, 210, 30, 46);
+  // sheer curtains, drawn to one or both sides
+  for (const [x0, w] of r() < 0.5 ? [[0, 22], [106, 22]] : [[0, 30 + r() * 20]]) {
+    for (let x = x0; x < x0 + w; x += 4) { g.fillStyle = `rgba(250,236,212,${0.35 + 0.2 * Math.sin(x)})`; g.fillRect(x, 0, 3, 256); }
+  }
+  return canvasTex(c);
+}
+/** soft round glow, white in the middle, gone at the edge */
+function glowTexture(stretch = 1) {
+  const c = document.createElement('canvas');
+  c.width = 128; c.height = Math.round(128 * stretch);
+  const g = c.getContext('2d')!;
+  g.save(); g.scale(1, stretch);
+  const rg = g.createRadialGradient(64, stretch === 1 ? 64 : 128, 0, 64, stretch === 1 ? 64 : 128, 64);
+  rg.addColorStop(0, 'rgba(255,255,255,1)'); rg.addColorStop(0.35, 'rgba(255,255,255,0.45)'); rg.addColorStop(1, 'rgba(255,255,255,0)');
+  g.fillStyle = rg; g.fillRect(0, 0, 128, 128);
+  g.restore();
+  return canvasTex(c, false);
+}
+/** a wall washer's scallop: bright at the lamp (bottom), fanning out and fading upwards */
+function scallopTexture(down = false) {
+  const c = document.createElement('canvas');
+  c.width = 128; c.height = 256;
+  const g = c.getContext('2d')!;
+  for (let y = 0; y < 256; y++) {
+    const t = down ? y / 255 : 1 - y / 255, w = 18 + 46 * Math.sqrt(t), a = Math.pow(1 - t, 1.4) * (0.35 + 0.65 * Math.min(1, t * 12));
+    const lg = g.createLinearGradient(64 - w, 0, 64 + w, 0);
+    lg.addColorStop(0, 'rgba(255,255,255,0)'); lg.addColorStop(0.5, `rgba(255,255,255,${a})`); lg.addColorStop(1, 'rgba(255,255,255,0)');
+    g.fillStyle = lg; g.fillRect(64 - w, y, 2 * w, 1);
+  }
+  return canvasTex(c, false);
+}
+let lampCache: ReturnType<typeof makeLampMats> | null = null;
+function makeLampMats() {
+  const glow = (map: THREE.Texture, color: number, k: number, opacity = 1) => new THREE.MeshBasicMaterial({ map, color: new THREE.Color(color).multiplyScalar(k), transparent: true, opacity, blending: THREE.AdditiveBlending, depthWrite: false, fog: false, side: THREE.DoubleSide });
+  const g = glowTexture();
+  return {
+    rooms: [1, 2, 3, 4, 5, 6].map(i => new THREE.MeshBasicMaterial({ map: roomTexture(i * 31), color: new THREE.Color(1.6, 1.5, 1.4), fog: false })),
+    dark: new THREE.MeshBasicMaterial({ color: 0x15171d }),
+    lamp: new THREE.MeshBasicMaterial({ color: new THREE.Color(4, 3.7, 3.2), fog: false, side: THREE.DoubleSide }),
+    halo: glow(g, 0xffe2b8, 2),
+    pool: glow(g, 0xffcf96, 0.9),
+    beam: glow(scallopTexture(true), 0xffd7a6, 0.55),
+    wash: glow(scallopTexture(), 0xffd29c, 1.3),
+    fixture: new THREE.MeshStandardMaterial({ color: 0x2b2e33, roughness: 0.4, metalness: 0.6 }),
+  };
+}
+function lampMats() { return lampCache || (lampCache = makeLampMats()); }
