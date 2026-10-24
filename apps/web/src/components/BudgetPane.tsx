@@ -1,7 +1,8 @@
 import { carryRates, SEC, type PricedBudget, type PriceRate, type Pricing, type Takeoff } from '@cloud-modeler/core';
 import { useEffect, useState } from 'react';
 import { download } from '../lib/files';
-import { money, printReports, reportHtml, reportWorkbook } from '../lib/report';
+import { PdfButton } from './PdfButton';
+import { money, reportHtml, reportWorkbook } from '../lib/report';
 import { store, type ProjectMeta } from '../lib/store';
 
 const f2 = (v: number) => v.toLocaleString('zh-TW', { maximumFractionDigits: 2 });
@@ -62,7 +63,7 @@ export function BudgetPane({ t, pb, pricing: P, project, projectId, readOnly, on
         <div><h2>預算報價</h2><p className="note">數量由模型自動帶入，報價單範本的工項全部列出，模型算不出的可直接在數量欄填入（模型的數量也可改）；填入材料、工資、機具單價後自動計算複價、管理費、利潤與稅金。單價只要填一次，可帶到其他專案。</p></div>
         <div className="kv">
           <button className="chip" onClick={() => { download(`${project}-預算報價單.xlsx`, reportWorkbook(['quote', 'boq', 'calc'], ctx), XLSX_TYPE); toast('已下載 Excel：報價單保留公式，可在 Excel 改單價'); }}>Excel</button>
-          <button className="chip" onClick={() => printReports(reportHtml(['quote'], ctx))}>PDF／列印</button>
+          <PdfButton html={() => reportHtml(['quote'], ctx)} name={`${project}-預算報價單`} />
         </div>
       </div>
 

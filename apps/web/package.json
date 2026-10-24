@@ -13,6 +13,8 @@
     "@cloud-modeler/core": "0.1.0",
     "@mlightcad/libredwg-web": "0.7.14",
     "@supabase/supabase-js": "2.45.4",
+    "html2canvas": "1.4.1",
+    "jspdf": "2.5.2",
     "openskp": "1.3.0",
     "pdfjs-dist": "4.4.168",
     "react": "18.3.1",

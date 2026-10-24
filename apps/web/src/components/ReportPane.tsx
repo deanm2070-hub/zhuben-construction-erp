@@ -1,6 +1,7 @@
 import { useMemo, useState } from 'react';
 import { download } from '../lib/files';
-import { printReports, REPORTS, reportHtml, reportWorkbook, type ReportCtx, type ReportKey } from '../lib/report';
+import { PdfButton } from './PdfButton';
+import { REPORTS, reportHtml, reportWorkbook, type ReportCtx, type ReportKey } from '../lib/report';
 
 const PRESETS: [string, ReportKey[]][] = [
   ['報價給業主', ['quote']],
@@ -19,10 +20,10 @@ export function ReportPane({ ctx, toast }: { ctx: ReportCtx; toast: (s: string) 
   return (
     <div className="pane">
       <div className="paneHead">
-        <div><h2>報表匯出</h2><p className="note">勾選要輸出的報表：Excel 每份報表一個工作表（報價單保留公式）；PDF 用列印視窗「另存為 PDF」，也可直接列印。</p></div>
+        <div><h2>報表匯出</h2><p className="note">勾選要輸出的報表：Excel 每份報表一個工作表（報價單保留公式）；PDF 在電腦用列印視窗「另存為 PDF」或直接列印，在手機直接做成 PDF 檔儲存或分享。</p></div>
         <div className="kv">
           <button className="chip on" disabled={!keys.length} onClick={() => { download(`${ctx.project}-報表.xlsx`, reportWorkbook(keys, ctx), 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet'); toast(`已下載 Excel（${keys.length} 個工作表）`); }}>下載 Excel</button>
-          <button className="chip key" disabled={!keys.length} onClick={() => printReports(html)}>PDF／列印</button>
+          <PdfButton className="chip key" disabled={!keys.length} html={html} name={`${ctx.project}-報表`} />
         </div>
       </div>
       <div className="kv"><span className="lbl">快速選擇</span>{PRESETS.map(([l, ks]) => <button key={l} className="chip" onClick={() => setSel(new Set(ks))}>{l}</button>)}</div>
