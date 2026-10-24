@@ -647,7 +647,9 @@ export function analyzeBuilding(d: DxfDrawing, defaultH = WALL_H): BuildingAnaly
   const wallSet = new Set(wallLayers);
   let wallSegs = 0;
   for (const g of d.segs) if (wallSet.has(g.layer) || guessLayerKind(g.layer) === 'wall') wallSegs++;
-  if (plans.length && wallSegs < 300) warnings.push(`整份圖只讀到 ${wallSegs} 條牆線，這比較像「面積檢討圖」或示意圖，不是畫有牆、門窗的施工平面圖，所以 3D 會幾乎是空的。請改匯入含牆線與門窗的各層平面圖（常見檔名如「各層平面圖」「平面配置圖」的施工圖版本），或直接把這份圖的樓地板面積當作對帳用。`);
+  const xr = (d.xrefs || []).filter(n => !/圖框|FRAME|TITLE|標題|事務所/i.test(n));
+  if (xr.length) warnings.push(`這份圖引用了外部參考檔（外參名稱：${xr.join('、')}），它們的內容（常是各層平面的牆、軸線、門窗）畫在另一個 DWG 檔裡，不在這個檔內，所以讀不到。請把那個外參 DWG 一起選進來，或在 AutoCAD 用「外部參考→綁定」存成單一檔（也可用 ETRANSMIT 打包）後再匯入。`);
+  else if (plans.length && wallSegs < 300) warnings.push(`整份圖只讀到 ${wallSegs} 條牆線，這比較像「面積檢討圖」或示意圖，不是畫有牆、門窗的施工平面圖，所以 3D 會幾乎是空的。請改匯入含牆線與門窗的各層平面圖（常見檔名如「各層平面圖」「平面配置圖」的施工圖版本），或直接把這份圖的樓地板面積當作對帳用。`);
   checks.push(...gridChecks(d, views, plans, scale));
   const sb = sectionBeams(d, views, storeys, scale);
   if (sb.beams.length) checks.push({ item: '梁（剖面圖）', ok: 'ok', text: `剖面圖讀到 ${sb.beams.length} 處梁的編號與尺寸（${[...new Set(sb.beams.map(b => `${b.mark} ${b.w}×${b.h}`))].slice(0, 8).join('、')}${sb.beams.length > 8 ? ' 等' : ''}），沒有結構圖的樓層依此建梁${sb.beams.some(b => b.foot) ? '與地梁' : ''}${sb.blinding ? `，基礎下 ${sb.blinding} cm PC 墊層` : ''}` });
@@ -3506,6 +3508,7 @@ export function mergeDrawings(ds: DxfDrawing[]): DxfDrawing {
     for (const v of d.texts.map(t => ({ ...t, x: t.x + dx }))) out.texts.push(v);
     for (const v of d.arcs.map(c => ({ ...c, c: mv(c.c), ...(c.p0 ? { p0: mv(c.p0) } : {}), ...(c.p1 ? { p1: mv(c.p1) } : {}) }))) out.arcs.push(v);
     for (const v of (d.dims || []).map(m => ({ ...m, a: mv(m.a), b: mv(m.b) }))) out.dims!.push(v);
+    for (const x of d.xrefs || []) (out.xrefs ??= []).includes(x) || out.xrefs.push(x);
     for (const [l, n] of d.layers) out.layers.set(l, (out.layers.get(l) || 0) + n);
     out.blockCount += d.blockCount; out.inserts += d.inserts;
     out.parts!.push({ x0: at, x1: at + maxX - minX });

@@ -22,6 +22,8 @@ export interface DxfDrawing {
   inserts: number;
   /** linear dimensions: the two measured points and the value (DWG only) */
   dims?: { layer: string; a: Pt; b: Pt; v: number }[];
+  /** external reference files this drawing points at but did not carry (an xref whose own file is not in the set) */
+  xrefs?: string[];
   /** x ranges of the files a merged drawing was put together from */
   parts?: { x0: number; x1: number; name?: string }[];
 }

@@ -75,6 +75,7 @@ export function drawingFromDwg(db: DwgDatabase, version = ''): DxfDrawing {
         out.dims!.push({ layer, a: P(e.subDefinitionPoint1.x, e.subDefinitionPoint1.y), b: P(e.subDefinitionPoint2.x, e.subDefinitionPoint2.y), v });
       } else if (t === 'INSERT' && depth < 6 && e.name) {
         const b = blocks.get(e.name);
+        if (b && ((b as { flags?: number }).flags ?? 0) & 4 && !(b.entities || []).length) { (out.xrefs ??= []).includes(e.name) || out.xrefs.push(e.name); }
         if (b) {
           out.inserts++;
           const r = e.rotation || 0, c = Math.cos(r), sn = Math.sin(r), sx = e.xScale ?? 1, sy = e.yScale ?? 1, ip = e.insertionPoint || { x: 0, y: 0 }, bp = b.basePoint || { x: 0, y: 0 };
