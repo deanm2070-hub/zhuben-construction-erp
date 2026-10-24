@@ -737,7 +737,7 @@ function learnWalls(d: DxfDrawing, plans: SheetView[]): { scale: number; wallLay
   for (const v of plans) for (const sg of d.segs) {
     if (!inBox(v.box, sg.a[0], sg.a[1]) || !inBox(v.box, sg.b[0], sg.b[1])) continue;
     if (isWallLayer(sg.layer)) namedSegs.push(sg);
-    if (guessLayerKind(sg.layer) !== 'line' || /TEXT|AREA|PEN|DIM|圖框|TOIL|DOOR|DW|STAIR|SYM|AID|PAVE|變更|WIN|窗|門|FURN|家具|衛浴|PLUM|FIX|曲線|等高|CONT|TOPO|地形|地界|ROAD|道路/i.test(sg.layer)) continue;
+    if (guessLayerKind(sg.layer) !== 'line' || /TEXT|AREA|PEN|DIM|圖框|CHINESE|SHEET|^999$|FRAME|TITLE|BORDER|TOIL|DOOR|DW|STAIR|SYM|AID|PAVE|變更|WIN|窗|門|FURN|家具|衛浴|PLUM|FIX|曲線|等高|CONT|TOPO|地形|地界|ROAD|道路/i.test(sg.layer)) continue;
     (byLayer.get(sg.layer) || byLayer.set(sg.layer, []).get(sg.layer)!).push(sg);
   }
   const pairedLen = (ss: DxfSeg[], k: number) => pairWalls(ss.map(sg => ({ x1: sg.a[0] * k, z1: sg.a[1] * k, x2: sg.b[0] * k, z2: sg.b[1] * k }))).filter(x => !x.single && x.t >= 8 && x.t <= 40);
@@ -780,7 +780,7 @@ function bridgeLayers(d: DxfDrawing, plans: SheetView[], k: number, walls: strin
   for (const sg of d.segs) {
     if (!inPlans(sg.a[0], sg.a[1]) || !inPlans(sg.b[0], sg.b[1])) continue;
     if (wallSet.has(sg.layer) || guessLayerKind(sg.layer) === 'wall') { anchors.push(sg); continue; }
-    if (colSet.has(sg.layer) || guessLayerKind(sg.layer) !== 'line' || /TEXT|AREA|PEN|DIM|圖框|TOIL|DOOR|DW|STAIR|SYM|AID|PAVE|變更|WIN|窗|門|FURN|家具|衛浴|PLUM|FIX|曲線|等高|CONT|TOPO|地形|地界|ROAD|道路|GRID|AXIS|軸|HAT|欄杆|RAIL/i.test(sg.layer)) continue;
+    if (colSet.has(sg.layer) || guessLayerKind(sg.layer) !== 'line' || /TEXT|AREA|PEN|DIM|圖框|CHINESE|SHEET|^999$|FRAME|TITLE|BORDER|TOIL|DOOR|DW|STAIR|SYM|AID|PAVE|變更|WIN|窗|門|FURN|家具|衛浴|PLUM|FIX|曲線|等高|CONT|TOPO|地形|地界|ROAD|道路|GRID|AXIS|軸|HAT|欄杆|RAIL/i.test(sg.layer)) continue;
     (byLayer.get(sg.layer) || byLayer.set(sg.layer, []).get(sg.layer)!).push(sg);
   }
   for (const p of d.polys) if (colSet.has(p.layer) && p.pts.length && inPlans(p.pts[0][0], p.pts[0][1])) {
