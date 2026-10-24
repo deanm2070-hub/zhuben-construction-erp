@@ -1784,13 +1784,19 @@ export function readSizeTable(d: DxfDrawing): SizeRow[] {
   const SIZE2 = /^(\d+(?:\.\d+)?)\s*[xX×]\s*(\d+(?:\.\d+)?)$/, LIST = /^[A-Za-z][A-Za-z0-9*~,]*$/;
   const rows: SizeRow[] = [];
   for (const t of d.texts) {
-    const s = t.s.trim();
+    let s = t.s.trim(), y = t.y;
     if (!LIST.test(s) || s.length < 2) continue;
     const h = t.h || 12;
-    const sz = d.texts.map(o => ({ o, m: SIZE2.exec(o.s.trim()) })).filter(q => q.m && Math.abs(q.o.y - t.y) <= h * 0.6 && q.o.x > t.x + h * 6 && q.o.x < t.x + h * 60)
-      .sort((p, q) => Math.abs(p.o.y - t.y) - Math.abs(q.o.y - t.y))[0];
+    // a list ending in a comma goes on in the line below ("b101~b105,Cb101," / "Cb103~Cb105"); its size is written between the two
+    if (s.endsWith(',')) {
+      const next = d.texts.filter(o => o !== t && LIST.test(o.s.trim()) && Math.abs(o.x - t.x) < h && t.y - o.y > h * 0.5 && t.y - o.y < h * 3)
+        .sort((p, q) => q.y - p.y)[0];
+      if (next) { s += next.s.trim(); y = (t.y + next.y) / 2; }
+    }
+    const sz = d.texts.map(o => ({ o, m: SIZE2.exec(o.s.trim()) })).filter(q => q.m && Math.abs(q.o.y - y) <= h * 0.6 && q.o.x > t.x + h * 6 && q.o.x < t.x + h * 60)
+      .sort((p, q) => Math.abs(p.o.y - y) - Math.abs(q.o.y - y))[0];
     if (!sz) continue;
-    const parts = s.split(',').map(tok => {
+    const parts = s.split(',').filter(Boolean).map(tok => {
       const star = /^([A-Za-z]+)\*$/.exec(tok), range = /^([A-Za-z]+)(\d+)~(?:[A-Za-z]+)?(\d+)$/.exec(tok);
       if (star) return (c: string) => c.startsWith(star[1]);
       if (range) return (c: string) => { const m = /^([A-Za-z]+)(\d+)$/.exec(c); return !!m && m[1] === range[1] && +m[2] >= +range[2] && +m[2] <= +range[3]; };
@@ -1826,17 +1832,24 @@ function readBeams(d: DxfDrawing, v: SheetView, X: (x: number) => number, Z: (y:
     const L0 = Math.hypot(l.bx - l.ax, l.bz - l.az), e = Math.min(l.t / 2, L0 / 4), fx = (l.bx - l.ax) / L0 * e, fz = (l.bz - l.az) / L0 * e;
     return { ...l, ax: l.ax + fx, az: l.az + fz, bx: l.bx - fx, bz: l.bz - fz };
   });
-  return lines.map(l => {
+  // the mark is written beside the beam, within its length
+  const dist = (l: (typeof lines)[number], m: (typeof marks)[number]) => {
     const len = Math.hypot(l.bx - l.ax, l.bz - l.az), ux = (l.bx - l.ax) / len, uz = (l.bz - l.az) / len;
-    // the mark is written beside the beam, within its length
-    let best: (typeof marks)[number] | null = null, bd = Infinity;
-    for (const m of marks) {
-      const u = (m.x - l.ax) * ux + (m.z - l.az) * uz, off = Math.abs((m.x - l.ax) * uz - (m.z - l.az) * ux);
-      if (u < -60 || u > len + 60 || off > 70 * S + l.t) continue;
-      const dist = off + Math.max(0, -u, u - len);
-      if (dist < bd) { bd = dist; best = m; }
-    }
-    return { ax: l.ax, az: l.az, bx: l.bx, bz: l.bz, len, t: l.t, mark: best };
+    const u = (m.x - l.ax) * ux + (m.z - l.az) * uz, off = Math.abs((m.x - l.ax) * uz - (m.z - l.az) * ux);
+    return u < -60 || u > len + 60 || off > 70 * S + l.t ? Infinity : off + Math.max(0, -u, u - len);
+  };
+  // a mark that sits much closer to another beam (the cantilever CG2 beside the edge beam b101) names that one;
+  // a span with no mark of its own still takes the nearest one (one mark for a beam running over several spans)
+  const own = marks.map(m => Math.min(...lines.map(l => dist(l, m))));
+  return lines.map(l => {
+    const len = Math.hypot(l.bx - l.ax, l.bz - l.az);
+    let best: (typeof marks)[number] | null = null, bd = Infinity, free: (typeof marks)[number] | null = null, fd = Infinity;
+    marks.forEach((m, k) => {
+      const dd = dist(l, m);
+      if (dd < bd) { bd = dd; best = m; }
+      if (dd < fd && dd <= own[k] + 5) { fd = dd; free = m; }
+    });
+    return { ax: l.ax, az: l.az, bx: l.bx, bz: l.bz, len, t: l.t, mark: (free ?? best) as (typeof marks)[number] | null };
   });
 }
 
