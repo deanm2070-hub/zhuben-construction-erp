@@ -1,7 +1,8 @@
 import { useEffect, useState } from 'react';
-import { createAccount, deleteTrialAccount, lineUsed, extend, handleTrialRequest, listProfiles, listTrialRequests, listUsage, newPassword, sendWelcome, type TrialRequest, loadSettings, PLANS, REFERRAL, TRIAL_DAYS, runReminders, saveSetting, sendTestReminder, updateProfile, type Login, type Profile, type UsageDay } from '../lib/account';
+import { adoptReport, createAccount, listReports, setReportStatus, type ProblemReport, deleteTrialAccount, lineUsed, extend, handleTrialRequest, listProfiles, listTrialRequests, listUsage, newPassword, sendWelcome, type TrialRequest, loadSettings, PLANS, REFERRAL, TRIAL_DAYS, runReminders, saveSetting, sendTestReminder, updateProfile, type Login, type Profile, type UsageDay } from '../lib/account';
 import { daysLeft, dueForReminder, REMIND_DAYS, reminderEmail, RENEW_HOW, TRIAL_REMIND_DAYS } from '../lib/reminder';
 import { Modal } from './Modal';
+import { store } from '../lib/store';
 
 const day = (iso: string | null) => (iso ? iso.slice(0, 10) : '');
 const time = (iso: string) => new Date(iso).toLocaleTimeString('zh-TW', { hour: '2-digit', minute: '2-digit', hour12: false });
@@ -19,6 +20,9 @@ export function AdminPage({ selfId, onBack }: { selfId: string; onBack: () => vo
   const [form, setForm] = useState({ email: '', password: '', plan: 'monthly', expires: day(extend(null, 1)), ref: '', mail: true, request: 0, line: '' });
   // null: the trial-request migration (0007) has not been run
   const [requests, setRequests] = useState<TrialRequest[] | null>(null);
+  // null: the problem-report migration (0016) has not been run
+  const [reports, setReports] = useState<ProblemReport[] | null>(null);
+  const [openRep, setOpenRep] = useState<string | null>(null);
   // null: the usage migration (0005) has not been run
   const [usage, setUsage] = useState<{ usage: UsageDay[]; logins: Login[] } | null>(null);
   const [busy, setBusy] = useState(false);
@@ -28,7 +32,7 @@ export function AdminPage({ selfId, onBack }: { selfId: string; onBack: () => vo
   const [settings, setSettings] = useState<Record<string, string> | null>(null);
 
   const refresh = () => listProfiles().then(setList).catch(e => setErr(String(e.message || e)));
-  useEffect(() => { refresh(); loadSettings().then(setSettings); listUsage().then(setUsage); listTrialRequests().then(setRequests); }, []);
+  useEffect(() => { refresh(); loadSettings().then(setSettings); listUsage().then(setUsage); listTrialRequests().then(setRequests); listReports().then(setReports); }, []);
 
   const act = async (f: () => Promise<string>) => {
     setErr(''); setMsg(''); setBusy(true);
@@ -148,6 +152,25 @@ export function AdminPage({ selfId, onBack }: { selfId: string; onBack: () => vo
               <button className="chip ghost" onClick={() => handleTrialRequest(q.id).then(() => listTrialRequests().then(setRequests)).catch(e => setErr(String(e.message || e)))}>略過</button>
             </div>
           ))}
+        </div>}
+
+        {reports && reports.length > 0 && <div className="card">
+          <h3>問題回報（{reports.length}）</h3>
+          <p className="note">使用者在 3D 模型頁按「回報問題」送來的：當時存在雲端的模型、自檢清單、原始圖面和說明。「開啟模型」會複製一份成你自己的專案（不動對方的）；圖面檔可直接下載。</p>
+          {reports.map(r => {
+            const warn = (r.issues || []).filter(i => i.sev === 'warn');
+            const fixed = (r.issues || []).filter(i => i.sev === 'fixed').length;
+            return <div className="kv" key={r.id} style={{ flexWrap: 'wrap' }}>
+              <span style={{ flex: '1 1 100%' }}><b>{r.email}</b>・{r.project_name}・{new Date(r.created_at).toLocaleString('zh-TW')}・v{r.version}{r.status === 'opened' && '・已開啟'}</span>
+              <span style={{ flex: '1 1 100%', whiteSpace: 'pre-wrap' }}>{r.text}</span>
+              <span style={{ flex: '1 1 100%' }} className="note">自檢 {warn.length} 項要看、{fixed} 項自動補・圖面 {(r.sources || []).length} 個檔
+                {warn.length > 0 && <> <button className="chip sm ghost" onClick={() => setOpenRep(openRep === r.id ? null : r.id)}>{openRep === r.id ? '收起' : '看清單'}</button></>}</span>
+              {openRep === r.id && <ul style={{ flex: '1 1 100%', margin: 0, paddingLeft: 18 }}>{warn.map((i, k) => <li key={k}>{i.floor && <b>{i.floor} </b>}{i.text}</li>)}</ul>}
+              <button className="chip on" disabled={busy} onClick={() => act(async () => { const id = await adoptReport(r.id); location.hash = `#/p/${id}`; return '已複製成你的專案'; })}>開啟模型</button>
+              {(r.sources || []).map(f => <button className="chip" key={f.path} onClick={() => store.sourceUrl(f.path).then(u => { location.href = u; }).catch(e => setErr(String(e.message || e)))}>⬇ {f.name}</button>)}
+              <button className="chip ghost" onClick={() => setReportStatus(r.id, 'done').then(() => listReports().then(setReports)).catch(e => setErr(String(e.message || e)))}>已處理</button>
+            </div>;
+          })}
         </div>}
 
         <form className="card" onSubmit={add}>

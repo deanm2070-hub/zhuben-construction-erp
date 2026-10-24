@@ -13,6 +13,7 @@ import { Dock } from './Dock';
 import { ImportPane } from './ImportPane';
 import { ProjectPane } from './ProjectPane';
 import { PropsPanel } from './PropsPanel';
+import { ReportProblem } from './ReportProblem';
 import { ReportPane } from './ReportPane';
 import { Stick } from './Stick';
 import { Takeoff } from './Takeoff';
@@ -68,6 +69,7 @@ export function Editor({ projectId, importNow, trial = false, onExit }: { projec
   // the structural sanity check (合理性自檢): from the import, run again on request
   const [checks, setChecks] = useState<Issue[]>([]);
   const [checksOpen, setChecksOpen] = useState(false);
+  const [reporting, setReporting] = useState(false);
   // a phone on its side: the panels above the 3D fold away so the model gets the screen
   const [opts, setOpts] = useState(false);
   // exterior tiles of the rendered look, kept in this browser: auto, a scheme number, or none
@@ -325,6 +327,7 @@ export function Editor({ projectId, importNow, trial = false, onExit }: { projec
             <span className="grow" />
             <button className={`chip sm ${checksOpen ? 'on' : ''} ${checks.some(i => i.sev === 'warn') ? 'warnDot' : ''}`} aria-pressed={checksOpen} title="合理性自檢：柱頂無梁、柱下懸空、梁端無支承、結構圖編號沒建出…"
               onClick={() => setChecksOpen(!checksOpen)}>檢查{checks.filter(i => i.sev === 'warn').length ? ` ${checks.filter(i => i.sev === 'warn').length}` : ''}</button>
+            <button className="chip sm" title="回報問題：把模型、自檢清單和原始圖面送給管理員，用來改進辨識" onClick={() => setReporting(true)}>回報</button>
             <button className={`chip sm ${xray ? 'on' : ''}`} aria-pressed={xray} title="柱、梁、基礎實體上色，其他構件半透明"
               onClick={() => { v().setXray(!xray); setXray(!xray); showToast(xray ? '結構透視關閉' : '結構透視：柱（藍）梁（橘）基礎（棕），其他半透明'); }}>結構透視</button>
             <button className={`chip sm ${sun.on ? 'on' : ''}`} aria-pressed={sun.on} title="依日期與時間模擬日照與陰影"
@@ -411,8 +414,10 @@ export function Editor({ projectId, importNow, trial = false, onExit }: { projec
               if (tool === 'walk') setTool('orbit');
             }}
             onRecheck={() => { const kept = checks.filter(i => /^MARK-/.test(i.kind) && i.sev !== 'fixed'); const next = [...kept, ...checkModel(v().objects, v().cad?.floors)]; setChecks(next); showToast(`重新檢查完成：${next.filter(i => i.sev === 'warn').length} 項要看`); }}
+            onReport={() => setReporting(true)}
             onClose={() => setChecksOpen(false)} />
         )}
+        {reporting && <ReportProblem projectId={projectId} project={name || '未命名專案'} issues={checks} onSave={() => persist(true)} onClose={() => setReporting(false)} toast={showToast} />}
         {module === '3d' && sel && viewer.current && (
           <PropsPanel o={sel} floors={viewer.current.floors} readOnly={readOnly}
             onApply={patch => { const renamed = patch.name && patch.name !== sel.name; v().updateObject(sel.id, patch); showToast(renamed ? `已套用，名稱改為「${patch.name}」` : '已套用，數量會依新尺寸重算'); }}

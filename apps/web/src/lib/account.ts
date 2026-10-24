@@ -235,3 +235,30 @@ export function newPassword() {
   const c = 'abcdefghjkmnpqrstuvwxyz23456789';
   return Array.from(crypto.getRandomValues(new Uint8Array(8)), b => c[b % c.length]).join('');
 }
+
+/** 回報問題 (0016): sends the project's model, its sanity-check list and the list of original drawings to the administrators */
+export async function reportProblem(projectId: string, text: string, issues: unknown[], version: string) {
+  const { data, error } = await supabase!.rpc('report_problem', { p_project: projectId, p_text: text, p_issues: issues, p_version: version });
+  if (error) throw new Error(error.code === 'PGRST202' ? '回報功能需要先更新資料庫：請管理員在 Supabase 的 SQL Editor 執行 supabase/migrations/0016_problem_reports.sql 一次' : error.message);
+  return data as string;
+}
+export interface ProblemReport {
+  id: string; created_at: string; user_id: string | null; email: string | null; project_id: string | null; project_name: string | null;
+  text: string | null; issues: { sev: string; floor?: string; text: string }[] | null; sources: { path: string; name: string; size: number }[] | null;
+  version: string | null; status: string;
+}
+/** administrator: open reports, newest first (null when 0016 has not been run) */
+export async function listReports(): Promise<ProblemReport[] | null> {
+  const { data, error } = await supabase!.from('problem_reports').select('id,created_at,user_id,email,project_id,project_name,text,issues,sources,version,status').neq('status', 'done').order('created_at', { ascending: false }).limit(100);
+  return error ? null : data as ProblemReport[];
+}
+/** administrator: copy the reported model into a project of their own; returns the new project id */
+export async function adoptReport(id: string) {
+  const { data, error } = await supabase!.rpc('adopt_report', { p_id: id });
+  if (error) throw error;
+  return data as string;
+}
+export async function setReportStatus(id: string, status: 'new' | 'opened' | 'done') {
+  const { error } = await supabase!.from('problem_reports').update({ status }).eq('id', id);
+  if (error) throw error;
+}
