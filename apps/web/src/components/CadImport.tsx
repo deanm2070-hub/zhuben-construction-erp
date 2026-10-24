@@ -1,6 +1,6 @@
 import {
   analyzeBuilding, buildBuilding, buildFromMesh, type MeshBuildResult, type MeshPart, buildFromDxf, decodeDxf, mergeDrawings, DWG_VERSIONS, dwgSignature, guessLayerKind, guessUnits, parseDxf, sampleDxf,
-  UNIT_NAME, UNIT_SCALE, WALL_H, ROLE_NAME, type BuildingAnalysis, type BuildOptions, type DrawingStyle, type LayerRole, type CadData, type DxfDrawing, type LayerKind, type ModelObject,
+  UNIT_NAME, UNIT_SCALE, WALL_H, ROLE_NAME, type BuildingAnalysis, type BuildOptions, type DrawingStyle, type LayerRole, type CadData, type DxfDrawing, type LayerKind, type ModelObject, sortIssues, type Issue,
 } from '@cloud-modeler/core';
 import { useMemo, useState } from 'react';
 import { readDwg } from '../lib/dwg';
@@ -36,7 +36,7 @@ type Stage =
   | { s: 'error'; msg: string; stale?: boolean };
 
 const ACI: Record<number, string> = { 1: '紅色', 2: '黃色', 3: '綠色', 4: '青色', 5: '藍色', 6: '洋紅色', 7: '白色', 8: '灰色' };
-export interface ImportResult { objects: ModelObject[]; cad: CadData; summary: string; style?: DrawingStyle }
+export interface ImportResult { objects: ModelObject[]; cad: CadData; summary: string; style?: DrawingStyle; checks?: Issue[] }
 
 const KINDS: [LayerKind, string][] = [['wall', '牆體（擠出成 3D 牆）'], ['furn', '家具／櫃（擠出）'], ['line', '只顯示線條'], ['off', '不匯入']];
 
@@ -290,7 +290,7 @@ function BuildingStep({ st, firstId, onBuilt, onLayers, onClose }: {
     try {
       const s = r.stats;
       const rc = r.cad.rc;
-      keptFiles = []; keptFound = []; onBuilt({ objects: r.objects, cad: r.cad, style: sty, summary: `已建立 ${s.floors} 層：${s.walls} 道牆、${s.doors} 樘門、${s.windows} 樘窗` + (s.railings ? `、${s.railings} 段欄杆` : '')
+      keptFiles = []; keptFound = []; onBuilt({ objects: r.objects, cad: r.cad, style: sty, checks: r.report.issues, summary: `已建立 ${s.floors} 層：${s.walls} 道牆、${s.doors} 樘門、${s.windows} 樘窗` + (s.railings ? `、${s.railings} 段欄杆` : '')
         + (rc ? `；讀到${rc.spec.sheets.join('、')}，鋼筋依配筋圖計算` : '')
         + (s.extColor !== undefined ? `；外牆線顏色為${ACI[s.extColor] || `色號 ${s.extColor}`}，同色內牆算 RC 牆，其他顏色算輕隔間牆` : '')
         + (Object.keys(known.roles).length ? `；套用「${sty.name}」圖面樣式 ${Object.keys(known.roles).length} 條規則` : '') });
@@ -333,6 +333,14 @@ function BuildingStep({ st, firstId, onBuilt, onLayers, onClose }: {
       </table></div>}
       {rep && <>
         {a.warnings.map((w, i) => <p key={'w' + i} className="warn" style={{ margin: '8px 0' }}>⚠ {w}</p>)}
+        {rep.issues && <>
+          <h4 style={{ margin: '12px 0 4px' }}>合理性自檢（建好的模型自己先檢查一遍）</h4>
+          <p className="note">柱頂有沒有梁或樓板、柱下有沒有支承、梁端有沒有柱牆、柱有沒有重疊、牆有沒有浮空、結構圖上每個梁柱編號有沒有建出。⚠ 要看、✎ 軟體已自動補上、ℹ 參考；建好 3D 後按「檢查」可以逐項前往。</p>
+          {rep.issues.length === 0 ? <p className="note">✓ 沒有發現問題。</p>
+            : <div className="tbl"><table><tbody>{sortIssues(rep.issues, preview?.cad.floors).slice(0, 60).map((i, k) => (
+              <tr key={k}><td style={{ whiteSpace: 'nowrap' }}>{i.sev === 'warn' ? '⚠' : i.sev === 'fixed' ? '✎' : 'ℹ'} {i.floor || ''}</td><td className={i.sev === 'warn' ? 'warn' : ''}>{i.text}</td></tr>))}
+              {rep.issues.length > 60 && <tr><td /><td className="note">…還有 {rep.issues.length - 60} 項，建好 3D 後按「檢查」看全部</td></tr>}</tbody></table></div>}
+        </>}
         {rep.cross?.length > 0 && <>
           <h4 style={{ margin: '12px 0 4px' }}>圖面交叉比對（建模前先核對各張圖）</h4>
           <p className="note">平面、立面、剖面、結構圖彼此核對樓層標高、樓層數、軸線間距；對不上的地方軟體已自動決定採用哪張圖（✎），列在這裡供你參考。</p>

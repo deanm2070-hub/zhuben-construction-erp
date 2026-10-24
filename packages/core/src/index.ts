@@ -17,3 +17,4 @@ export * from './pricing';
 export * from './budgetTemplate';
 export * from './learn';
 export * from './materials';
+export * from './sanity';

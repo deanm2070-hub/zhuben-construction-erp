@@ -139,7 +139,9 @@ export function memberOf(o: ModelObject): Member {
   if (o.layer === 'slab') return /基礎/.test(o.name) ? '基礎' : '樓板';
   if (o.layer === 'wall') {
     const t = Math.min(o.w, o.d), L = Math.max(o.w, o.d);
-    if (/柱/.test(o.name) || (!o.rot && t >= 30 && L <= t * 2.5 && o.h >= 200)) return '柱';
+    // (a short thick piece of wall is a column only when nothing says it is a wall: the stub of an exterior wall
+    // beside a column stays a wall)
+    if (/柱/.test(o.name) || (!o.rot && t >= 30 && L <= t * 2.5 && o.h >= 200 && !/牆|隔間/.test(o.name))) return '柱';
     return '牆';
   }
   if (o.layer === 'bath' || o.layer === 'cabinet' || o.layer === 'furniture') return '設備';

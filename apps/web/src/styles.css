@@ -373,3 +373,13 @@ body{overflow-x:hidden}
 @keyframes splashTwinkle{0%,100%{opacity:0;transform:scale(.5)}45%{opacity:1;transform:scale(1)}}
 @media (prefers-reduced-motion:reduce){.splash-dots i{animation:none}}
 @keyframes splashIn{from{opacity:0;transform:translateY(10px) scale(.97)}to{opacity:1;transform:none}}
+
+/* ---------- 合理性自檢 (Checks) ---------- */
+.checks{position:absolute;left:max(12px,env(safe-area-inset-left));bottom:12px;width:min(420px,calc(100% - 24px));max-height:min(60%,520px);overflow:auto;background:var(--panel-solid);border:1px solid var(--line);border-radius:14px;padding:10px 12px;box-shadow:var(--shadow);z-index:6;display:flex;flex-direction:column;gap:6px}
+.checks .head{display:flex;align-items:center;gap:8px;flex-wrap:wrap}.checks .head b{font-size:14px}.checks .head .note{flex:1;min-width:0}
+.checks ul{list-style:none;margin:0;padding:0;display:flex;flex-direction:column;gap:4px}
+.checks li{display:flex;gap:8px;align-items:flex-start;padding:6px 8px;border-radius:10px;background:var(--chip);font-size:12.5px;line-height:1.45}
+.checks li.sev-warn{background:#fef3c7;color:#422006}.checks li.sev-fixed{background:#dcfce7;color:#14532d}.checks li.sev-info{background:var(--chip)}
+.checks li .ico{flex:none}.checks li .txt{flex:1;min-width:0}.checks li .txt b{margin-right:4px}.checks li .chip{flex:none;padding:2px 8px}
+.chip.warnDot{box-shadow:inset 0 0 0 1px #ca8a04;color:#854d0e;background:#fef9c3}.chip.warnDot.on{color:var(--accent-fg);background:var(--accent)}
+@media (max-width:640px){.checks{bottom:max(12px,env(safe-area-inset-bottom));max-height:50%}}

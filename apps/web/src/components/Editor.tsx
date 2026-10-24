@@ -1,5 +1,5 @@
 import { loadMaterials } from '../lib/materials';
-import { computeBuildingTakeoff, computeTakeoff, DEFAULT_SETTINGS, learnRoles, materialRates, materialsOf, memberOf, MEMBERS, priceBudget, ROLE_NAME, trackFixes, withPricing, type CalcVersion, type DrawingStyle, type Fix, type FinishChoice, type ModelObject, type Pricing, type ProjectInfo, type TakeoffSettings } from '@cloud-modeler/core';
+import { checkModel, computeBuildingTakeoff, computeTakeoff, DEFAULT_SETTINGS, learnRoles, materialRates, materialsOf, memberOf, MEMBERS, priceBudget, ROLE_NAME, trackFixes, withPricing, type CalcVersion, type DrawingStyle, type Fix, type FinishChoice, type Issue, type ModelObject, type Pricing, type ProjectInfo, type TakeoffSettings } from '@cloud-modeler/core';
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { DRAW_KINDS, FACADE_SCHEMES, TOOL_HINT, Viewer, type DrawKind, type FixKind, type RenderMode, type SceneKey, type Tool } from '../engine/Viewer';
 import { download, PROJECT_EXT, projectFile } from '../lib/files';
@@ -8,6 +8,7 @@ import { isStaleChunk } from '../lib/update';
 import { allStyles, mergeStyle, putStyle } from '../lib/styles';
 import { BudgetPane } from './BudgetPane';
 import { CadImport } from './CadImport';
+import { Checks } from './Checks';
 import { Dock } from './Dock';
 import { ImportPane } from './ImportPane';
 import { ProjectPane } from './ProjectPane';
@@ -64,6 +65,9 @@ export function Editor({ projectId, importNow, trial = false, onExit }: { projec
   const [finishScope, setFinishScope] = useState<'one' | 'plane' | 'all'>('all');
   const [explode, setExplode] = useState(0);
   const [xray, setXray] = useState(false);
+  // the structural sanity check (合理性自檢): from the import, run again on request
+  const [checks, setChecks] = useState<Issue[]>([]);
+  const [checksOpen, setChecksOpen] = useState(false);
   // a phone on its side: the panels above the 3D fold away so the model gets the screen
   const [opts, setOpts] = useState(false);
   // exterior tiles of the rendered look, kept in this browser: auto, a scheme number, or none
@@ -105,8 +109,8 @@ export function Editor({ projectId, importNow, trial = false, onExit }: { projec
   const toastTimer = useRef<number>();
   const saveTimer = useRef<number>();
   const loaded = useRef(false);
-  const meta = useRef({ finishes, settings, pricing, versions, info: pinfo });
-  meta.current = { finishes, settings, pricing, versions, info: pinfo };
+  const meta = useRef({ finishes, settings, pricing, versions, info: pinfo, checks });
+  meta.current = { finishes, settings, pricing, versions, info: pinfo, checks };
   const nameRef = useRef(name);
   nameRef.current = name;
   const roRef = useRef(readOnly);
@@ -201,6 +205,7 @@ export function Editor({ projectId, importNow, trial = false, onExit }: { projec
       setSettings({ ...DEFAULT_SETTINGS, ...(ps || {}), ...extDefault, materials: ps?.materials ?? loadMaterials() });
       setPricing(withPricing(p.model.pricing));
       setVersions(p.model.versions || []);
+      setChecks(p.model.checks || []);
       setPinfo({ ...(p.model.info || {}), ...(p.meta || {}) });
       setOwner(p.owner);
       store.role(p).then(r => { if (alive) setRole(r); }).catch(() => {});
@@ -318,6 +323,8 @@ export function Editor({ projectId, importNow, trial = false, onExit }: { projec
               {hidden.size > 0 && <button className="all" onClick={() => { setHidden(new Set()); v().setHidden([]); }}>全部顯示</button>}
             </div></>}
             <span className="grow" />
+            <button className={`chip sm ${checksOpen ? 'on' : ''} ${checks.some(i => i.sev === 'warn') ? 'warnDot' : ''}`} aria-pressed={checksOpen} title="合理性自檢：柱頂無梁、柱下懸空、梁端無支承、結構圖編號沒建出…"
+              onClick={() => setChecksOpen(!checksOpen)}>檢查{checks.filter(i => i.sev === 'warn').length ? ` ${checks.filter(i => i.sev === 'warn').length}` : ''}</button>
             <button className={`chip sm ${xray ? 'on' : ''}`} aria-pressed={xray} title="柱、梁、基礎實體上色，其他構件半透明"
               onClick={() => { v().setXray(!xray); setXray(!xray); showToast(xray ? '結構透視關閉' : '結構透視：柱（藍）梁（橘）基礎（棕），其他半透明'); }}>結構透視</button>
             <button className={`chip sm ${sun.on ? 'on' : ''}`} aria-pressed={sun.on} title="依日期與時間模擬日照與陰影"
@@ -394,6 +401,18 @@ export function Editor({ projectId, importNow, trial = false, onExit }: { projec
           </div></div>
         )}
         {module === '3d' && tool === 'walk' && <Stick onMove={(x, y) => v().walkStick(x, y)} />}
+        {module === '3d' && checksOpen && viewer.current && (
+          <Checks issues={checks} floors={viewer.current.cad?.floors}
+            onGo={i => {
+              const f = i.floor || null;
+              if (f !== floor && viewer.current!.floors.some(x => x.key === f)) { v().setFloor(f); setFloor(f); }
+              if (i.ids?.length) { v().selectId(i.ids[0]); v().focusOn(i.ids[0]); }
+              else if (i.at) { v().selectId(null); v().focusOn(null, i.at, i.floor); }
+              if (tool === 'walk') setTool('orbit');
+            }}
+            onRecheck={() => { const kept = checks.filter(i => /^MARK-/.test(i.kind) && i.sev !== 'fixed'); const next = [...kept, ...checkModel(v().objects, v().cad?.floors)]; setChecks(next); showToast(`重新檢查完成：${next.filter(i => i.sev === 'warn').length} 項要看`); }}
+            onClose={() => setChecksOpen(false)} />
+        )}
         {module === '3d' && sel && viewer.current && (
           <PropsPanel o={sel} floors={viewer.current.floors} readOnly={readOnly}
             onApply={patch => { const renamed = patch.name && patch.name !== sel.name; v().updateObject(sel.id, patch); showToast(renamed ? `已套用，名稱改為「${patch.name}」` : '已套用，數量會依新尺寸重算'); }}
@@ -432,6 +451,7 @@ export function Editor({ projectId, importNow, trial = false, onExit }: { projec
           onSource={f => { store.uploadSource(projectId, f).catch(() => showToast('原始檔上傳失敗，模型仍會儲存')); }}
           onBuilt={r => {
             fixes.current = {}; base.current = snap(r.objects); style.current = r.style || null;
+            setChecks(r.checks || []); setChecksOpen(!!r.checks?.some(i => i.sev === 'warn'));
             v().replace(r.objects, r.cad);
             if (!name || name === '匯入圖面') { const n = r.cad.name.replace(/\.(dxf|dwg|skp|dae|obj|glb|gltf|fbx|stl)$/i, ''); setName(n); store.save(projectId, { name: n }).catch(() => {}); }
             setDialog('none');

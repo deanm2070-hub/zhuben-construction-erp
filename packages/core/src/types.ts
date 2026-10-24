@@ -193,6 +193,8 @@ export interface ProjectModel {
   fixes?: Record<string, import('./learn').Fix>;
   /** copy of the drawing style the import used, so the roles learnt travel with the project to other devices */
   style?: DrawingStyle;
+  /** the structural sanity check of the model (合理性自檢): from the import, run again on request */
+  checks?: import('./sanity').Issue[];
 }
 /** The way one office draws (layer names, what each layer holds), learnt from imports and corrections. */
 export interface DrawingStyle {

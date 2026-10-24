@@ -1044,6 +1044,24 @@ export class Viewer {
     }
     return { pos: [c.x - 1050 * s, 1250 * s, c.z + 1250 * s], fov: 40 };
   }
+  /** Flies to a part (or a spot on a floor): the camera keeps its direction and comes close enough to see it. */
+  focusOn(id: number | null, at?: [number, number], floorKey?: string) {
+    this.exitWalk();
+    const o = id !== null ? this.byId(id) : undefined;
+    let cx: number, cy: number, cz: number, size: number;
+    if (o && isBox(o)) { cx = o.x; cy = o.y + o.h / 2; cz = o.z; size = Math.max(o.w, o.d, o.h); }
+    else if (o) { cx = o.axis === 'x' ? (o.a + o.b) / 2 : o.at; cz = o.axis === 'z' ? (o.a + o.b) / 2 : o.at; cy = 100; size = Math.abs(o.b - o.a); }
+    else if (at) { cx = at[0]; cz = at[1]; cy = (this.floors.find(f => f.key === floorKey)?.y || 0) + 150; size = 300; }
+    else return;
+    const target = new THREE.Vector3(cx, cy, cz);
+    const dir = this.camera.position.clone().sub(this.controls.target);
+    if (dir.length() < 1) dir.set(-1, 1, 1);
+    dir.normalize();
+    const dist = Math.max(400, size * 2.2 + 250);
+    const to = { pos: target.clone().addScaledVector(dir, dist), target, fov: this.camera.fov };
+    this.fly = { from: { pos: this.camera.position.clone(), target: this.controls.target.clone(), fov: this.camera.fov }, to, t0: performance.now() };
+    this.invalidate();
+  }
   private lastScene: SceneKey = 'bird';
   private lastAspect = 0;
   goScene(k: SceneKey, instant = false) {

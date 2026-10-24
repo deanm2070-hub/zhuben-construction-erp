@@ -5,6 +5,7 @@ import { WALL_H } from './sample';
 import { findFlights, planStairs, type StairFlight, type StairPlan } from './stairs';
 import { HEIGHT_NOTE, isDoorType, openingName, openingType, PLAN_NOTES, type OpeningType } from './legend';
 import { readRebarSpec } from './rebar';
+import { checkModel, type Issue } from './sanity';
 import { isBox, isDoor, type BoxObject, type CadData, type CadFloor, type DoorObject, type ModelObject, type SlabPanel } from './types';
 
 /**
@@ -1762,6 +1763,8 @@ export interface BuildReport {
   areaChecks: { floor: string; stated: number; built: number }[];
   /** drawings compared with each other: levels and storeys before building, elevation widths after */
   cross: CrossCheck[];
+  /** what does not add up in the built model (合理性自檢), and what the software filled in on its own */
+  issues: Issue[];
   tally: { code: string; name: string; qty?: number; built: number; guessed?: number; tagged?: number }[];
 }
 
@@ -1810,7 +1813,10 @@ export function readSizeTable(d: DxfDrawing): SizeRow[] {
 /** Beams of one structural plan: paired beam outlines, each named and sized by the nearest beam mark. */
 function readBeams(d: DxfDrawing, v: SheetView, X: (x: number) => number, Z: (y: number) => number, S: number, table: SizeRow[] = []) {
   const segs = d.segs.filter(s => BEAM_LAYER.test(s.layer) && inBox(v.box, s.a[0], s.a[1]) && inBox(v.box, s.b[0], s.b[1]));
-  const texts = d.texts.filter(t => inBox(v.box, t.x, t.y));
+  // a mark at a corner can sit a little outside the sheet view's box (羅宅 Cb104 beside the slanted edge)
+  const gx = (v.box[2] - v.box[0]) * 0.05, gy = (v.box[3] - v.box[1]) * 0.05;
+  const tbox: [number, number, number, number] = [v.box[0] - gx, v.box[1] - gy, v.box[2] + gx, v.box[3] + gy];
+  const texts = d.texts.filter(t => inBox(tbox, t.x, t.y));
   const marks: { code: string; w: number; h: number; x: number; z: number }[] = [];
   for (const t of texts) {
     const m = BEAM_MARK.exec(t.s.trim());
@@ -1828,7 +1834,8 @@ function readBeams(d: DxfDrawing, v: SheetView, X: (x: number) => number, Z: (y:
   }
   // pairWalls carries a wall half its thickness past the drawn lines to close corners; a beam ends where its lines
   // end (a cantilever stops at the slab edge, not 20 cm beyond it)
-  const lines = pairWalls(segs.map(s => ({ x1: X(s.a[0]), z1: Z(s.a[1]), x2: X(s.b[0]), z2: Z(s.b[1]) }))).filter(l => !l.single && l.t >= 15 && l.t <= 80).map(l => {
+  const paired = pairWalls(segs.map(s => ({ x1: X(s.a[0]), z1: Z(s.a[1]), x2: X(s.b[0]), z2: Z(s.b[1]) })));
+  const lines = paired.filter(l => !l.single && l.t >= 15 && l.t <= 80).map(l => {
     const L0 = Math.hypot(l.bx - l.ax, l.bz - l.az), e = Math.min(l.t / 2, L0 / 4), fx = (l.bx - l.ax) / L0 * e, fz = (l.bz - l.az) / L0 * e;
     return { ...l, ax: l.ax + fx, az: l.az + fz, bx: l.bx - fx, bz: l.bz - fz };
   });
@@ -1836,21 +1843,53 @@ function readBeams(d: DxfDrawing, v: SheetView, X: (x: number) => number, Z: (y:
   const dist = (l: (typeof lines)[number], m: (typeof marks)[number]) => {
     const len = Math.hypot(l.bx - l.ax, l.bz - l.az), ux = (l.bx - l.ax) / len, uz = (l.bz - l.az) / len;
     const u = (m.x - l.ax) * ux + (m.z - l.az) * uz, off = Math.abs((m.x - l.ax) * uz - (m.z - l.az) * ux);
-    return u < -60 || u > len + 60 || off > 70 * S + l.t ? Infinity : off + Math.max(0, -u, u - len);
+    // (a mark is written within its beam's span: one just past the end counts, but weakly, so it does not take the
+    // neighbouring beam's line from the mark written along it)
+    return u < -60 || u > len + 60 || off > 70 * S + l.t ? Infinity : off + 3 * Math.max(0, -u, u - len);
   };
-  // a mark that sits much closer to another beam (the cantilever CG2 beside the edge beam b101) names that one;
-  // a span with no mark of its own still takes the nearest one (one mark for a beam running over several spans)
-  const own = marks.map(m => Math.min(...lines.map(l => dist(l, m))));
-  return lines.map(l => {
+  // each mark claims the line it sits beside (the nearest one of its width; a mark of another width only when no
+  // line of its own width is near): marks are written beside their own beam, so this direction is the reliable one.
+  // A line two marks claim keeps the closer and the other goes to its next line. Lines left without a mark take the
+  // nearest one (a beam running over several spans is marked once)
+  const score = (l: (typeof lines)[number], m: (typeof marks)[number]) => { const dd = dist(l, m); return dd + Math.min(100, Math.abs(m.w - l.t) * 8); };
+  const cand = marks.map(m => lines.map((l, i) => ({ i, sc: score(l, m) })).filter(c => c.sc < Infinity).sort((a, b) => a.sc - b.sc));
+  const markOf: (number | null)[] = lines.map(() => null), scoreOf = lines.map(() => Infinity);
+  const queue = marks.map((_, k) => ({ k, tries: 0 }));
+  while (queue.length) {
+    const q = queue.shift()!, c = cand[q.k][q.tries];
+    if (!c || q.tries > 3) continue;
+    if (markOf[c.i] === null || scoreOf[c.i] > c.sc) {
+      const was = markOf[c.i];
+      markOf[c.i] = q.k; scoreOf[c.i] = c.sc;
+      if (was !== null) queue.push({ k: was, tries: cand[was].findIndex(x => x.i === c.i) + 1 });
+    } else queue.push({ k: q.k, tries: q.tries + 1 });
+  }
+  const out = lines.map((l, i) => {
     const len = Math.hypot(l.bx - l.ax, l.bz - l.az);
-    let best: (typeof marks)[number] | null = null, bd = Infinity, free: (typeof marks)[number] | null = null, fd = Infinity;
-    marks.forEach((m, k) => {
-      const dd = dist(l, m);
-      if (dd < bd) { bd = dd; best = m; }
-      if (dd < fd && dd <= own[k] + 5) { fd = dd; free = m; }
-    });
-    return { ax: l.ax, az: l.az, bx: l.bx, bz: l.bz, len, t: l.t, mark: (free ?? best) as (typeof marks)[number] | null };
+    let mark: (typeof marks)[number] | null = markOf[i] !== null ? marks[markOf[i]!] : null;
+    if (!mark) { let bd = Infinity; for (const m of marks) { const sc = score(l, m); if (sc < bd) { bd = sc; mark = m; } } }
+    return { ax: l.ax, az: l.az, bx: l.bx, bz: l.bz, len, t: l.t, mark, single: false };
   });
+  // a beam drawn with one line only (its other face is the slab edge or a wall line) is still built, along that
+  // line with the size its mark gives, when the mark sits beside it and no pair of lines claimed the mark
+  const claimed = new Set(out.map(l => l.mark));
+  const singles = paired.filter(l => l.single && Math.hypot(l.bx - l.ax, l.bz - l.az) >= 60).map(l => ({ ...l, t: 0 }));
+  for (const m of marks) {
+    if (claimed.has(m)) continue;
+    const l = singles.map(l => ({ l, d: dist(l, m) })).filter(q => q.d < 70 * S + m.w).sort((p, q) => p.d - q.d)[0]?.l;
+    if (!l) continue;
+    const len = Math.hypot(l.bx - l.ax, l.bz - l.az);
+    if (out.some(o => o.mark === m) || singles.filter(x => x !== l && dist(x, m) < 70 * S + m.w && Math.abs(Math.atan2(x.bz - x.az, x.bx - x.ax) - Math.atan2(l.bz - l.az, l.bx - l.ax)) % Math.PI < 0.05).length > 2) continue;
+    out.push({ ax: l.ax, az: l.az, bx: l.bx, bz: l.bz, len, t: 0, mark: m, single: true });
+  }
+  // marks away from every beam line (a size table or legend beside the plan) are not counted as beams left unbuilt
+  const bx0 = minOf(lines.map(l => Math.min(l.ax, l.bx))) - 150 * S, bx1 = maxOf(lines.map(l => Math.max(l.ax, l.bx))) + 150 * S;
+  const bz0 = minOf(lines.map(l => Math.min(l.az, l.bz))) - 150 * S, bz1 = maxOf(lines.map(l => Math.max(l.az, l.bz))) + 150 * S;
+  const onPlan = lines.length ? marks.filter(m => m.x > bx0 && m.x < bx1 && m.z > bz0 && m.z < bz1) : [];
+  // (debugging aid for the test harness: DBGM=<mark> prints how that mark was matched)
+  const dbg = typeof process !== 'undefined' && process.env?.DBGM;
+  if (dbg) for (const m of marks) if (m.code === dbg) console.log('MK', v.title, m.code, Math.round(m.x), Math.round(m.z), 'onPlan', onPlan.includes(m), 'claimed', out.some(o => o.mark === m), 'lines', lines.map((l, i) => ({ l, i, sc: score(l, m) })).filter(q => q.sc < 400).map(q => `${Math.round(q.l.ax)},${Math.round(q.l.az)}-${Math.round(q.l.bx)},${Math.round(q.l.bz)} t${Math.round(q.l.t)} sc${Math.round(q.sc)}->${out[q.i].mark?.code}`).join(' | '), 'singles', singles.filter(l => dist(l, m) < 200).map(l => `${Math.round(l.ax)},${Math.round(l.az)}-${Math.round(l.bx)},${Math.round(l.bz)} d${Math.round(dist(l, m))}`).join(' | '));
+  return { lines: out, marks: onPlan };
 }
 
 /** column outlines; numbered variants (COL1) are the columns of the storey below, drawn hidden */
@@ -1870,12 +1909,15 @@ function readColumns(d: DxfDrawing, v: SheetView, X: (x: number) => number, Z: (
     if (!m || m.dist > Math.max(w, dd) + 120 * S) continue;
     out.push({ mark: m.m.mark, x, z, w: Math.round(w), d: Math.round(dd) });
   }
-  return out;
+  // marks on the plan that no column outline sits by (an outline on another layer, or drawn as lines)
+  const x0 = minOf(out.map(c => c.x)) - 150 * S, x1 = maxOf(out.map(c => c.x)) + 150 * S, z0 = minOf(out.map(c => c.z)) - 150 * S, z1 = maxOf(out.map(c => c.z)) + 150 * S;
+  const missing = out.length ? marks.filter(m => m.x > x0 && m.x < x1 && m.z > z0 && m.z < z1 && !out.some(c => Math.hypot(c.x - m.x, c.z - m.z) <= Math.max(c.w, c.d) + 120 * S)) : [];
+  return Object.assign(out, { missing });
 }
 
 const SLAB_MARK = /^(?:F?C?S\d{1,2}|BS\d{1,2}|Sw)$/;
 /** Slab panels of one structural plan: from each slab mark (S1, CS1, FS1 …) out to the beam centre lines round it. */
-function readPanels(d: DxfDrawing, v: SheetView, X: (x: number) => number, Z: (y: number) => number, lines: ReturnType<typeof readBeams>, W: number, D: number) {
+function readPanels(d: DxfDrawing, v: SheetView, X: (x: number) => number, Z: (y: number) => number, lines: ReturnType<typeof readBeams>['lines'], W: number, D: number) {
   const out: { mark: string; x0: number; x1: number; z0: number; z1: number }[] = [];
   const ln = lines.map(l => ({ ...l, xa: Math.min(l.ax, l.bx), xb: Math.max(l.ax, l.bx), za: Math.min(l.az, l.bz), zb: Math.max(l.az, l.bz), vert: Math.abs(l.bx - l.ax) < Math.abs(l.bz - l.az) }));
   for (const t of d.texts) {
@@ -2553,7 +2595,7 @@ export function buildBuilding(d: DxfDrawing, a: BuildingAnalysis, name: string, 
   const madeBy = new Map<ModelObject, SheetView>();
   const rcPanels: SlabPanel[] = [];
   const structViews = a.views.filter(v => v.kind === 'structure' && v.floors.length);
-  const prepped = new Map<SheetView, { lines: ReturnType<typeof readBeams>; beams: ReturnType<typeof readBeams>; cols: ReturnType<typeof readColumns>; panels: ReturnType<typeof readPanels> }>();
+  const prepped = new Map<SheetView, { lines: ReturnType<typeof readBeams>['lines']; beams: ReturnType<typeof readBeams>['lines']; cols: ReturnType<typeof readColumns>; panels: ReturnType<typeof readPanels>; marks: ReturnType<typeof readBeams>['marks']; S: number }>();
   for (const v of structViews) {
     const gs = planGeo(d, v);
     if (!isFinite(gs.ox) || !isFinite(gs.oy)) continue;
@@ -2570,9 +2612,9 @@ export function buildBuilding(d: DxfDrawing, a: BuildingAnalysis, name: string, 
       }
       if (best.n >= 4) { const X0 = X, Z0 = Z; X = x => X0(x) + best.dx; Z = y => Z0(y) + best.dz; }
     }
-    const lines = readBeams(d, v, X, Z, S, table), beams = lines.filter(b => b.mark);
-    const cols = readColumns(d, v, X, Z, S), panels = readPanels(d, v, X, Z, lines, W, D);
-    prepped.set(v, { lines, beams, cols, panels });
+    const { lines, marks } = readBeams(d, v, X, Z, S, table), beams = lines.filter(b => b.mark);
+    const cols = readColumns(d, v, X, Z, S), panels = readPanels(d, v, X, Z, lines.filter(l => !l.single), W, D);
+    prepped.set(v, { lines, beams, cols, panels, marks, S });
   }
   // a floor can have more than one structural sheet (an older revision, another building): the one whose beams run along the architectural walls is used
   const fit = (v: SheetView, key: string) => {
@@ -2586,6 +2628,7 @@ export function buildBuilding(d: DxfDrawing, a: BuildingAnalysis, name: string, 
     }
     return n;
   };
+  const issues: Issue[] = [];
   const chosen = new Map<string, { v: SheetView; n: number }>();
   for (const v of structViews) if (prepped.has(v)) for (const key of v.floors) {
     const n = fit(v, key), c = chosen.get(key);
@@ -2594,7 +2637,7 @@ export function buildBuilding(d: DxfDrawing, a: BuildingAnalysis, name: string, 
   for (const v of structViews) {
     const pv = prepped.get(v);
     if (!pv) continue;
-    const { beams, cols, panels } = pv;
+    const { beams, cols, panels, marks, S } = pv;
     for (const key of v.floors) {
       if (chosen.get(key)?.v !== v) continue;
       const i = a.storeys.findIndex(s => s.key === key);
@@ -2615,7 +2658,24 @@ export function buildBuilding(d: DxfDrawing, a: BuildingAnalysis, name: string, 
         objects.push({ id: id++, layer: 'slab', name: `${ground ? '地梁' : '梁'} ${m.code}（結構圖）`, floor: host.key, y: top - m.h, h: m.h, color: 0xcfc9bd,
           x: cx + sx, z: cz + sz, ...(slant ? { w: b.len, d: m.w, rot: -ang } : along ? { w: b.len, d: m.w } : { w: m.w, d: b.len }), rc: { kind: 'beam', mark: m.code, fl: key } });
         madeBy.set(objects[objects.length - 1], v);
+        if (b.single) issues.push({ kind: 'MARK-BEAM', sev: 'fixed', floor: host.key, ids: [id - 1], text: `${v.title}：梁 ${m.code} 只畫了一條梁線，依編號的尺寸 ${m.w}×${m.h} 沿這條線建出（${Math.round(b.len)} cm）` });
       }
+      // every beam mark on the plan should now have a beam beside it; every column mark a column
+      const unbuilt = new Map<string, typeof marks>();
+      for (const m of marks) {
+        const near = objects.some(o => isBox(o) && o.rc?.kind === 'beam' && o.rc.mark === m.code && o.rc.fl === key
+          && Math.abs(m.x - o.x) <= Math.max(o.w, o.d) / 2 + 70 * S + 60 && Math.abs(m.z - o.z) <= Math.max(o.w, o.d) / 2 + 70 * S + 60);
+        if (near) continue;
+        const k = `${m.code}|${m.w}×${m.h}`;
+        if (!unbuilt.has(k)) unbuilt.set(k, []);
+        if (!unbuilt.get(k)!.some(q => Math.hypot(q.x - m.x, q.z - m.z) < 50)) unbuilt.get(k)!.push(m);
+      }
+      for (const [k, ms] of unbuilt) {
+        const [code, size] = k.split('|'), wallBeam = /^W/i.test(code);
+        issues.push({ kind: 'MARK-BEAM', sev: wallBeam ? 'info' : 'warn', floor: host.key, at: [ms[0].x, ms[0].z],
+          text: `${v.title}：梁 ${code}（${size}）${ms.length > 1 ? `有 ${ms.length} 處` : ''}標示的位置沒有建出梁${wallBeam ? '；W 開頭是牆梁，藏在牆裡，牆已經建出的話可以不理' : '，圖上找不到這根梁的兩條梁線（可用「補牆板」或畫線補上）'}` });
+      }
+      for (const m of cols.missing) issues.push({ kind: 'MARK-COL', sev: 'warn', floor: key, at: [m.x, m.z], text: `${v.title}：柱編號 ${m.mark} 旁邊沒有柱的外框（柱框可能畫在別的圖層）` });
       // columns of this storey: the architectural column there takes the mark and the structural size, else one is added
       const st = a.storeys[i];
       for (const c of cols) {
@@ -2629,6 +2689,30 @@ export function buildBuilding(d: DxfDrawing, a: BuildingAnalysis, name: string, 
         if (!arch) madeBy.set(objects[objects.length - 1], v);
       }
       for (const p of panels) rcPanels.push({ ...p, fl: key });
+    }
+  }
+  // a wall that runs into a column ends at the column face (plans often draw walls to the column's centre line); a
+  // piece lying wholly inside a column goes. It is one piece of concrete, so the model shows no stub beside the column
+  {
+    const colsAll = objects.filter((o): o is BoxObject => isBox(o) && o.rc?.kind === 'column');
+    for (let i = objects.length - 1; i >= 0; i--) {
+      const w = objects[i];
+      if (!isBox(w) || w.layer !== 'wall' || w.rc || w.rot || w.h < 100) continue;
+      for (const c of colsAll) {
+        if (c.floor !== w.floor || c.rot) continue;
+        const cx0 = c.x - c.w / 2, cx1 = c.x + c.w / 2, cz0 = c.z - c.d / 2, cz1 = c.z + c.d / 2;
+        let wx0 = w.x - w.w / 2, wx1 = w.x + w.w / 2, wz0 = w.z - w.d / 2, wz1 = w.z + w.d / 2;
+        if (wx0 >= cx1 - 1 || wx1 <= cx0 + 1 || wz0 >= cz1 - 1 || wz1 <= cz0 + 1) continue;
+        const along = w.w >= w.d;
+        // across the wall the column must cover it, else the wall passes beside the column
+        if (along ? !(cz0 <= wz0 + 3 && cz1 >= wz1 - 3) : !(cx0 <= wx0 + 3 && cx1 >= wx1 - 3)) continue;
+        const a0 = along ? wx0 : wz0, a1 = along ? wx1 : wz1, c0 = along ? cx0 : cz0, c1 = along ? cx1 : cz1;
+        if (a0 >= c0 - 1 && a1 <= c1 + 1) { objects.splice(i, 1); break; }
+        if (a0 < c0 && a1 > c1) continue;
+        if (a0 >= c0 - 1) { if (along) wx0 = c1; else wz0 = c1; } else { if (along) wx1 = c0; else wz1 = c0; }
+        w.x = (wx0 + wx1) / 2; w.w = wx1 - wx0; w.z = (wz0 + wz1) / 2; w.d = wz1 - wz0;
+        if (Math.max(w.w, w.d) < 5) { objects.splice(i, 1); break; }
+      }
     }
   }
   // beams are rarely on architectural plans: estimate one along every grid line, under the slab of the storey above
@@ -3241,6 +3325,7 @@ export function buildBuilding(d: DxfDrawing, a: BuildingAnalysis, name: string, 
     unmatchedTags,
     areaChecks: areaChecks(d, a.storeys.map(st => st.key), objects),
     cross: a.checks || [],
+    issues: [...issues, ...checkModel(objects, floors)],
     tally: a.schedule.map(i => {
       const n = objects.filter(o => (o.layer === 'door' || o.layer === 'glass') && o.name.split(' ')[0] === i.code).length;
       return { code: i.code, name: i.name, ...(i.qty !== undefined ? { qty: i.qty } : {}), built: i.legs ? Math.ceil(n / 2) : n, ...(guessedN.get(i.code) ? { guessed: guessedN.get(i.code) } : {}), tagged: taggedN.get(i.code) || 0 };
