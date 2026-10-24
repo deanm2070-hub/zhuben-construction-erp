@@ -1,5 +1,6 @@
 /** Release history shown on the sign-in page; add an entry at the top with every update that goes live. */
 export const RELEASES: { v: string; date: string; notes: string[] }[] = [
+  { v: 'v0.20.12', date: '2026-10-24', notes: ['修正手機上「專案名稱」輸入視窗版面跑掉：改成置中的標準視窗，輸入框、說明、按鈕在 390px 寬的手機上都完整顯示'] },
   { v: 'v0.20.11', date: '2026-10-24', notes: [
     '露台上方不再長出一塊板：2F 的露台（新屋右側）原本被往上每一層複製成樓板（4F、5F、屋突層都多了一片 180×520 的板），露台上方的樓層現在一律沒有板，露台的外緣也因此補上欄杆',
     '板邊欄杆改依平面圖旁邊的註記建：「H=R.C.5cm+玻璃欄杆115cm」建 120 cm 玻璃欄杆、「H=R.C.5cm+金屬欄杆115cm」建金屬欄杆、「H=金屬格柵85cm」建格柵、「R.C. H=120cm」「H=1.2M」建 RC 欄杆；沒有註記才用 120 cm RC 欄杆（樓層）或女兒牆（屋頂層）。陽台、露台的開口邊也一樣讀註記',
