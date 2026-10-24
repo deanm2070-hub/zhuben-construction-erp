@@ -1,4 +1,4 @@
-import { groupQuantities, type FormworkReport, PING, REBAR_KINDS, REBAR_STD, rebarSummary, type GroupBy, type PricedBudget, type Pricing, type Takeoff } from '@cloud-modeler/core';
+import { groupQuantities, masonCells, masonReport, type FormworkReport, PING, REBAR_KINDS, REBAR_STD, rebarSummary, type GroupBy, type PricedBudget, type Pricing, type Takeoff } from '@cloud-modeler/core';
 import * as XLSX from 'xlsx';
 
 /** The reports a project can print or download, in the order they appear. */
@@ -10,6 +10,7 @@ export const REPORTS = [
   ['area', '依施工區域統計', '各樓層各位置（構件、空間、立面）的數量'],
   ['calc', '數量計算式（計算依據）', '每一筆數量的樓層、位置與算式，可逐筆追溯'],
   ['formwork', '模板報表', '每塊版的原始模板、封模、扣版牆接頭、扣柱頭，附計算式與各層小計'],
+  ['mason', '泥作報表', '外牆粉刷、抿石子、內牆打底與粉光、各種地磚、壁磚，附計算式與各層小計'],
   ['rebar', '鋼筋料單', '樓層、構件、編號、號數、長度、支數、重量'],
   ['rebarSum', '鋼筋統計', '分層、分構件、分號數重量'],
   ['finish', '裝修細項', '依做法分層分空間的面積與長度'],
@@ -103,6 +104,11 @@ function section(key: ReportKey, c: ReportCtx): string {
     const rb = t.rebar?.rows || [];
     if (!rb.length) return '<p class="muted">沒有鋼筋料單（模型沒有混凝土構件）。</p>';
     return table(['樓層', '構件', '編號', '位置', '號數', '單支長 m', '支數', '總長 m', '重量 kg'], rb.map(r => `<tr>${td(r.fl)}${td(r.kind)}${td(r.mark)}${td(r.part)}${td(`#${r.s}`)}${td(r.len / 100, true)}${td(r.n, true)}${td(r2(r.len * r.n / 100), true)}${td(r.kg, true)}</tr>`));
+  }
+  if (key === 'mason') {
+    const its = masonReport(t.calc);
+    if (!its.length) return '<p class="muted">沒有泥作項目。</p>';
+    return its.map(it => `<h3>${esc(it.title)}</h3>${it.note ? `<p class="muted">${esc(it.note)}</p>` : ''}<table><thead><tr><th>樓層</th><th>位置</th><th>計算式</th><th class="num">數量</th><th>單位</th></tr></thead><tbody>${masonCells(it).map(r => `<tr${r[1] === '樓層小計' || /合計$/.test(String(r[1])) ? ' class="sec"' : ''}>${r.map((v, i) => `<td${i === 3 ? ' class="num"' : ''}>${esc(v)}</td>`).join('')}</tr>`).join('')}</tbody></table>`).join('');
   }
   if (key === 'formwork') {
     const f = t.formwork;
@@ -229,6 +235,12 @@ export function reportWorkbook(keys: ReportKey[], c: ReportCtx) {
       const rows: Cell[][] = [[`${c.project}  鋼筋料單`], [], ['樓層', '構件', '編號', '鋼筋位置', '號數', '單支長(m)', '支數', '總長(m)', '單位重(kg/m)', '重量(kg)', '計算式']];
       for (const r of t.rebar?.rows || []) rows.push([r.fl, r.kind, r.mark, r.part, `#${r.s}`, r.len / 100, r.n, Math.round(r.len * r.n) / 100, REBAR_STD.kg[r.s], r.kg, r.expr]);
       ws = sheet(rows, [6, 7, 12, 18, 5, 9, 6, 9, 9, 10, 90]);
+    } else if (k === 'mason') {
+      const rows: Cell[][] = [[`${c.project}  泥作報表`]];
+      for (const it of masonReport(t.calc)) {
+        rows.push([], [it.title], ...(it.note ? [[it.note]] : []), ['樓層', '位置', '計算式', '數量', '單位'], ...masonCells(it).map(r => r.map((v, i) => i === 3 ? +v : v)));
+      }
+      ws = sheet(rows, [8, 34, 70, 11, 6]);
     } else if (k === 'formwork') {
       const f = t.formwork!;
       const rows: Cell[][] = [[`${c.project}  模板報表`], [], ['棟別', '樓層', '版編號', '版內編', '版　明　細'], FORMWORK_HEAD, ...formworkCells(f).map(r => r.map((v, i) => i >= 4 && ![5, 7, 9, 11].includes(i) && v !== '' ? +v : v)), [], [f.note.join(' ')]];

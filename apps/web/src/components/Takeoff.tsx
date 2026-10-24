@@ -1,4 +1,4 @@
-import { EXT_FINISHES, FINISH_SHORT, FINISHES, groupQuantities, materialsOf, PING, REBAR_KINDS, REBAR_STD, rebarSummary, type FinishChoice, type GroupBy, type PricedBudget, type Pricing, type Takeoff as T, type PriceRate, type TakeoffSettings } from '@cloud-modeler/core';
+import { EXT_FINISHES, FINISH_SHORT, masonCells, masonReport, FINISHES, groupQuantities, materialsOf, PING, REBAR_KINDS, REBAR_STD, rebarSummary, type FinishChoice, type GroupBy, type PricedBudget, type Pricing, type Takeoff as T, type PriceRate, type TakeoffSettings } from '@cloud-modeler/core';
 import { Deleted } from './BudgetPane';
 import { Materials } from './Materials';
 import { saveMaterials } from '../lib/materials';
@@ -21,11 +21,12 @@ function toTsv(t: T, tab: string) {
     return [['樓層', ...REBAR_KINDS, '合計'].join('\t'), ...[...byFloor].map(([f, v]) => [f, ...REBAR_KINDS.map(k => r2(v[k])), r2(v.合計)].join('\t')), '', '號數\t總長(m)\t單位重(kg/m)\t重量(kg)', ...bySize.map(([z, v]) => `#${z}\t${r2(v.len)}\t${REBAR_STD.kg[z]}\t${r2(v.kg)}`)].join('\n');
   }
   if (tab === 'formwork' && t.formwork) return ['棟別\t樓層\t版編號\t版內編\t原始模板\t計算式\t封模\t計算式\t扣版牆接頭\t計算式\t扣柱頭\t計算式\t扣接頭合計\t真實模板', ...formworkCells(t.formwork).map(r => r.join('\t'))].join('\n');
+  if (tab === 'mason') return masonReport(t.calc).flatMap(it => [it.title, '樓層\t位置\t計算式\t數量\t單位', ...masonCells(it).map(r => r.join('\t')), '']).join('\n');
   if (tab === 'calc') return ['工程項目\t樓層\t位置\t計算式\t數量\t單位', ...t.calc.map(c => `${c.item}\t${c.fl}\t${c.where}\t${c.expr}\t${c.q}\t${c.unit}`)].join('\n');
   return ['空間\t面積㎡\t坪\t地坪\t天花\t牆面', ...t.rooms.map(r => `${r.name}\t${r2(r.area)}\t${r2(r.area / PING)}\t${r.fin.f}\t${r.fin.c}\t${r.fin.w}`)].join('\n');
 }
 
-type Tab = 'budget' | 'formwork' | 'calc' | 'floor' | 'member' | 'area' | 'rebar' | 'rebarSum' | 'detail' | 'spaces' | 'mats';
+type Tab = 'budget' | 'mason' | 'formwork' | 'calc' | 'floor' | 'member' | 'area' | 'rebar' | 'rebarSum' | 'detail' | 'spaces' | 'mats';
 
 export function Takeoff({ takeoff: t, pb, pricing, project, subtitle, settings, readOnly, onSettings, onPricing, onFinish, toast }: {
   takeoff: T; pb: PricedBudget; pricing: Pricing; project: string; subtitle: string; settings: TakeoffSettings; readOnly: boolean;
@@ -73,7 +74,7 @@ export function Takeoff({ takeoff: t, pb, pricing, project, subtitle, settings, 
         <div><h2>工程數量</h2><p className="note">{subtitle}</p></div>
         <div className="kv">
           <button className="chip" onClick={copy}>複製目前分頁</button>
-          <button className="chip on" onClick={() => download(`${project}-工程數量.xlsx`, reportWorkbook(['boq', 'floor', 'member', 'area', 'calc', ...(t.formwork ? ['formwork'] as const : []), ...(rb.length ? ['rebar', 'rebarSum'] as const : []), 'finish', 'rooms'], { project, t, pb, pricing }), 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet')}>下載 Excel</button>
+          <button className="chip on" onClick={() => download(`${project}-工程數量.xlsx`, reportWorkbook(['boq', 'floor', 'member', 'area', 'calc', ...(t.formwork ? ['formwork'] as const : []), 'mason', ...(rb.length ? ['rebar', 'rebarSum'] as const : []), 'finish', 'rooms'], { project, t, pb, pricing }), 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet')}>下載 Excel</button>
         </div>
       </div>
       <details className="conds" open>
@@ -110,7 +111,7 @@ export function Takeoff({ takeoff: t, pb, pricing, project, subtitle, settings, 
         <div><span>工項</span><b>{pb.count}</b><small>{t.calc.length} 筆計算</small></div>
       </div>
       <div className="kv tabs">
-        {([['budget', '依工項（預算書）'], ['floor', '依樓層'], ['member', '依構件'], ['area', '依施工區域'], ['calc', '數量計算式'], ...(t.formwork ? [['formwork', '模板報表']] as const : []), ...(rb.length ? [['rebar', '鋼筋料單'], ['rebarSum', '鋼筋統計']] as const : []), ['detail', '裝修細項'], ['spaces', '空間做法設定'], ['mats', '建材項目']] as const).map(([k, l]) => (
+        {([['budget', '依工項（預算書）'], ['floor', '依樓層'], ['member', '依構件'], ['area', '依施工區域'], ['calc', '數量計算式'], ...(t.formwork ? [['formwork', '模板報表']] as const : []), ['mason', '泥作報表'], ...(rb.length ? [['rebar', '鋼筋料單'], ['rebarSum', '鋼筋統計']] as const : []), ['detail', '裝修細項'], ['spaces', '空間做法設定'], ['mats', '建材項目']] as const).map(([k, l]) => (
           <button key={k} className={`chip ${tab === k ? 'on' : ''}`} onClick={() => setTab(k)}>{l}</button>
         ))}
       </div>
@@ -172,6 +173,16 @@ export function Takeoff({ takeoff: t, pb, pricing, project, subtitle, settings, 
         </table></div>
         {(t.rebar!.standard?.length ?? 0) > 0 && <p className="note">沒有配筋圖的構件：{t.rebar!.standard!.join('、')}；依標準圖（樓梯、樓板、S0-07 牆）與規範最少配筋（梁 As,min、柱 1%）逐支計算，含搭接、彎鉤、錨定。匯入結構配筋圖後會自動改用圖上配筋。</p>}
       </>}
+      {tab === 'mason' && (masonReport(t.calc).map(it => (
+        <div key={it.key}>
+          <h3 style={{ margin: '14px 0 4px' }}>{it.title}</h3>
+          {it.note && <p className="note">{it.note}</p>}
+          <div className="tbl"><table>
+            <thead><tr><th>樓層</th><th>位置</th><th>計算式</th><th className="num">數量</th><th>單位</th></tr></thead>
+            <tbody>{masonCells(it).map((r, i) => <tr key={i} className={r[1] === '樓層小計' || /合計$/.test(String(r[1])) ? 'total' : ''}>{r.map((v, j) => <td key={j} className={j === 3 ? 'num' : ''}>{v}</td>)}</tr>)}</tbody>
+          </table></div>
+        </div>
+      )))}
       {tab === 'formwork' && t.formwork && <>
         <div className="tbl"><table>
           <thead><tr><th rowSpan={2}>棟別</th><th rowSpan={2}>樓層</th><th rowSpan={2}>版編號</th><th rowSpan={2}>版內編</th><th colSpan={10} style={{ textAlign: 'center' }}>版　明　細</th></tr>

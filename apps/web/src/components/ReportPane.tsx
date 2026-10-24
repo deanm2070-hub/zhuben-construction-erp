@@ -8,6 +8,7 @@ const PRESETS: [string, ReportKey[]][] = [
   ['完整工程數量', ['boq', 'floor', 'member', 'calc']],
   ['鋼筋料單', ['rebar', 'rebarSum']],
   ['模板報表', ['formwork']],
+  ['泥作報表', ['mason']],
   ['全部', REPORTS.map(r => r[0])],
 ];
 
