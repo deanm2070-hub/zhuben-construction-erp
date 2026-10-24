@@ -3,6 +3,8 @@ import { cleanText, DASHED_LT, type DxfDrawing, type Pt } from './dxf';
 /* Subset of the database @mlightcad/libredwg-web returns from `convert()`. */
 interface V { x: number; y: number }
 interface DbEntity {
+  /** the block record (model space, a layout's paper space, a block definition) the entity belongs to */
+  ownerBlockRecordSoftId?: string;
   type: string;
   layer?: string; colorIndex?: number; lineType?: string;
   startPoint?: V; endPoint?: V;
@@ -14,7 +16,7 @@ interface DbEntity {
   attribs?: DbEntity[];
   subDefinitionPoint1?: V; subDefinitionPoint2?: V; measurement?: number;
 }
-interface DbBlock { name: string; basePoint?: V; entities?: DbEntity[] }
+interface DbBlock { name: string; handle?: string; basePoint?: V; entities?: DbEntity[] }
 export interface DwgDatabase {
   header?: { INSUNITS?: number; ACADVER?: string };
   tables?: { BLOCK_RECORD?: { entries?: DbBlock[] }; LAYER?: { entries?: { name: string; colorIndex?: number; lineType?: string }[] } };
@@ -85,6 +87,11 @@ export function drawingFromDwg(db: DwgDatabase, version = ''): DxfDrawing {
       }
     }
   };
-  walk(db.entities || [], [1, 0, 0, 1, 0, 0], null, 0);
+  // only model space: the layouts' paper space holds title blocks and viewport labels in sheet units (a 0.28 mm
+  // sheet title at (6, 5) would otherwise land in the model as a view title)
+  const ms = (db.tables?.BLOCK_RECORD?.entries || []).find(b => /^\*Model_Space$/i.test(b.name))?.handle;
+  const paper = new Set((db.tables?.BLOCK_RECORD?.entries || []).filter(b => /^\*Paper_Space/i.test(b.name) && b.handle).map(b => b.handle!.toUpperCase()));
+  const ents = (db.entities || []).filter(e => { const o = e.ownerBlockRecordSoftId; return !o || (ms && o.toUpperCase() === ms.toUpperCase()) || !paper.has(o.toUpperCase()); });
+  walk(ents, [1, 0, 0, 1, 0, 0], null, 0);
   return out;
 }

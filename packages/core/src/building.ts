@@ -5,7 +5,9 @@ import { WALL_H } from './sample';
 import { findFlights, planStairs, type StairFlight, type StairPlan } from './stairs';
 import { HEIGHT_NOTE, isDoorType, openingName, openingType, PLAN_NOTES, type OpeningType } from './legend';
 import { readRebarSpec } from './rebar';
-import { checkModel, type Issue } from './sanity';
+import { checkModel, openSlabEdges, type Issue } from './sanity';
+import { rationalizeFrame } from './structure';
+import { memberOf } from './pricing';
 import { isBox, isDoor, type BoxObject, type CadData, type CadFloor, type DoorObject, type ModelObject, type SlabPanel } from './types';
 
 /**
@@ -48,6 +50,8 @@ export interface BuildingAnalysis {
   colLayers: string[];
   /** things the drawing set is missing that make the 3D come out empty */
   warnings: string[];
+  /** no architectural plan in the set: built from the structural plans alone (no walls, doors or windows) */
+  structOnly?: boolean;
   /** beams read off the sections (mark and size beside each cut beam), where there are no structural plans */
   beams?: SectionBeam[];
   /** lean-concrete blinding under the foundation written on a section (10cm 2000psi PC), cm */
@@ -115,9 +119,16 @@ const inBox = (b: SheetView['box'], x: number, y: number) => x >= b[0] && x <= b
 export function findViews(d: DxfDrawing): SheetView[] {
   // each file of a merged set has its own title size and sheet spacing
   if (d.parts && d.parts.length > 1) return d.parts.flatMap(p => findViews({ ...d, parts: undefined, texts: d.texts.filter(t => t.x >= p.x0 - 1 && t.x <= p.x1 + 1) }));
-  const bare = (x: string) => x.replace(/\s/g, '').replace(/[(（][^)）]*[)）]$/, '');
+  // a scale note on the title's second line (一層結構平面圖 S：A1=1/50；A3=1/100) is not part of the name
+  const bare = (x: string) => x.replace(/\s*(?:S|SCALE|比例)\s*[：:].*$/i, '').replace(/\s/g, '').replace(/[(（][^)）]*[)）]$/, '');
   // notes that end in 平面圖 (「開啟方向依平面圖」「*相關檢討同二層平面圖」) and lists naming several views are not titles
-  const all0 = d.texts.filter(t => TITLE_RE.test(bare(t.s)) && t.s.length <= 24 && !/[、，,。；;：:*＊]|依|詳|見|參|同/.test(t.s));
+  const noScale = (x: string) => x.replace(/\s*(?:S|SCALE|比例)\s*[：:].*$/i, '');
+  const all1 = d.texts.filter(t => TITLE_RE.test(bare(t.s)) && noScale(t.s).length <= 24 && !/[、，,。；;：:*＊]|依|詳|見|參|同/.test(noScale(t.s)));
+  // the same title at several letter sizes (a stock of scale variants kept beside the sheets): only the size most titles share
+  const hc = new Map<number, number>();
+  for (const t of all1) hc.set(t.h || 0, (hc.get(t.h || 0) || 0) + 1);
+  const hMode = [...hc].sort((p, q) => q[1] - p[1])[0]?.[0];
+  const all0 = all1.filter(t => (t.h || 0) === hMode || !all1.some(o => o !== t && bare(o.s) === bare(t.s) && (o.h || 0) === hMode));
   // the sheet name in the title block repeats an elevation's or section's title: the label under the view on the same sheet is the one to use
   const FRAME = /圖框|TITLE|FRAME|BORDER/i;
   const all = all0.filter(t => !FRAME.test(t.layer) || !/[立剖]面圖$/.test(bare(t.s))
@@ -162,7 +173,8 @@ function viewsOf(titles0: DxfText[], hMax: number, bare: (s: string) => string):
   }
   // sheets often skip a slot, so the typical view width is the smaller spacings; a lone title: about 55 times its letter height
   const w = quantile(gaps, 0.25) || (hMax ? hMax * (titles.length > 1 ? 30 : 55) : 3000);
-  const STRUCT = /結構平面圖$/;
+  // 二層結構平面圖, 2F結構平面配置圖, 三層樑配置圖, 梁柱平面圖 … all name the storey's structural plan
+  const STRUCT = /(?:結構平面(?:配置)?|結構配置|[梁樑]柱?(?:配置|平面))圖$/;
   return titles.filter(t => STRUCT.test(bare(t.s)) || !SKIP_RE.test(t.s)).map(t => {
     const s = bare(t.s);
     const kind: ViewKind = STRUCT.test(s) ? 'structure' : /平面圖$/.test(s) ? 'plan' : /立面圖$/.test(s) ? 'elevation' : /剖面圖$/.test(s) ? 'section' : 'schedule';
@@ -579,8 +591,17 @@ export function analyzeBuilding(d: DxfDrawing, defaultH = WALL_H): BuildingAnaly
   extraWall = new Set(); ignoreNow = new Set();
   const views = findViews(d);
   frameViews(d, views);
-  const planViews = views.filter(v => v.kind === 'plan' && v.floors.length);
-  if (!planViews.length) return null;
+  let planViews = views.filter(v => v.kind === 'plan' && v.floors.length);
+  // no architectural plan at all, but structural plans: the storeys come from them, with their columns, beams and
+  // slabs (no walls or openings), rather than the whole set coming out as one flat drawing
+  let structOnly = false;
+  if (!planViews.length) {
+    const sv = views.filter(v => v.kind === 'structure' && v.floors.length);
+    if (!sv.length) return null;
+    structOnly = true;
+    planViews = sv.map(v => ({ ...v, kind: 'plan' as ViewKind }));
+    views.push(...planViews);
+  }
   // a plan with nothing above its title would span a whole column of the sheet: no taller than its siblings
   const hs = planViews.map(v => v.box[3] - v.box[1]).sort((a, b) => a - b), med = hs[Math.floor((hs.length - 1) / 2)];
   for (const v of planViews) if (!v.framed && v.box[3] - v.box[1] > med * 2.5) v.box[3] = v.box[1] + med * 1.4;
@@ -654,7 +675,8 @@ export function analyzeBuilding(d: DxfDrawing, defaultH = WALL_H): BuildingAnaly
   const sb = sectionBeams(d, views, storeys, scale);
   if (sb.beams.length) checks.push({ item: '梁（剖面圖）', ok: 'ok', text: `剖面圖讀到 ${sb.beams.length} 處梁的編號與尺寸（${[...new Set(sb.beams.map(b => `${b.mark} ${b.w}×${b.h}`))].slice(0, 8).join('、')}${sb.beams.length > 8 ? ' 等' : ''}），沒有結構圖的樓層依此建梁${sb.beams.some(b => b.foot) ? '與地梁' : ''}${sb.blinding ? `，基礎下 ${sb.blinding} cm PC 墊層` : ''}` });
   const fenceH = fenceHeight(d, views, scale);
-  return { views, plans, levels, storeys, schedule, parapet, scale, wallLayers, colLayers, warnings, checks, beams: sb.beams, blinding: sb.blinding, fenceH };
+  if (structOnly) warnings.unshift('這套圖裡沒有各層平面圖（圖名以「…平面圖」結尾的建築平面），只有結構平面圖：3D 只建出柱、梁、樓板，沒有牆、門窗和房間。請把各層平面圖一起匯入再建一次。');
+  return { views, plans, levels, storeys, schedule, parapet, scale, wallLayers: structOnly ? [] : wallLayers, colLayers, warnings, checks, beams: sb.beams, blinding: sb.blinding, fenceH, ...(structOnly ? { structOnly } : {}) };
 }
 
 /**
@@ -1781,10 +1803,12 @@ export interface BuildingResult {
 const BEAM_LAYER = /^BM|BEAM|梁/i;
 /** Beam marks on structural plans: G1a(30x60), FG4a(50x155/195), or the mark and the size as two texts. */
 const BEAM_MARK = /^(F?[GBJ]\d*[a-z]?|F?J\d*[a-z]?)\s*\((\d{2,3})\s*[xX×]\s*(\d{2,3})(?:\s*\/\s*(\d{2,3}))?\)$/;
+/** a beam mark written on its own: B1, G2a, b101, Cb104, FG4a, CG1, Wb0 … (not a column C1 or a slab S1) */
+const PLAIN_BEAM = /^(?:C|F|W|CF)?[GBJgbj]\d{1,3}[a-z]?$/;
 const BEAM_CODE = /^F?[GBJ]\d*[a-z]?$/, BEAM_SIZE = /^\((\d{2,3})\s*[xX×]\s*(\d{2,3})(?:\s*\/\s*(\d{2,3}))?\)$/;
 
 /** A row of a 尺寸表 (size table): marks it covers, e.g. "FB*,FG*,CFG*" or "Fb1~Fb3", and the section written beside them. */
-interface SizeRow { test: (code: string) => boolean; w: number; h: number; x: number; y: number }
+interface SizeRow { test: (code: string) => boolean; w: number; h: number; x: number; y: number; /** storeys the row is for (梁跨名稱 of a beam elevation: 2F~3F B7(40x60)); any when missing */ floors?: string[] }
 export function readSizeTable(d: DxfDrawing): SizeRow[] {
   const SIZE2 = /^(\d+(?:\.\d+)?)\s*[xX×]\s*(\d+(?:\.\d+)?)$/, LIST = /^[A-Za-z][A-Za-z0-9*~,]*$/;
   const rows: SizeRow[] = [];
@@ -1809,7 +1833,30 @@ export function readSizeTable(d: DxfDrawing): SizeRow[] {
     });
     rows.push({ test: c => parts.some(f => f(c)), w: +sz.m![1], h: +sz.m![2], x: t.x, y: t.y });
   }
+  // beam elevations (梁配筋圖) name each span with its storey, mark and section: "2F~3F B7(40x60)", "R1F G1(70x50)", "g1b(30x50)"
+  const SPAN = /^(?:([A-Za-z0-9~～\-]+F)\s+)?([A-Za-z]{1,3}\d{1,3}[a-z]?)\s*[(（](\d{2,3})\s*[xX×]\s*(\d{2,3})[)）]$/;
+  const seen = new Set<string>();
+  for (const t of d.texts) {
+    const m = SPAN.exec(t.s.trim());
+    if (!m) continue;
+    const floors = m[1] ? expandFloors(m[1]) : undefined;
+    const k = `${m[1] || ''}|${m[2]}|${m[3]}x${m[4]}`;
+    if (seen.has(k)) continue;
+    seen.add(k);
+    const code = m[2];
+    rows.push({ test: c => c === code, w: +m[3], h: +m[4], x: t.x, y: t.y, ...(floors ? { floors } : {}) });
+  }
   return rows;
+}
+
+/** "2F~3F" → ['2F', '3F'], "1MF" → ['1MF'], "R1F" → ['R1F'], "RF" → ['RF'] */
+function expandFloors(s: string): string[] {
+  const parts = s.split(/[~～\-]/).map(p => p.trim().toUpperCase()).filter(Boolean);
+  if (parts.length === 2) {
+    const a = /^(\d+)F$/.exec(parts[0]), b = /^(\d+)F$/.exec(parts[1]);
+    if (a && b && +b[1] >= +a[1]) { const out: string[] = []; for (let i = +a[1]; i <= +b[1]; i++) out.push(`${i}F`); return out; }
+  }
+  return parts;
 }
 
 /** Beams of one structural plan: paired beam outlines, each named and sized by the nearest beam mark. */
@@ -1823,11 +1870,18 @@ function readBeams(d: DxfDrawing, v: SheetView, X: (x: number) => number, Z: (y:
   for (const t of texts) {
     const m = BEAM_MARK.exec(t.s.trim());
     if (m) { marks.push({ code: m[1], w: +m[2], h: m[4] ? (+m[3] + +m[4]) / 2 : +m[3], x: X(t.x), z: Z(t.y) }); continue; }
-    // marks written alone, their section given in the plan's size table (nearest table to this plan wins; the specific row beats the wildcard)
-    if (/梁編號/.test(t.layer) && table.length) {
+    // marks written alone, their section given in a size table or by the beam elevations' span names (a row for this
+    // storey first, then a row for any storey; the nearest table to this plan wins; the specific row beats the wildcard)
+    if (table.length && (/梁編號/.test(t.layer) || PLAIN_BEAM.test(t.s.trim()))) {
       const code = t.s.trim(), cx = (v.box[0] + v.box[2]) / 2, cy = (v.box[1] + v.box[3]) / 2;
-      const hit = table.filter(r => r.test(code)).sort((p, q) => Math.hypot(p.x - cx, p.y - cy) - Math.hypot(q.x - cx, q.y - cy))[0];
-      if (hit) { marks.push({ code, w: hit.w, h: hit.h, x: X(t.x), z: Z(t.y) }); continue; }
+      const rows = table.filter(r => r.test(code)), own = rows.filter(r => r.floors?.some(f => v.floors.includes(f)));
+      const hit = (own.length ? own : rows.filter(r => !r.floors)).sort((p, q) => Math.hypot(p.x - cx, p.y - cy) - Math.hypot(q.x - cx, q.y - cy))[0] || rows[0];
+      if (hit) {
+        const mx = X(t.x), mz = Z(t.y);
+        // (the same mark repeated on several layers of a block is one mark)
+        if (!marks.some(q => q.code === code && Math.abs(q.x - mx) < 55 && Math.abs(q.z - mz) < 55)) marks.push({ code, w: hit.w, h: hit.h, x: mx, z: mz });
+        continue;
+      }
     }
     if (!BEAM_CODE.test(t.s.trim())) continue;
     const sz = texts.map(o => ({ o, m: BEAM_SIZE.exec(o.s.trim()) })).filter(q => q.m && Math.hypot(q.o.x - t.x, q.o.y - t.y) < (t.h || 25) * 4)
@@ -2046,6 +2100,12 @@ export function buildBuilding(d: DxfDrawing, a: BuildingAnalysis, name: string, 
   let minX = Infinity, maxY = -Infinity, maxX = -Infinity, minY = Infinity;
   for (const [p, g] of geos) if (used.has(p)) for (const s of g.segs) if (isWallLayer(s.layer)) for (const p of [s.a, s.b]) {
     minX = Math.min(minX, p[0] - g.ox); maxX = Math.max(maxX, p[0] - g.ox); minY = Math.min(minY, p[1] - g.oy); maxY = Math.max(maxY, p[1] - g.oy);
+  }
+  // built from structural plans alone (no wall lines): the extent is where the bulk of the drawn lines are
+  if (!isFinite(minX) && a.structOnly) {
+    const xs: number[] = [], ys: number[] = [];
+    for (const [p, g] of geos) if (used.has(p)) for (const s of g.segs) if (!/DIM|TEXT|AXIS|GRID|軸|圖框|FRAME|HATCH/i.test(s.layer)) { xs.push(s.a[0] - g.ox, s.b[0] - g.ox); ys.push(s.a[1] - g.oy, s.b[1] - g.oy); }
+    if (xs.length) { minX = quantile(xs, 0.02); maxX = quantile(xs, 0.98); minY = quantile(ys, 0.02); maxY = quantile(ys, 0.98); }
   }
   let W = (maxX - minX) * S, D = (maxY - minY) * S;
   const codes = new Map(a.schedule.map(i => [i.code, i]));
@@ -2616,6 +2676,7 @@ export function buildBuilding(d: DxfDrawing, a: BuildingAnalysis, name: string, 
     }
     const { lines, marks } = readBeams(d, v, X, Z, S, table), beams = lines.filter(b => b.mark);
     const cols = readColumns(d, v, X, Z, S), panels = readPanels(d, v, X, Z, lines.filter(l => !l.single), W, D);
+    if (typeof process !== 'undefined' && process.env?.DBGS) console.log('[struct]', v.title, 'box', v.box.map(Math.round).join(','), 'grid', gs.gx.length, gs.gy.length, 'lines', lines.length, 'beams', beams.length, 'marks', marks.length, 'cols', cols.length, 'panels', panels.length);
     prepped.set(v, { lines, beams, cols, panels, marks, S });
   }
   // a floor can have more than one structural sheet (an older revision, another building): the one whose beams run along the architectural walls is used
@@ -2674,6 +2735,33 @@ export function buildBuilding(d: DxfDrawing, a: BuildingAnalysis, name: string, 
       }
       for (const [k, ms] of unbuilt) {
         const [code, size] = k.split('|'), wallBeam = /^W/i.test(code);
+        // no beam lines at all beside the mark (an edge beam drawn as the wall line only): the beam runs between the
+        // two columns the mark sits between, on the line through them
+        const left: typeof ms = [];
+        for (const m of ms) {
+          const ground = i === 0;
+          const spanOf = (horizontal: boolean) => {
+            const band = cols.filter(c => Math.abs((horizontal ? c.z : c.x) - (horizontal ? m.z : m.x)) <= (horizontal ? c.d : c.w) / 2 + 60);
+            const u = (c: typeof cols[number]) => horizontal ? c.x : c.z, mu = horizontal ? m.x : m.z;
+            const lo = band.filter(c => u(c) < mu && mu - u(c) <= 1500).sort((p, q) => u(q) - u(p))[0];
+            const hi = band.filter(c => u(c) > mu && u(c) - mu <= 1500).sort((p, q) => u(p) - u(q))[0];
+            if (!lo || !hi) return null;
+            const a0 = u(lo) + (horizontal ? lo.w : lo.d) / 2, a1 = u(hi) - (horizontal ? hi.w : hi.d) / 2;
+            const c = ((horizontal ? lo.z : lo.x) + (horizontal ? hi.z : hi.x)) / 2;
+            return a1 - a0 >= 60 ? { a0, a1, c, off: Math.abs(c - (horizontal ? m.z : m.x)), lo, hi } : null;
+          };
+          const H = spanOf(true), V = spanOf(false), sp = H && V ? (H.off <= V.off ? { ...H, horizontal: true } : { ...V, horizontal: false }) : H ? { ...H, horizontal: true } : V ? { ...V, horizontal: false } : null;
+          if (!sp) { left.push(m); continue; }
+          const bx = sp.horizontal ? (sp.a0 + sp.a1) / 2 : sp.c, bz = sp.horizontal ? sp.c : (sp.a0 + sp.a1) / 2, len = sp.a1 - sp.a0;
+          // a beam is already there (drawn with another mark, or built from the other sheet)
+          if (objects.some(o => isBox(o) && o.rc?.kind === 'beam' && o.floor === host.key && !o.rot && (sp.horizontal ? Math.abs(o.z - bz) < m.w && Math.min(o.x + o.w / 2, sp.a1) - Math.max(o.x - o.w / 2, sp.a0) > len * 0.5 : Math.abs(o.x - bx) < m.w && Math.min(o.z + o.d / 2, sp.a1) - Math.max(o.z - o.d / 2, sp.a0) > len * 0.5))) continue;
+          objects.push({ id: id++, layer: 'slab', name: `${ground ? '地梁' : '梁'} ${m.code}（結構圖）`, floor: host.key, y: top - m.h, h: m.h, color: 0xcfc9bd,
+            x: bx, z: bz, ...(sp.horizontal ? { w: len, d: m.w } : { w: m.w, d: len }), rc: { kind: 'beam', mark: m.code, fl: key } });
+          madeBy.set(objects[objects.length - 1], v);
+          issues.push({ kind: 'MARK-BEAM', sev: 'fixed', floor: host.key, ids: [id - 1], text: `${v.title}：梁 ${m.code} 旁邊沒有畫梁線，依編號的尺寸 ${m.w}×${m.h} 在柱 ${sp.lo.mark || ''}（${Math.round(sp.lo.x)},${Math.round(sp.lo.z)}）與柱 ${sp.hi.mark || ''}（${Math.round(sp.hi.x)},${Math.round(sp.hi.z)}）之間建出（${Math.round(len)} cm）` });
+        }
+        if (!left.length) continue;
+        ms.splice(0, ms.length, ...left);
         issues.push({ kind: 'MARK-BEAM', sev: wallBeam ? 'info' : 'warn', floor: host.key, at: [ms[0].x, ms[0].z],
           text: `${v.title}：梁 ${code}（${size}）${ms.length > 1 ? `有 ${ms.length} 處` : ''}標示的位置沒有建出梁${wallBeam ? '；W 開頭是牆梁，藏在牆裡，牆已經建出的話可以不理' : '，圖上找不到這根梁的兩條梁線（可用「補牆板」或畫線補上）'}` });
       }
@@ -2981,8 +3069,34 @@ export function buildBuilding(d: DxfDrawing, a: BuildingAnalysis, name: string, 
       const inRoof = closedOn(drawnOf.get('RF'), objects.filter((o): o is BoxObject => isBox(o) && o.floor === lower.key && o.layer === 'wall'));
       from = from.filter(r => Math.min(r.x1 - r.x0, r.z1 - r.z0) >= 20 && inRoof(r));
     }
-    const add = subtractRects(from, [...slabsOf.get(st.key) || [], ...holesOf.get(st.key) || [], ...voidsOf.get(st.key) || []], W, D);
+    let add = subtractRects(from, [...slabsOf.get(st.key) || [], ...holesOf.get(st.key) || [], ...voidsOf.get(st.key) || []], W, D);
     if (!slabsOf.has(st.key)) slabsOf.set(st.key, []);
+    // a carried piece has to hang together with the floor: joined to a slab this storey already has (or to a piece
+    // that is), or standing on walls of the storey below along two of its sides. A piece on its own in the open (a
+    // bit of terrace the void did not cover, a roof patch beyond the walls) is a slab in mid-air and is dropped.
+    {
+      const lowWalls = objects.filter((o): o is BoxObject => isBox(o) && o.floor === lower.key && (o.layer === 'wall' || memberOf(o) === '柱') && !o.rot && o.y + o.h >= st.base - 30);
+      const along = (x0: number, x1: number, z: number, ax: boolean) => {
+        let cov = 0;
+        for (const o of lowWalls) {
+          const ox0 = ax ? o.x - o.w / 2 : o.z - o.d / 2, ox1 = ax ? o.x + o.w / 2 : o.z + o.d / 2, oz = ax ? o.z : o.x, t = (ax ? o.d : o.w) / 2;
+          if (Math.abs(oz - z) <= t + 30) cov += Math.max(0, Math.min(x1, ox1) - Math.max(x0, ox0));
+        }
+        return cov >= (x1 - x0) * 0.5;
+      };
+      const onWalls = (r: Rect) => [along(r.x0, r.x1, r.z0, true), along(r.x0, r.x1, r.z1, true), along(r.z0, r.z1, r.x0, false), along(r.z0, r.z1, r.x1, false)].filter(Boolean).length >= 2;
+      const joined = (r: Rect, q: Rect) => r.x0 < q.x1 + 5 && q.x0 < r.x1 + 5 && r.z0 < q.z1 + 5 && q.z0 < r.z1 + 5;
+      const kept: Rect[] = [...slabsOf.get(st.key)!], rest = add.slice();
+      for (let grew = true; grew;) {
+        grew = false;
+        for (const r of rest.slice()) if (kept.some(q => joined(r, q)) || onWalls(r)) { kept.push(r); rest.splice(rest.indexOf(r), 1); grew = true; }
+      }
+      // (a floor with no slab of its own and no walls below: nothing to hang on, so the carry stands as it is)
+      if (rest.length && rest.length < add.length) {
+        for (const r of rest) if (Math.min(r.x1 - r.x0, r.z1 - r.z0) >= 60) issues.push({ kind: 'SLAB-STRAY', sev: 'fixed', floor: st.key, at: [(r.x0 + r.x1) / 2, (r.z0 + r.z1) / 2], text: `多了一塊板：${Math.round(r.x1 - r.x0)}×${Math.round(r.z1 - r.z0)} cm 的樓板懸在空中（沒接到其他樓板、下方也沒有牆柱），已移除` });
+        add = add.filter(r => !rest.includes(r));
+      }
+    }
     for (const r of add) {
       objects.push({ id: id++, layer: 'slab', name: st.key === 'RF' ? '屋頂板（CAD）' : '樓板（CAD）', floor: st.key, x: (r.x0 + r.x1) / 2, z: (r.z0 + r.z1) / 2, w: r.x1 - r.x0, d: r.z1 - r.z0, h: SLAB, y: st.base - SLAB, color: 0xd6d1c7 });
       slabsOf.get(st.key)!.push(r);
@@ -3201,6 +3315,9 @@ export function buildBuilding(d: DxfDrawing, a: BuildingAnalysis, name: string, 
       // (a curved wall round a deck is many short turned pieces: each one is judged by its centre)
       if (!isBox(o) || o.floor !== st.key || o.layer !== 'wall' || o.y !== st.base || o.h < headH + 40 || o.h < st.h - 5) continue;
       if (/窗台|窗楣|門楣|隔間牆下/.test(o.name)) continue;
+      // a column the structural plan knows is never cut down to a parapet: it carries the floor above (full height)
+      // (a post the architectural plan alone draws on a roof deck is a parapet pier and is cut like the walls)
+      if (o.rc?.kind === 'column') continue;
       // a column or wall with one standing on it on the storey above runs on up to it (a column at a terrace edge)
       if (upOn.some(u => Math.abs(u.x - o.x) <= (u.w + o.w) / 2 - 5 && Math.abs(u.z - o.z) <= (u.d + o.d) / 2 - 5)) continue;
       const inside = (r: { x0: number; x1: number; z0: number; z1: number }) => o.x >= r.x0 - 30 && o.x <= r.x1 + 30 && o.z >= r.z0 - 30 && o.z <= r.z1 + 30;
@@ -3315,6 +3432,30 @@ export function buildBuilding(d: DxfDrawing, a: BuildingAnalysis, name: string, 
         for (const p of rcPanels) { p.x0 -= sx; p.x1 -= sx; p.z0 -= sz; p.z1 -= sz; }
         W = x1 - sx; D = z1 - sz;
       }
+    }
+  }
+  // the frame hangs together: columns down to the ground, beams on columns or walls, no beam in mid-air
+  {
+    const r = rationalizeFrame(objects, a.storeys.map(s => ({ key: s.key, base: s.base, h: s.h })), id);
+    id = r.id; issues.push(...r.issues);
+  }
+  // every floor plate above ground has something along its open edges: a 女兒牆 on a roof or terrace, a railing on
+  // a floor; the very top of a rooftop structure (not walked on) only a 30 cm curb (墩座)
+  {
+    const plates = objects.filter((o): o is BoxObject => isBox(o) && o.layer === 'slab' && /板|地坪/.test(o.name) && !/梁|墊層/.test(o.name));
+    const highest = Math.max(...plates.map(o => o.y + o.h), 0);
+    const hasRoofStruct = a.storeys.some(s => /^R\d+F$/.test(s.key));
+    for (const st of a.storeys) {
+      const edges = openSlabEdges(objects, st.key);
+      const made = new Map<string, { ids: number[]; len: number; h: number }>();
+      for (const e of edges) {
+        const curb = hasRoofStruct && Math.abs(e.top - highest) < 30;
+        const h = curb ? 30 : 120, name = curb ? '屋突墩座（自動補）' : /^R/.test(st.key) ? '女兒牆（自動補）' : 'RC欄杆（自動補）', t = 15, pos = e.at - e.out * t / 2;
+        const b: BoxObject = { id: id++, layer: 'wall', name, floor: st.key, x: e.alongX ? (e.lo + e.hi) / 2 : pos, z: e.alongX ? pos : (e.lo + e.hi) / 2, w: e.alongX ? e.hi - e.lo : t, d: e.alongX ? t : e.hi - e.lo, h, y: e.top, color: 0xeeebe5, wall: 'rc', src: 'auto' };
+        objects.push(b);
+        const m = made.get(name) || { ids: [], len: 0, h }; m.ids.push(b.id); m.len += e.hi - e.lo; made.set(name, m);
+      }
+      for (const [name, m] of made) issues.push({ kind: 'SLAB-EDGE', sev: 'fixed', floor: st.key, ids: m.ids, text: `${m.ids.length} 段板邊沒有牆、女兒牆或欄杆（人會掉下去），已補 ${m.h} cm ${name.replace(/（.*$/, '')}，共 ${(m.len / 100).toFixed(1)} m` });
     }
   }
   const spec = readRebarSpec(d, a.storeys.map(s => s.key));

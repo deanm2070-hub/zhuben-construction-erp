@@ -43,6 +43,56 @@ function beamEnds(o: BoxObject, len = 15): [Rect, Rect] {
   return [end(-1), end(1)];
 }
 
+
+/** an open run along the edge of a floor plate: nothing stands on it and there is open air beyond */
+export interface OpenEdge { floor: string; alongX: boolean; at: number; lo: number; hi: number; out: 1 | -1; top: number }
+
+const PLATE = (o: BoxObject) => o.layer === 'slab' && !o.rot && /板|地坪/.test(o.name) && !/梁|屋簷|雨遮|冷氣|外挑|裝飾|墊層|PC/.test(o.name);
+
+/**
+ * Edges of the floor plates above ground that nothing closes: no wall, railing, parapet, window or column stands on
+ * them, no floor of the storey above covers them (then they face a room or a balcony under a balcony), no plate of
+ * the same level continues past them, and no stair runs through the opening beyond. A person could walk off such an
+ * edge, so a building has a parapet or railing there.
+ */
+export function openSlabEdges(objects: ModelObject[], floor: string): OpenEdge[] {
+  const boxes = objects.filter(isBox);
+  const plates = boxes.filter(o => o.floor === floor && PLATE(o) && o.y + o.h >= 100);
+  if (!plates.length) return [];
+  const allPlates = boxes.filter(PLATE);
+  const stairs = boxes.filter(o => o.stair || o.layer === 'stair' || /踏階|樓梯/.test(o.name)).map(rect);
+  const doors = objects.filter(o => !isBox(o) && o.floor === floor) as { axis: 'x' | 'z'; at: number; a: number; b: number }[];
+  const out: OpenEdge[] = [];
+  for (const p of plates) {
+    const top = p.y + p.h, r = rect(p);
+    // what stands on this level: rises at least 25 cm above the plate (a 30 cm curb counts)
+    const standing = boxes.filter(o => o.layer !== 'slab' && o.y < top + 30 && o.y + o.h > top + 25 && !o.stair && o.layer !== 'stair').map(o => ({ r: rect(o), o }));
+    const level = allPlates.filter(q => q !== p && Math.abs(q.y + q.h - top) <= 30).map(rect);
+    const over = allPlates.filter(q => q.y > top + 50).map(rect);
+    const inR = (x: number, z: number, q: Rect, m = 0) => x > q.x0 - m && x < q.x1 + m && z > q.z0 - m && z < q.z1 + m;
+    for (const side of ['x0', 'x1', 'z0', 'z1'] as const) {
+      const alongX = side[0] === 'z', at = r[side], dir: 1 | -1 = side.endsWith('0') ? -1 : 1, lo = alongX ? r.x0 : r.z0, hi = alongX ? r.x1 : r.z1;
+      const free: number[] = [];
+      for (let u = lo + 5; u < hi; u += 10) {
+        const ex = alongX ? u : at, ez = alongX ? at : u, ox = alongX ? u : at + dir * 15, oz = alongX ? at + dir * 15 : u;
+        if (level.some(q => inR(ox, oz, q) || inR(alongX ? u : at + dir * 40, alongX ? at + dir * 40 : u, q) || inR(alongX ? u : at + dir * 65, alongX ? at + dir * 65 : u, q))) continue; // the plate goes on (or a slit between two pieces)
+        if (over.some(q => inR(ex, ez, q, 5))) continue;                   // a floor above: a room or a covered balcony edge
+        if (stairs.some(q => inR(ox, oz, q, 30))) continue;                // the stair opening
+        if (standing.some(s => inR(ex, ez, s.r, 25))) continue;            // a wall, railing, parapet or column on the edge
+        if (doors.some(d => (d.axis === 'x') === alongX && Math.abs(d.at - at) <= 25 && u >= d.a - 5 && u <= d.b + 5)) continue;
+        free.push(u);
+      }
+      for (let i = 0; i < free.length;) {
+        let j = i;
+        while (j + 1 < free.length && free[j + 1] - free[j] < 15) j++;
+        if (free[j] - free[i] + 10 >= 60) out.push({ floor, alongX, at, lo: free[i] - 5, hi: free[j] + 5, out: dir, top });
+        i = j + 1;
+      }
+    }
+  }
+  return out;
+}
+
 /**
  * Checks the built model for things that do not add up structurally. Pure geometry: it needs no drawing, so it can
  * run again after the person edits the model.
@@ -143,6 +193,13 @@ export function checkModel(objects: ModelObject[], floors: CadFloor[] | undefine
     if (top(s) < fn.y - 60) continue;
     const cover = slabs.find(o => o.floor === nx && overlap(rc(o), rc(s), -5) > 0 && Math.abs(o.y - fn.y) <= 30);
     if (cover) out.push({ kind: 'STAIR-COVER', sev: 'warn', floor: s.floor, ids: [s.id, cover.id], text: `樓梯最上面的踏階被上一層樓板蓋住（沒有樓梯開口）：${where(s)}` });
+  }
+  // 9. an open plate edge above ground with nothing to stop a person walking off it
+  for (const f of F) {
+    for (const e of openSlabEdges(objects, f.key)) {
+      const len = Math.round(e.hi - e.lo), cx = e.alongX ? (e.lo + e.hi) / 2 : e.at, cz = e.alongX ? e.at : (e.lo + e.hi) / 2;
+      out.push({ kind: 'SLAB-EDGE', sev: 'warn', floor: f.key, at: [cx, cz], text: `樓板邊緣沒有牆、女兒牆或欄杆（${len} cm 開放的板邊，可能掉下去）：${Math.round(cx)},${Math.round(cz)}` });
+    }
   }
   // one line per spot: the same stair or wall can trip a rule many times
   const seen = new Set<string>();

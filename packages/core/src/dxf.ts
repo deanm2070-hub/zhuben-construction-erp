@@ -53,7 +53,7 @@ export function decodeDxf(buf: ArrayBuffer | Uint8Array): string {
 
 export function cleanText(s: string): string {
   return s.replace(/\\U\+([0-9A-Fa-f]{4})/g, (_m, h: string) => String.fromCharCode(parseInt(h, 16)))
-    .replace(/\\P/g, ' ').replace(/\\[A-Za-z][^;\\{}]*;/g, '').replace(/[{}]/g, '')
+    .replace(/\\P/g, ' ').replace(/\\[A-Za-z][^;\\{}]*;/g, '').replace(/\\[LlOoKk~]/g, '').replace(/[{}]/g, '')
     .replace(/%%[cdp]/gi, '').replace(/\s+/g, ' ').trim();
 }
 
