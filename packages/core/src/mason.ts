@@ -14,14 +14,18 @@ const WET = /廁|浴|洗手|衛/, KITCHEN = /廚|茶水|Kitchen/i, BALCONY = /�
 const roomOf = (where: string, fl: string) => where.split(`${fl} `).join('').replace(/（梁）$/, '（梁）');
 
 type Rule = { key: string; title: string; test: (c: CalcRow) => boolean; note?: string };
+/** rooms whose walls are tiled: the tiles go on the waterproof base coat only, so no plaster finish is counted there */
+let tiledRooms = new Set<string>();
+const roomKey = (c: CalcRow) => `${c.fl}|${roomOf(c.where, c.fl).replace(/（梁）$/, '')}`;
+const plain = (c: CalcRow) => !tiledRooms.has(roomKey(c));
 const isFloor = (c: CalcRow) => /^F\d/.test(c.item) && c.unit === '㎡';
 const tile = (c: CalcRow) => isFloor(c) && !/^F1[-\s]|金鋼砂/.test(c.item);
 const RULES: Rule[] = [
   { key: 'extPlaster', title: '外牆粉刷（外牆 1:3 水泥砂漿打底）', test: c => /^外牆1:3水泥砂漿打底/.test(c.item) && c.unit === '㎡' },
   { key: 'pebble', title: '抿石子', test: c => /抿石子/.test(c.item) && c.unit === '㎡' },
   { key: 'extOther', title: '外牆其他飾面（二丁掛、水泥漆、金屬板…）', test: c => /^外牆/.test(c.item) && c.unit === '㎡' && !/^外牆1:3水泥砂漿打底|抿石子|防水|門窗/.test(c.item) },
-  { key: 'wallBase', title: '內牆打底', note: '內牆水泥粉光（W1A）含 1:3 打底，加上防水打底（W2A）；兩者面積計入。', test: c => (/^W1A-/.test(c.item) || /^W2A-/.test(c.item)) && c.unit === '㎡' },
-  { key: 'wallFinish', title: '內牆粉光', note: '內牆 1:3 水泥粉光＋水泥漆（W1A）的牆面，與內牆打底同一面積。', test: c => /^W1A-/.test(c.item) && c.unit === '㎡' },
+  { key: 'wallBase', title: '內牆打底', note: '不貼磚的內牆（W1A）含 1:3 打底，加上貼壁磚牆面的防水打底（W2A）。貼磚的牆只記打底，不記粉光。', test: c => (/^W2A-/.test(c.item) || (/^W1A-/.test(c.item) && plain(c))) && c.unit === '㎡' },
+  { key: 'wallFinish', title: '內牆粉光', note: '不貼磚的內牆 1:3 水泥粉光＋水泥漆（W1A）；貼壁磚的牆面不計粉光。', test: c => /^W1A-/.test(c.item) && c.unit === '㎡' && plain(c) },
   { key: 'floorIn', title: '室內地磚', test: c => tile(c) && !WET.test(c.where) && !BALCONY.test(c.where) && !LOBBY.test(c.where) && !STAIR.test(c.where) },
   { key: 'floorBalcony', title: '陽台地磚', test: c => tile(c) && BALCONY.test(c.where) && !STAIR.test(c.where) },
   { key: 'floorWet', title: '廁所地磚', test: c => tile(c) && WET.test(c.where) },
@@ -38,6 +42,7 @@ export function masonReport(calc: CalcRow[], floorOrder?: string[]): MasonItem[]
   const order = floorOrder || [...new Set(calc.map(c => c.fl))];
   const rank = (fl: string) => { const i = order.indexOf(fl); return i < 0 ? 999 : i; };
   const out: MasonItem[] = [];
+  tiledRooms = new Set(calc.filter(c => /^W2C-/.test(c.item)).map(roomKey));
   for (const rule of RULES) {
     const rows = calc.filter(rule.test);
     if (!rows.length) continue;

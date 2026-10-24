@@ -45,6 +45,9 @@ const KINDS: [LayerKind, string][] = [['wall', '牆體（擠出成 3D 牆）'], 
 let keptFiles: File[] = [];
 
 /** File → (DWG conversion) → layer mapping → 3D objects. */
+/** a project name from the picked files: the first file's name and how many more, not every name joined */
+const shortName = (files: File[]) => { const first = files[0].name.replace(/\.(dwg|dxf)$/i, '').replace(/\d{6,8}$/, ''); return files.length > 1 ? `${first.slice(0, 24)} 等${files.length}個檔` : first; };
+
 export function CadImport({ firstId, onBuilt, onSource, onClose }: {
   firstId: number;
   onBuilt: (r: ImportResult) => void;
@@ -116,7 +119,7 @@ export function CadImport({ firstId, onBuilt, onSource, onClose }: {
     setSt({ s: 'reading', title: '辨識 3D 模型中', name: '正在找樓層、牆、門窗、柱、梁、樓板…', ver: '請稍候', note: '' });
     await new Promise(r => setTimeout(r, 50));
     let r: MeshBuildResult | null;
-    try { r = buildFromMesh(parts, files.map(f => f.name).join('、'), firstId); }
+    try { r = buildFromMesh(parts, shortName(files), firstId); }
     catch (e) { return setSt({ s: 'error', msg: `辨識模型時出錯：${(e as Error).message}。可以把這個檔傳給我檢查。` }); }
     if (!r) return setSt({ s: 'error', msg: '模型裡找不到牆或樓板的面（可能是空檔，或只有線條沒有面）。' });
     keptFiles = []; keptFound = []; onBuilt({ objects: r.objects, cad: r.cad, summary: meshSummary(r) });
@@ -134,7 +137,7 @@ export function CadImport({ firstId, onBuilt, onSource, onClose }: {
     // merging and recognising a big set is heavy: show that stage, give the page a moment to paint it, and report a failure instead of freezing on the last file
     setSt({ s: 'reading', name: `已讀完 ${files.length} 個檔，正在合併並辨識樓層、牆、門窗…`, ver: '請稍候，大型圖面可能需要十幾秒' });
     await new Promise(r => setTimeout(r, 50));
-    try { route(mergeDrawings(ds), files.map(f => f.name).join('、')); }
+    try { route(mergeDrawings(ds), shortName(files)); }
     catch (e) { setSt({ s: 'error', msg: `辨識圖面時出錯：${(e as Error).message}。可以先只匯入各層平面圖，或把這份圖傳給我檢查。` }); }
   };
 

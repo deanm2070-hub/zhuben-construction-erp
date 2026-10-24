@@ -27,6 +27,7 @@ export function ProjectsPage({ email, account, onAccount, onOpen }: { email: str
   const [confirmId, setConfirmId] = useState<string | null>(null);
   const [renaming, setRenaming] = useState<{ id: string; name: string } | null>(null);
   const [info, setInfo] = useState(false);
+  const [naming, setNaming] = useState<{ kind: 'blank' | 'cad'; name: string } | null>(null);
   const [view, setView] = useState<View>('home');
   const trial = isTrial(account);
   const [lock, setLock] = useState(false);
@@ -45,13 +46,14 @@ export function ProjectsPage({ email, account, onAccount, onOpen }: { email: str
   const refresh = () => store.list().then(setList).catch(e => setErr(String(e.message || e)));
   useEffect(() => { refresh(); store.me().then(setMe); }, []);
 
-  const create = async (kind: 'sample' | 'blank' | 'cad') => {
+  const create = async (kind: 'sample' | 'blank' | 'cad', typed?: string) => {
     if (trial && kind !== 'sample') { setLock(true); return; }
+    if (kind !== 'sample' && typed === undefined) { setNaming({ kind, name: '' }); return; }
     try {
       const model = emptyModel();
       if (kind === 'sample') model.objects = sampleObjects();
       else model.cad = { name: '空白平面', W: 1000, D: 800, segs: [], texts: [], doors: [] };
-      const name = kind === 'sample' ? '範例平面' : kind === 'cad' ? '匯入圖面' : '未命名專案';
+      const name = kind === 'sample' ? '範例平面' : typed?.trim() || (kind === 'cad' ? '匯入圖面' : '未命名專案');
       const id = await store.create(name, model);
       onOpen(id, kind === 'cad');
     } catch (e) { setErr(String((e as Error).message || e)); }
@@ -95,6 +97,12 @@ export function ProjectsPage({ email, account, onAccount, onOpen }: { email: str
 
   return (
     <div className="shell">
+      {naming && <div className="modalBg" onClick={() => setNaming(null)}><form className="modal" onClick={e => e.stopPropagation()} onSubmit={e => { e.preventDefault(); const n = naming; setNaming(null); create(n.kind, n.name.trim() || ''); }}>
+        <h3>專案名稱</h3>
+        <input type="text" value={naming.name} placeholder="例如：五股芳洲段" maxLength={40} autoFocus onChange={e => setNaming({ ...naming, name: e.target.value })} />
+        <p className="note">報表（PDF／Excel）的檔名也會用這個名稱。可以留空，之後在專案頁改名。</p>
+        <div className="kv"><button type="button" className="chip" onClick={() => setNaming(null)}>取消</button><button className="chip key">{naming.kind === 'cad' ? '建立並匯入圖面' : '建立'}</button></div>
+      </form></div>}
       <aside className="side">
         <div className="logo"><img src="/logo.png" alt="" width={30} height={30} /><b>築本3D工程估算</b><small className="ver">{VERSION}</small></div>
         <nav>

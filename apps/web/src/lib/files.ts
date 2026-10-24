@@ -25,7 +25,16 @@ const esc = (s: string) => s.replace(/[&<>"]/g, c => ({ '&': '&amp;', '<': '&lt;
  * the browser downloads it to its download folder. data may be a function that makes the file, so the save
  * dialog opens right away (while the tap still counts) and the file is made after a place is chosen.
  */
+/** a file name every phone and share target accepts: no .dwg tails, 、 or brackets from a long project name, at most 40 characters before the extension */
+export function safeFileName(name: string) {
+  const dot = name.lastIndexOf('.'), ext = dot > 0 && name.length - dot <= 6 ? name.slice(dot) : '', stem = ext ? name.slice(0, dot) : name;
+  let s = stem.replace(/\.(dwg|dxf)/gi, '').replace(/[、，,;；]+/g, '_').replace(/[\\/:*?"<>|()（）\[\]{}\s]+/g, '_').replace(/_+/g, '_').replace(/^_|_$/g, '');
+  if (s.length > 40) s = s.slice(0, 40).replace(/_$/, '');
+  return `${s || '報表'}${ext}`;
+}
+
 export async function download(name: string, data: BlobPart | (() => Promise<BlobPart>), type: string): Promise<boolean> {
+  name = safeFileName(name);
   const make = async () => new Blob([typeof data === 'function' ? await data() : data], { type });
   const ext = name.includes('.') ? name.slice(name.lastIndexOf('.')) : '';
   const picker = (window as unknown as { showSaveFilePicker?: SavePicker }).showSaveFilePicker;
