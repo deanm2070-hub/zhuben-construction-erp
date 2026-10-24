@@ -7,12 +7,13 @@ const PRESETS: [string, ReportKey[]][] = [
   ['報價給業主', ['quote']],
   ['完整工程數量', ['boq', 'floor', 'member', 'calc']],
   ['鋼筋料單', ['rebar', 'rebarSum']],
+  ['模板報表', ['formwork']],
   ['全部', REPORTS.map(r => r[0])],
 ];
 
 export function ReportPane({ ctx, toast }: { ctx: ReportCtx; toast: (s: string) => void }) {
   const hasRebar = !!ctx.t.rebar?.rows.length;
-  const avail = REPORTS.filter(r => hasRebar || (r[0] !== 'rebar' && r[0] !== 'rebarSum'));
+  const avail = REPORTS.filter(r => (hasRebar || (r[0] !== 'rebar' && r[0] !== 'rebarSum')) && (ctx.t.formwork || r[0] !== 'formwork'));
   const [sel, setSel] = useState<Set<ReportKey>>(new Set(['quote', 'boq', 'calc']));
   const keys = avail.map(r => r[0]).filter(k => sel.has(k));
   const html = useMemo(() => keys.length ? reportHtml(keys, ctx) : '', [keys.join(), ctx]);

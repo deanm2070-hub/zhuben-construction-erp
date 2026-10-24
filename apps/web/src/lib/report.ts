@@ -1,4 +1,4 @@
-import { groupQuantities, PING, REBAR_KINDS, REBAR_STD, rebarSummary, type GroupBy, type PricedBudget, type Pricing, type Takeoff } from '@cloud-modeler/core';
+import { groupQuantities, type FormworkReport, PING, REBAR_KINDS, REBAR_STD, rebarSummary, type GroupBy, type PricedBudget, type Pricing, type Takeoff } from '@cloud-modeler/core';
 import * as XLSX from 'xlsx';
 
 /** The reports a project can print or download, in the order they appear. */
@@ -9,6 +9,7 @@ export const REPORTS = [
   ['member', '依構件統計', '基礎、柱、梁、樓板、牆、樓梯、門窗、裝修…'],
   ['area', '依施工區域統計', '各樓層各位置（構件、空間、立面）的數量'],
   ['calc', '數量計算式（計算依據）', '每一筆數量的樓層、位置與算式，可逐筆追溯'],
+  ['formwork', '模板報表', '每塊版的原始模板、封模、扣版牆接頭、扣柱頭，附計算式與各層小計'],
   ['rebar', '鋼筋料單', '樓層、構件、編號、號數、長度、支數、重量'],
   ['rebarSum', '鋼筋統計', '分層、分構件、分號數重量'],
   ['finish', '裝修細項', '依做法分層分空間的面積與長度'],
@@ -33,6 +34,24 @@ function table(head: string[], rows: string[], cls = '') {
   return `<table class="${cls}"><thead><tr>${head.map(h => `<th${/數量|單價|複價|合計|長|重|支數|%|面積|坪|金額|周長/.test(h) ? ' class="num"' : ''}>${esc(h)}</th>`).join('')}</tr></thead><tbody>${rows.join('')}</tbody></table>`;
 }
 const td = (v: unknown, num = false) => `<td${num ? ' class="num"' : ''}>${typeof v === 'number' ? n2(v) : esc(v)}</td>`;
+
+/** 模板報表 as rows of cells in the report's layout: 棟別 樓層 版編號 版內編 | 原始模板 計算式 封模 計算式 扣版牆接頭 計算式 扣柱頭 計算式 扣接頭合計 真實模板 */
+export function formworkCells(f: FormworkReport): (string | number)[][] {
+  const out: (string | number)[][] = [];
+  const z = (v: number) => v.toFixed(2);
+  f.floors.forEach((fl, fi) => {
+    let prev = '';
+    fl.rows.forEach((r, i) => {
+      out.push([fi === 0 && i === 0 ? 'A' : '', i === 0 ? fl.label : '', r.mark === prev ? '' : r.mark, r.no, z(r.area), r.areaExpr, z(r.edge), r.edgeExpr, z(r.wall), r.wallExpr, z(r.col), r.colExpr, z(r.cut), z(r.real)]);
+      prev = r.mark;
+    });
+    out.push(['', '', '樓層小計', '', z(fl.area), '', z(fl.edge), '', z(fl.wall), '', z(fl.col), '', z(fl.cut), z(fl.real)]);
+  });
+  const t = f.total;
+  out.push(['合計', '', '', '', z(t.area), '', z(t.edge), '', z(t.wall), '', z(t.col), '', z(t.cut), z(t.real)]);
+  return out;
+}
+const FORMWORK_HEAD = ['棟別', '樓層', '版編號', '版內編', '原始模板', '計算式', '封模', '計算式', '扣版牆接頭', '計算式', '扣柱頭', '計算式', '扣接頭合計', '真實模板'];
 
 function section(key: ReportKey, c: ReportCtx): string {
   const { t, pb, pricing: P } = c;
@@ -84,6 +103,15 @@ function section(key: ReportKey, c: ReportCtx): string {
     const rb = t.rebar?.rows || [];
     if (!rb.length) return '<p class="muted">沒有鋼筋料單（模型沒有混凝土構件）。</p>';
     return table(['樓層', '構件', '編號', '位置', '號數', '單支長 m', '支數', '總長 m', '重量 kg'], rb.map(r => `<tr>${td(r.fl)}${td(r.kind)}${td(r.mark)}${td(r.part)}${td(`#${r.s}`)}${td(r.len / 100, true)}${td(r.n, true)}${td(r2(r.len * r.n / 100), true)}${td(r.kg, true)}</tr>`));
+  }
+  if (key === 'formwork') {
+    const f = t.formwork;
+    if (!f) return '<p class="muted">沒有模板報表（模型沒有樓板範圍）。</p>';
+    const rows = formworkCells(f).map(r => {
+      const sub = r[2] === '樓層小計' || r[0] === '合計';
+      return `<tr${sub ? ' class="sec"' : ''}>${r.map((v, i) => `<td${i >= 4 && ![5, 7, 9, 11].includes(i) ? ' class="num"' : ''}>${esc(v)}</td>`).join('')}</tr>`;
+    });
+    return `<table><thead><tr><th rowspan="2">棟別</th><th rowspan="2">樓層</th><th rowspan="2">版編號</th><th rowspan="2">版內編</th><th colspan="10">版　明　細</th></tr><tr>${FORMWORK_HEAD.slice(4).map(h => `<th>${h}</th>`).join('')}</tr></thead><tbody>${rows.join('')}</tbody></table><p class="muted">${esc(f.note.join(' '))}</p>`;
   }
   if (key === 'rebarSum') {
     const rb = t.rebar?.rows || [];
@@ -201,6 +229,11 @@ export function reportWorkbook(keys: ReportKey[], c: ReportCtx) {
       const rows: Cell[][] = [[`${c.project}  鋼筋料單`], [], ['樓層', '構件', '編號', '鋼筋位置', '號數', '單支長(m)', '支數', '總長(m)', '單位重(kg/m)', '重量(kg)', '計算式']];
       for (const r of t.rebar?.rows || []) rows.push([r.fl, r.kind, r.mark, r.part, `#${r.s}`, r.len / 100, r.n, Math.round(r.len * r.n) / 100, REBAR_STD.kg[r.s], r.kg, r.expr]);
       ws = sheet(rows, [6, 7, 12, 18, 5, 9, 6, 9, 9, 10, 90]);
+    } else if (k === 'formwork') {
+      const f = t.formwork!;
+      const rows: Cell[][] = [[`${c.project}  模板報表`], [], ['棟別', '樓層', '版編號', '版內編', '版　明　細'], FORMWORK_HEAD, ...formworkCells(f).map(r => r.map((v, i) => i >= 4 && ![5, 7, 9, 11].includes(i) && v !== '' ? +v : v)), [], [f.note.join(' ')]];
+      ws = sheet(rows, [6, 6, 9, 7, 10, 28, 8, 34, 11, 30, 9, 26, 11, 10]);
+      ws['!merges'] = [{ s: { r: 2, c: 4 }, e: { r: 2, c: 13 } }];
     } else if (k === 'rebarSum') {
       const rb = t.rebar?.rows || [], { byFloor, bySize } = rebarSummary(rb);
       const rows: Cell[][] = [[`${c.project}  鋼筋統計（kg）`], [], ['樓層', ...REBAR_KINDS, '合計', '噸']];

@@ -1,3 +1,4 @@
+import { computeFormwork, type FormworkReport } from './formwork';
 import { BUDGET_TEMPLATE, covers, type TemplateItem } from './budgetTemplate';
 import { materialFor, materialItems, materialsOf, sectionOf } from './materials';
 import { computeRebar, type RebarKind, type RebarRow } from './rebar';
@@ -57,6 +58,8 @@ export interface Takeoff {
   slabArea?: number;
   /** bar list from the reinforcement drawings, and the members whose schedule was not found */
   rebar?: { rows: RebarRow[]; missing: string[]; standard?: string[] };
+  /** 模板報表 by slab panel (whole-building imports) */
+  formwork?: FormworkReport;
 }
 
 export interface TakeoffInput {
@@ -523,6 +526,7 @@ export function computeBuildingTakeoff(objects: ModelObject[], cad: CadData, fin
   // building-wide items are not per storey
   let calc = parts.flatMap(p => p.calc).filter(c => c.item !== '放樣' && c.item !== '施工架');
   const rebar = computeRebar(objects, cad);
+  const formwork = computeFormwork(objects, cad, settings.slab, floors.map(f => f.key));
   if (cad.rc) {
     // foundation slabs are only on the structural plans
     for (const p of cad.rc.panels.filter(p => /^F/.test(p.mark))) {
@@ -549,6 +553,7 @@ export function computeBuildingTakeoff(objects: ModelObject[], cad: CadData, fin
   }
   return {
     ...(rebar ? { rebar } : {}),
+    ...(formwork ? { formwork } : {}),
     budget: budgetOf(calc, undefined, materialItems(materialsOf(settings.materials))),
     groups: [...groups.values()],
     rooms: parts.flatMap(p => p.rooms),
