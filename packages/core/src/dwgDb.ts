@@ -38,7 +38,7 @@ export function drawingFromDwg(db: DwgDatabase, version = ''): DxfDrawing {
     const P = (x: number, y: number): Pt => [m[0] * x + m[2] * y + m[4], m[1] * x + m[3] * y + m[5]];
     const k = Math.hypot(m[0], m[1]);
     for (const e of ents) {
-      const raw = e.layer || '0', layer = raw === '0' && parent ? parent : raw;
+      const raw = e.layer || '0', layer = raw === '0' && parent ? parent : raw.replace(/^.*\$\d\$/, '') || raw; // a bound xref names its layers 外參名$0$wall: the layer is just wall
       const t = e.type;
       // AutoCAD colour index: 256 = by layer, 0 = by block (the insert's colour)
       // line type: its own, or the layer's when by layer (empty / ByLayer)
