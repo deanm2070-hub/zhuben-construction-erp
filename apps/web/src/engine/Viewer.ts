@@ -2225,7 +2225,7 @@ export type LightKey = 'day' | 'dusk' | 'night';
 /** lighting of the rendered look by time of day */
 const LIGHTS: Record<LightKey, { exposure: number; env: number; hemi: number; hemiSky: number; hemiGround: number; sun: number; sunColor: number; fog: number; lawn: number; paving: number }> = {
   day: { exposure: 0.95, env: 0.4, hemi: 0.55, hemiSky: 0xdcebff, hemiGround: 0x8c8270, sun: 2.6, sunColor: 0xfff0d8, fog: 0xe4ecf1, lawn: 0xffffff, paving: 0xffffff },
-  dusk: { exposure: 1.0, env: 0.35, hemi: 0.75, hemiSky: 0xaab8ee, hemiGround: 0x8a6a50, sun: 0.9, sunColor: 0xffb27a, fog: 0x7d86b5, lawn: 0x8c9a80, paving: 0xd8d4cc },
+  dusk: { exposure: 1.0, env: 0.35, hemi: 0.75, hemiSky: 0xaab8ee, hemiGround: 0x8a6a50, sun: 0.9, sunColor: 0xffb27a, fog: 0x7d86b5, lawn: 0x66705c, paving: 0xd8d4cc },
   night: { exposure: 1.0, env: 0.12, hemi: 0.38, hemiSky: 0x7084c4, hemiGround: 0x5a4636, sun: 0.25, sunColor: 0xa9bcff, fog: 0x18223f, lawn: 0x6d7864, paving: 0xb8b4ac },
 };
 const rng = (seed: number) => () => (seed = (seed * 16807) % 2147483647) / 2147483647;
